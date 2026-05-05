@@ -198,7 +198,13 @@ export function initTelemetry(store: Store): void {
   })
 
   if (shouldOptOutSdkAtInit(resolveConsent(settings))) {
-    posthog.optOut()
+    // Why: posthog.optOut() returns a Promise; without a .catch() a
+    // rejection would surface as an unhandledRejection warning on the
+    // main process. Mirrors the awaited optOut in setOptIn's finally
+    // block.
+    void posthog.optOut().catch((err) => {
+      console.warn('[telemetry] init-time SDK opt-out failed:', err)
+    })
   }
 }
 
@@ -358,7 +364,16 @@ export async function setOptIn(via: OptInVia, optedIn: boolean): Promise<void> {
     return
   }
   if (optedIn) {
-    await client.optIn()
+    // Why: mirror the opt-out branch's try/catch — a rejected optIn()
+    // (transient SDK/network) must not propagate and skip the
+    // telemetry_opted_in audit signal. The persisted opt-in already
+    // landed via updateSettings above; losing the event would silently
+    // diverge stored consent from the audit trail.
+    try {
+      await client.optIn()
+    } catch (err) {
+      console.warn('[telemetry] posthog.optIn() failed; continuing to emit opt-in event:', err)
+    }
     track('telemetry_opted_in', { via })
   } else {
     // Fire opt-out event BEFORE disabling the SDK. This is the one event
