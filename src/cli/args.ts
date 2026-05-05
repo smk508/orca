@@ -64,7 +64,7 @@ export function supportsBrowserPageFlag(commandPath: string[]): boolean {
   if (['repo', 'worktree', 'terminal'].includes(commandPath[0])) {
     return false
   }
-  return !['tab list', 'tab create'].includes(joined)
+  return !['tab list', 'tab create', 'tab profile list', 'tab profile create', 'tab profile delete'].includes(joined)
 }
 
 export function isCommandGroup(commandPath: string[]): boolean {
