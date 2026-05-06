@@ -307,13 +307,13 @@ function SessionRow({
 }: {
   session: UnifiedSessionRow
   worktreeId: string
-  onNavigate: (tabId: string) => void
+  onNavigate: (tabId: string, paneKey: string | null) => void
   onKill: (session: UnifiedSessionRow) => void
 }): React.JSX.Element {
   const clickable = session.tabId !== null && session.bound
   const handleClick = (): void => {
     if (clickable && session.tabId) {
-      onNavigate(session.tabId)
+      onNavigate(session.tabId, session.paneKey)
     }
   }
 
@@ -395,7 +395,7 @@ function WorktreeRow({
   onSleep: () => void
   onDelete: () => void
   onKillSession: (session: UnifiedSessionRow) => void
-  navigateToTab: (tabId: string) => void
+  navigateToTab: (tabId: string, paneKey: string | null) => void
 }): React.JSX.Element {
   const hasSessions = worktree.sessions.length > 0
   // Why: synthetic buckets (orphan/unattributed) have no sidebar target to
@@ -550,7 +550,7 @@ function ResourceTree({
   collapsedWorktrees: Set<string>
   toggleWorktree: (worktreeId: string) => void
   navigateToWorktree: (worktreeId: string) => void
-  navigateToTab: (tabId: string) => void
+  navigateToTab: (tabId: string, paneKey: string | null) => void
   onSleep: (worktreeId: string) => void
   onDelete: (worktreeId: string) => void
   onKillSession: (session: UnifiedSessionRow) => void
@@ -835,7 +835,7 @@ export function ResourceUsageStatusSegment({
   }, [])
 
   const navigateToTab = useCallback(
-    (tabId: string) => {
+    (tabId: string, paneKey: string | null) => {
       // Resolve the tab → worktree from the store so we can also reveal the
       // worktree in the sidebar before flipping the active tab.
       for (const [worktreeId, tabs] of Object.entries(tabsByWorktree)) {
@@ -845,10 +845,17 @@ export function ResourceUsageStatusSegment({
         }
       }
       setActiveView('terminal')
-      // Why: rows here only carry ptyId, and there's no selector that maps
-      // ptyId → numeric paneId for an unmounted tab. Pass null so the helper
-      // degrades to tab-only activation (no worse than prior behavior).
-      activateTabAndFocusPane(tabId, null)
+      // Why: snapshot-derived rows carry a `${tabId}:${paneId}` paneKey from
+      // the main-process pty registry — parse the paneId tail so split-tab
+      // clicks land focus on the *clicked* pane rather than whichever pane
+      // was last active. Daemon-only rows have paneKey=null and degrade to
+      // tab-only activation.
+      const colon = paneKey ? paneKey.indexOf(':') : -1
+      const tail = colon > 0 && paneKey ? paneKey.slice(colon + 1) : ''
+      const parsed = /^\d+$/.test(tail) ? Number.parseInt(tail, 10) : NaN
+      const paneId =
+        Number.isFinite(parsed) && parsed > 0 && paneKey?.slice(0, colon) === tabId ? parsed : null
+      activateTabAndFocusPane(tabId, paneId)
     },
     [tabsByWorktree, setActiveView]
   )
