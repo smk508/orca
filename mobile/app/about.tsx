@@ -84,7 +84,7 @@ export default function AboutScreen() {
       <View style={[styles.section, styles.sectionSpacer]}>
         <Pressable
           style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          onPress={() => void Linking.openURL('https://stably.ai/orca/privacy')}
+          onPress={() => void Linking.openURL('https://www.onorca.dev/privacy')}
         >
           <Shield size={16} color={colors.textSecondary} />
           <Text style={styles.rowLabel}>Privacy Policy</Text>
