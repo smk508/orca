@@ -1,7 +1,7 @@
 import React, { useCallback } from 'react'
 import { Settings as SettingsIcon } from 'lucide-react'
 import { toast } from 'sonner'
-import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
+import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { AGENT_CATALOG, AgentIcon } from '@/lib/agent-catalog'
 import { useAppStore } from '@/store'
 import { useDetectedAgents } from '@/hooks/useDetectedAgents'
@@ -124,7 +124,6 @@ function QuickLaunchAgentMenuItemsInner({
 
   return (
     <>
-      <DropdownMenuSeparator />
       {agents.length === 0 ? (
         <DropdownMenuItem
           disabled
