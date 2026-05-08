@@ -17,6 +17,7 @@ import { isPwshAvailable } from '../pwsh'
 import { LocalPtyProvider } from '../providers/local-pty-provider'
 import type { IPtyProvider, PtySpawnOptions, PtySpawnResult } from '../providers/types'
 import { mintPtySessionId, isSafePtySessionId } from '../daemon/pty-session-id'
+import { addNodePtyRecoveryHint } from '../daemon/node-pty-error-hints'
 import type { ClaudeRuntimeAuthPreparation } from '../claude-accounts/runtime-auth-service'
 import { CLAUDE_AUTH_ENV_VARS, hasClaudeAuthEnvConflict } from '../claude-accounts/environment'
 import {
@@ -916,6 +917,13 @@ export function registerPtyHandlers(
       try {
         result = await provider.spawn(spawnOptions)
       } catch (err) {
+        const rawMessage = err instanceof Error ? err.message : String(err)
+        const hintedMessage = addNodePtyRecoveryHint(rawMessage)
+        const spawnError =
+          hintedMessage === rawMessage && err instanceof Error ? err : new Error(hintedMessage)
+        if (err instanceof Error) {
+          spawnError.name = err.name
+        }
         if (effectiveSessionId !== undefined) {
           ptySizes.delete(effectiveSessionId)
         }
@@ -942,13 +950,13 @@ export function registerPtyHandlers(
             ? ('claude-code' as const)
             : null
         if (errorAgentKind) {
-          const classified = classifyError(err)
+          const classified = classifyError(spawnError)
           track('agent_error', {
             agent_kind: errorAgentKind,
             error_class: classified.error_class
           })
         }
-        throw err
+        throw spawnError
       }
       ptyOwnership.set(result.id, args.connectionId ?? null)
       if (preAllocatedHandle) {
@@ -1163,12 +1171,9 @@ export function registerPtyHandlers(
   // driver gate; pty:reportGeometry never resizes the PTY, only refreshes
   // the restore-target cache. See docs/mobile-fit-hold.md.
   ipcMain.removeAllListeners('pty:reportGeometry')
-  ipcMain.on(
-    'pty:reportGeometry',
-    (_event, args: { id: string; cols: number; rows: number }) => {
-      runtime?.recordRendererGeometry(args.id, args.cols, args.rows)
-    }
-  )
+  ipcMain.on('pty:reportGeometry', (_event, args: { id: string; cols: number; rows: number }) => {
+    runtime?.recordRendererGeometry(args.id, args.cols, args.rows)
+  })
 
   // Why: fire-and-forget — clears the DaemonPtyAdapter's sticky cold restore
   // cache after the renderer has consumed the data. No-op for non-daemon providers.
