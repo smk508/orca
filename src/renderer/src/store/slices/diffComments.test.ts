@@ -224,13 +224,13 @@ describe('updateDiffComment', () => {
     expect(updateMeta).not.toHaveBeenCalled()
   })
 
-  it('returns true and is a no-op when the comment id is missing', async () => {
+  it('returns false when the comment id is missing (edit-while-deleted race)', async () => {
     const store = createTestStore()
     seed(store, [])
 
     const ok = await store.getState().updateDiffComment(WT, 'missing', 'anything')
 
-    expect(ok).toBe(true)
+    expect(ok).toBe(false)
     expect(updateMeta).not.toHaveBeenCalled()
   })
 
