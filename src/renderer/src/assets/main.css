@@ -1278,23 +1278,18 @@
 }
 
 /* Why: trailing kbd pill inside Save/Cancel so the keyboard shortcut sits on
-   the action it triggers — same pattern as the Search row in SidebarNav. The
-   pill uses a translucent background so it adapts to both the primary
-   (filled) Save button and the ghost Cancel button. */
+   the action it triggers — same pattern as the AppearancePane shortcut hints.
+   No min-width or fixed height so the glyph (Esc, ↵) sets the pill's natural
+   width instead of being centered in a forced square. */
 .orca-diff-comment-kbd {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
   margin-left: 2px;
+  padding: 1px 4px;
   border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
   border-radius: 3px;
-  background: color-mix(in srgb, currentColor 10%, transparent);
   font-family: inherit;
-  font-size: 9.5px;
+  font-size: 10px;
   line-height: 1;
-  font-weight: 500;
   opacity: 0.75;
 }
