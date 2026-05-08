@@ -1,10 +1,6 @@
 import { toast } from 'sonner'
 import { useAppStore } from '@/store'
-import {
-  buildAgentDraftLaunchPlan,
-  buildAgentStartupPlan,
-  type AgentStartupPlan
-} from '@/lib/tui-agent-startup'
+import { buildAgentStartupPlan, type AgentStartupPlan } from '@/lib/tui-agent-startup'
 import { CLIENT_PLATFORM } from '@/lib/new-workspace'
 import { reconcileTabOrder } from '@/components/tab-bar/reconcile-order'
 import { track, tuiAgentToAgentKind } from '@/lib/telemetry'
@@ -46,11 +42,11 @@ export type LaunchAgentInNewTabResult = {
  * queued command on first mount and the local PTY provider writes it once the
  * shell is ready (see `pty-connection.ts`: startup-command path).
  *
- * Submission mode is hybrid by `promptInjectionMode`: argv/flag agents include
- * the prompt directly in the launch command (auto-submit, atomic via the
- * shell); followup-path agents prefer a native prefill flag if available
- * (`buildAgentDraftLaunchPlan`) and otherwise launch empty-prompt and paste
- * the prompt as a bracketed-paste draft after the agent's input box is ready.
+ * Submission mode by `promptInjectionMode`: argv/flag agents include the
+ * prompt directly in the launch command (auto-submit, atomic via the shell);
+ * followup-path agents have no argv prompt slot, so we launch empty-prompt
+ * and bracketed-paste the prompt as an unsent draft once the agent's input
+ * box is ready.
  *
  * Returns `null` when no startup plan can be built — for example, a whitespace-
  * only prompt on the trim-empty branch of `buildAgentStartupPlan`. Callers
@@ -62,64 +58,28 @@ export function launchAgentInNewTab(args: LaunchAgentInNewTabArgs): LaunchAgentI
   const cmdOverrides = store.settings?.agentCmdOverrides ?? {}
   const trimmedPrompt = prompt?.trim() ?? ''
   const hasPrompt = trimmedPrompt.length > 0
-  const agentConfig = TUI_AGENT_CONFIG[agent]
-  const injectionMode = agentConfig.promptInjectionMode
-  const isFollowupPath = injectionMode === 'stdin-after-start'
-  const hasDraftMechanism = Boolean(agentConfig.draftPromptFlag || agentConfig.draftPromptEnvVar)
+  const isFollowupPath = TUI_AGENT_CONFIG[agent].promptInjectionMode === 'stdin-after-start'
 
-  // Why: argv/flag agents without a draft mechanism fold the prompt into the
-  // launch command. Agents with a `draftPromptFlag` (claude) or
-  // `draftPromptEnvVar` (pi) — or any followup-path agent — land the prompt
-  // as an unsent draft via the native prefill or post-launch bracketed paste.
+  // Why: argv/flag agents fold the prompt into the launch command and
+  // auto-submit — keeping behavior consistent with the composer/tab-bar `+`
+  // mental model, where the prompt is "the first turn the user sent".
+  // Followup-path agents have no argv prompt slot, so the only way to
+  // deliver a prompt is post-launch bracketed paste; we leave it as an
+  // unsent draft so the user confirms before sending (avoids the typed-`\r`
+  // race if readiness detection misses).
   let startupPlan: AgentStartupPlan | null = null
   let pasteDraftAfterLaunch: string | null = null
 
-  if (hasPrompt && (hasDraftMechanism || isFollowupPath)) {
-    const draftPlan = buildAgentDraftLaunchPlan({
+  if (hasPrompt && isFollowupPath) {
+    startupPlan = buildAgentStartupPlan({
       agent,
-      draft: trimmedPrompt,
+      prompt: '',
       cmdOverrides,
-      platform: CLIENT_PLATFORM
+      platform: CLIENT_PLATFORM,
+      allowEmptyPromptLaunch: true
     })
-    if (draftPlan) {
-      startupPlan = {
-        agent: draftPlan.agent,
-        launchCommand: draftPlan.launchCommand,
-        expectedProcess: draftPlan.expectedProcess,
-        followupPrompt: null,
-        ...(draftPlan.env ? { env: draftPlan.env } : {})
-      }
-    } else if (isFollowupPath) {
-      // Why: no native prefill flag on a followup-path agent → launch empty
-      // and bracketed-paste the draft once the agent's input box is ready.
-      // Auto-submitting via a typed `\r` after a readiness wait carries a
-      // small race (if readiness detection misses, the `\r` runs in the host
-      // shell). Drafting via bracketed paste avoids the `\r` entirely and
-      // lets the user confirm visually before sending.
-      startupPlan = buildAgentStartupPlan({
-        agent,
-        prompt: '',
-        cmdOverrides,
-        platform: CLIENT_PLATFORM,
-        allowEmptyPromptLaunch: true
-      })
-      pasteDraftAfterLaunch = trimmedPrompt
-    } else {
-      // Theoretical: an argv/flag agent declares a draft mechanism but
-      // `buildAgentDraftLaunchPlan` returned null. There's no input box to
-      // paste into, so fall back to argv submit rather than launching empty.
-      // Every shipped agent with `draftPromptFlag`/`draftPromptEnvVar`
-      // returns a non-null plan, so this branch is defensive only.
-      startupPlan = buildAgentStartupPlan({
-        agent,
-        prompt: trimmedPrompt,
-        cmdOverrides,
-        platform: CLIENT_PLATFORM,
-        allowEmptyPromptLaunch: false
-      })
-    }
+    pasteDraftAfterLaunch = trimmedPrompt
   } else {
-    // argv/flag agents OR no prompt at all (existing quick-launch behavior).
     startupPlan = buildAgentStartupPlan({
       agent,
       prompt: hasPrompt ? trimmedPrompt : '',
