@@ -478,6 +478,15 @@
   padding-right: var(--window-controls-width, 0px);
 }
 
+/* Why: in side-bar activity-bar mode the icon strip sits flush against the
+   right window edge. The fixed-position window-controls overlay (height 36px,
+   width 138px) covers the top-right corner, so the topmost sidebar icons are
+   unreachable without this offset. --window-controls-height is 0px on
+   non-Windows so this rule is a no-op there. */
+.side-activity-bar-windows-inset {
+  padding-top: var(--window-controls-height, 0px);
+}
+
 .sidebar-toggle {
   -webkit-app-region: no-drag;
   background: none;
