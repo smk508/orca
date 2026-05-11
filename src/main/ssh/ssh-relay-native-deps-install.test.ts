@@ -119,14 +119,31 @@ function makeMockConnection(capture: SftpWriteCapture): SshConnection {
 
 type ExecResponse = string | { reject: string }
 
-// Why: actual call order under our mocks is:
-//   1: uname  2: $HOME  3: mkdir remoteDir (uploadRelay)
-//   4: chmod +x node    5: npm install     6: chmod prebuilds
-//   7: probe            8: socket DEAD     9: socket READY
+// Actual exec call order under our mocks:
+//   1: uname              2: $HOME            3: mkdir remoteDir (uploadRelay)
+//   4: chmod +x node      5: npm install      6: chmod prebuilds
+//   7: test -d (dir-exists guard)             8: node -e require() (load-test)
+//   9: socket DEAD       10: socket READY
 function makeExecResponses(opts: {
   npmInstall: 'ok' | { reject: string }
-  probe: 'ok' | 'missing' | { reject: string }
+  // 'ok'      : probe load-test resolves with the sentinel
+  // 'missing' : probe load-test rejects (require throws), graceful warn path
+  // 'dir-gone': dir-exists guard rejects, deploy throws before load-test runs
+  // { reject }: probe load-test rejects with a custom error (e.g. SSH channel)
+  probe: 'ok' | 'missing' | 'dir-gone' | { reject: string }
 }): ExecResponse[] {
+  const dirGuard: ExecResponse =
+    opts.probe === 'dir-gone' ? { reject: 'test -d failed: install dir gone' } : ''
+  const loadTest: ExecResponse =
+    opts.probe === 'ok'
+      ? 'ORCA-NPTY-PROBE-OK\n'
+      : opts.probe === 'missing'
+        ? // The shell-level `|| echo MISSING` resolves the exec with stdout
+          // 'MISSING\n' on require failure. Tests must mirror that shape.
+          'MISSING\n'
+        : opts.probe === 'dir-gone'
+          ? '' // unreached, dirGuard rejects first
+          : opts.probe
   return [
     'Linux x86_64',
     '/home/u',
@@ -134,11 +151,8 @@ function makeExecResponses(opts: {
     '', // chmod +x node
     opts.npmInstall === 'ok' ? '' : opts.npmInstall,
     '', // chmod prebuilds
-    opts.probe === 'ok'
-      ? 'ORCA-NPTY-PROBE-OK\n'
-      : opts.probe === 'missing'
-        ? 'require error: Cannot find module\nMISSING\n'
-        : opts.probe,
+    dirGuard,
+    loadTest,
     'DEAD',
     'READY'
   ]
@@ -270,7 +284,12 @@ describe('installNativeDeps (via deployAndLaunchRelay)', () => {
     // test pass while exercising a different failure path.
     const execCalls = vi.mocked(execCommand).mock.calls.map(([, c]) => c)
     const probeCallIdx = execCalls.findIndex((c) => c.includes('require("node-pty")'))
+    const npmInstallIdx = execCalls.findIndex((c) => c.includes('npm install node-pty'))
     expect(probeCallIdx, 'probe must have been invoked').toBeGreaterThanOrEqual(0)
+    // Probe must come strictly AFTER `npm install` — otherwise we'd be
+    // probing into an empty install dir and this whole failure mode
+    // wouldn't represent the real-world race.
+    expect(probeCallIdx).toBeGreaterThan(npmInstallIdx)
 
     const warnMessages = warnSpy.mock.calls.map((args) => String(args[0] ?? ''))
     // Channel failure must NOT be conflated with "node-pty missing" or with
@@ -280,6 +299,22 @@ describe('installNativeDeps (via deployAndLaunchRelay)', () => {
 
     expect(vi.mocked(finalizeInstall)).not.toHaveBeenCalled()
     // Lock must be released so a future reconnect can retry.
+    expect(vi.mocked(abandonInstall)).toHaveBeenCalledTimes(1)
+  })
+
+  it('throws (rather than warns MISSING) when the install dir vanishes between npm install and probe', async () => {
+    const conn = makeMockConnection(sftpCapture)
+    feed(makeExecResponses({ npmInstall: 'ok', probe: 'dir-gone' }))
+
+    // The dir-exists guard must propagate so the next reconnect retries
+    // fresh. Conflating "dir vanished" with "node-pty missing" would mark
+    // the version installed and strand the user in degraded mode.
+    await expect(deployAndLaunchRelay(conn)).rejects.toThrow(/test -d failed/)
+
+    const warnMessages = warnSpy.mock.calls.map((args) => String(args[0] ?? ''))
+    expect(warnMessages.some((m) => m.includes('[ssh-relay][NPTY-MISSING]'))).toBe(false)
+
+    expect(vi.mocked(finalizeInstall)).not.toHaveBeenCalled()
     expect(vi.mocked(abandonInstall)).toHaveBeenCalledTimes(1)
   })
 

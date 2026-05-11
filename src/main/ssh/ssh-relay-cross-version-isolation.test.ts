@@ -104,7 +104,8 @@ describe('cross-version isolation', () => {
       '', // chmod +x node
       '', // npm install
       '', // chmod prebuilds
-      'ORCA-NPTY-PROBE-OK\n', // node-pty probe (post-install verify)
+      '', // test -d (probe dir-exists guard)
+      'ORCA-NPTY-PROBE-OK\n', // node -e require() load-test (post-install verify)
       '', // touch .install-complete (finalizeInstall)
       '', // rm -rf .install-lock
       'DEAD', // launch socket probe

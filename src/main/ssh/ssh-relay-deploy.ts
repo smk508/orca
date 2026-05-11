@@ -283,19 +283,27 @@ async function installNativeDeps(conn: SshConnection, remoteDir: string): Promis
     `find ${shellEscape(`${remoteDir}/node_modules/node-pty/prebuilds`)} -name spawn-helper -exec chmod +x {} + 2>/dev/null; true`
   )
 
-  // node -e require() catches built-but-unloadable installs (wrong arch,
-  // missing prebuild, broken binding) that `test -d` would miss.
-  // Match a unique sentinel rather than endsWith('OK') because Node can
-  // emit deprecation/experimental warnings to stderr after our stdout write,
-  // and 2>&1 would push them past 'OK'. SSH-channel rejections of the probe
-  // itself are intentionally NOT swallowed — they propagate as the deploy's
-  // failure mode rather than being conflated with "node-pty is missing".
+  // Probe via `node -e require()` so unloadable installs (wrong arch, missing
+  // prebuild, broken native binding) are caught — `test -d` would miss those.
+  // Two execs separate concerns:
+  //   (1) `test -d` confirms the install dir is still present. A reject here
+  //       (dir vanished, fs unmounted, permission flip) propagates as a deploy
+  //       error so the next reconnect retries fresh rather than stranding the
+  //       user with a written `.install-complete`.
+  //   (2) `node -e require()` with stderr discarded so the user's .bashrc
+  //       stderr noise can't pollute our sentinel match. The shell-level
+  //       `|| echo MISSING` keeps SSH-channel failures distinguishable from
+  //       require failures: a closed channel rejects the exec call directly,
+  //       a require throw exits the node process nonzero and the shell falls
+  //       through to `echo MISSING`. PROBE_OK is passed via argv to keep the
+  //       JS literal trivial regardless of future sentinel characters.
+  await execCommand(conn, `test -d ${escapedDir}`)
   const PROBE_OK = 'ORCA-NPTY-PROBE-OK'
   const probeOutput = await execCommand(
     conn,
-    `cd ${escapedDir} && ${escapedNode} -e 'require("node-pty"); console.log("${PROBE_OK}")' 2>&1 || echo MISSING`
+    `cd ${escapedDir} && (${escapedNode} -e 'require("node-pty"); console.log(process.argv[1])' ${shellEscape(PROBE_OK)} 2>/dev/null || echo MISSING)`
   )
-  if (!probeOutput.includes(PROBE_OK)) {
+  if (!probeOutput.trim().endsWith(PROBE_OK)) {
     console.warn(
       `[ssh-relay][NPTY-MISSING] node-pty installed but require() failed at ${remoteDir}: ${probeOutput.trim().slice(-500)}`
     )
