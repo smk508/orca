@@ -3,7 +3,14 @@ and current visual skeleton together until the next refinement pass decides
 which pieces become production modules. */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Bell, BellDot, BellOff, MessageSquareText, Search, TerminalSquare } from 'lucide-react'
+import {
+  ArrowUpRight,
+  BellDot,
+  BellOff,
+  MessageSquareText,
+  Search,
+  TerminalSquare
+} from 'lucide-react'
 
 import { AgentIcon } from '@/lib/agent-catalog'
 import { agentTypeToIconAgent, formatAgentTypeLabel } from '@/lib/agent-status'
@@ -13,7 +20,6 @@ import { useAppStore } from '@/store'
 import type { RetainedAgentEntry } from '@/store/slices/agent-status'
 import { getRepoMapFromState, getWorktreeMapFromState } from '@/store/selectors'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Toggle } from '@/components/ui/toggle'
@@ -513,7 +519,7 @@ function EventTime({ timestamp }: { timestamp: number }): React.JSX.Element {
           {formatRelativeTime(timestamp)}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="left" sideOffset={6}>
+      <TooltipContent side="right" sideOffset={6}>
         {absolute}
       </TooltipContent>
     </Tooltip>
@@ -538,15 +544,16 @@ function ThreadRow({
   thread,
   selected,
   onSelect,
-  onToggleRead
+  onJump,
+  onMarkUnread
 }: {
   thread: AgentPaneThread
   selected: boolean
   onSelect: () => void
-  onToggleRead: () => void
+  onJump: () => void
+  onMarkUnread: () => void
 }): React.JSX.Element {
   const latest = thread.latestEvent
-  const toggleLabel = thread.unread ? 'Mark thread read' : 'Mark thread unread'
   return (
     <div
       data-current={selected ? 'true' : undefined}
@@ -572,8 +579,8 @@ function ThreadRow({
         // Why (asymmetric padding): the title uses leading-snug, which adds
         // ~3px of internal space above the cap-height that isn't present
         // below the secondary badge row. Symmetric py made the top read
-        // heavier; pt-2 / pb-2.5 visually evens the row.
-        'group relative flex w-full flex-col gap-1 border-b border-border px-3 pt-2 pb-2.5 text-left transition-colors',
+        // heavier; the smaller top pad visually evens the row.
+        'group relative flex w-full cursor-pointer flex-col gap-1 border-b border-border px-3 pt-2.5 pb-3 text-left transition-colors',
         selected
           ? 'bg-black/[0.08] shadow-[0_1px_2px_rgba(0,0,0,0.04)] dark:bg-white/[0.10] dark:shadow-[0_1px_2px_rgba(0,0,0,0.03)]'
           : 'hover:bg-accent/40'
@@ -583,7 +590,7 @@ function ThreadRow({
         <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r-full bg-primary" />
       ) : null}
       {/* Why (right cluster aligned to title, not centered between rows):
-          parking time + count on the title row leaves the secondary row
+          parking the timestamp on the title row leaves the secondary row
           full-width for the repo badge + branch name, which used to get
           truncated when the right cluster ate horizontal space. */}
       <div className="flex min-w-0 items-start gap-2">
@@ -592,58 +599,83 @@ function ThreadRow({
         </span>
         <span
           className={cn(
-            'line-clamp-2 min-w-0 flex-1 break-words text-[11px] leading-snug',
+            'line-clamp-3 min-w-0 flex-1 break-words text-[11px] leading-snug',
             thread.unread ? 'font-semibold text-foreground' : 'font-medium text-foreground'
           )}
         >
           {thread.paneTitle}
         </span>
         <span className="inline-flex shrink-0 items-center gap-1.5 pt-[3px]">
-          <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-normal">
-            {thread.events.length}
-          </Badge>
-          {/* Why (single right-most slot): the unread BellDot, the timestamp,
-              and the hover toggle all share this slot. Layered with opacity
-              transitions so on hover the static bell + timestamp fade out and
-              the bell-toggle button fades in — no double-bell on hover. */}
-          <span className="relative inline-flex h-5 min-w-16 items-center justify-end">
-            <span className="inline-flex items-center gap-1.5 transition-opacity group-hover:opacity-0">
-              {thread.unread ? (
-                <BellDot
-                  className="size-3.5 shrink-0 text-primary"
-                  fill="currentColor"
-                  aria-label="Unread"
-                />
-              ) : null}
-              <EventTime timestamp={latest.timestamp} />
-            </span>
-            <span className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="icon-xs"
-                    aria-label={toggleLabel}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onToggleRead()
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                  >
-                    {thread.unread ? <BellOff className="size-3" /> : <Bell className="size-3" />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="left">{toggleLabel}</TooltipContent>
-              </Tooltip>
-            </span>
-          </span>
+          {thread.unread ? (
+            <BellDot
+              className="size-3.5 shrink-0 text-primary"
+              fill="currentColor"
+              aria-label="Unread"
+            />
+          ) : null}
+          <EventTime timestamp={latest.timestamp} />
         </span>
       </div>
       <div className="flex min-w-0 items-center gap-1.5">
         <EventRepoBadge repo={thread.repo} />
-        <span className="truncate text-[11px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {thread.worktree.displayName}
+        </span>
+        {/* Why (per-card actions on hover): the right-pane header buttons read
+            as easy-to-miss chrome; surfacing them on the card itself keeps the
+            action where the user's attention already is. Mark-unread only
+            appears when the thread is read — selecting an unread thread
+            auto-marks it read, so a "mark read" button would be redundant.
+            Why (reserved slot, opacity-only toggle): keep the action cluster
+            always laid out with `invisible` + `pointer-events-none` so the
+            worktree-name's flex-1 width doesn't recompute on hover. Toggling
+            `hidden`/`inline-flex` made the row's text reflow under the cursor. */}
+        <span
+          className={cn(
+            'ml-auto inline-flex shrink-0 items-center gap-1 transition-opacity',
+            'pointer-events-none invisible opacity-0',
+            'group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100'
+          )}
+        >
+          {thread.unread ? null : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-xs"
+                  aria-label="Mark thread unread"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onMarkUnread()
+                  }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                >
+                  <BellOff className="size-3" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="left">Mark thread unread</TooltipContent>
+            </Tooltip>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                className="h-6 px-2 text-[11px]"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onJump()
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+              >
+                <ArrowUpRight className="size-3" />
+                Open
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="left">Jump to workspace</TooltipContent>
+          </Tooltip>
         </span>
       </div>
     </div>
@@ -659,7 +691,12 @@ export default function ActivityPrototypePage(): React.JSX.Element {
     useState<ActivityTerminalPortalSlotId>('primary')
   const [primaryPortalTargetEl, setPrimaryPortalTargetEl] = useState<HTMLElement | null>(null)
   const [secondaryPortalTargetEl, setSecondaryPortalTargetEl] = useState<HTMLElement | null>(null)
-  const [threadListWidth, setThreadListWidth] = useState(340)
+  // Why (default width): the thread cards are the primary surface in the
+  // Activity view; the terminal is supplementary. A narrow list squeezed the
+  // prompts to truncated single-liners and made the per-card actions feel
+  // cramped. 480px gives prompts room to breathe at line-clamp-3 and leaves
+  // the action buttons clearly readable.
+  const [threadListWidth, setThreadListWidth] = useState(480)
   const {
     containerRef: threadListRef,
     isResizing: isThreadListResizing,
@@ -667,8 +704,8 @@ export default function ActivityPrototypePage(): React.JSX.Element {
   } = useSidebarResize<HTMLDivElement>({
     isOpen: true,
     width: threadListWidth,
-    minWidth: 280,
-    maxWidth: 560,
+    minWidth: 320,
+    maxWidth: 720,
     deltaSign: 1,
     setWidth: setThreadListWidth
   })
@@ -898,12 +935,9 @@ export default function ActivityPrototypePage(): React.JSX.Element {
     activateThreadTerminal(thread)
   }
 
-  const toggleThreadRead = (thread: AgentPaneThread): void => {
-    if (thread.unread) {
-      markThreadRead(thread)
-      return
-    }
-    markThreadUnread(thread)
+  const jumpToWorkspace = (thread: AgentPaneThread): void => {
+    markThreadRead(thread)
+    activateAndRevealWorktree(thread.worktree.id)
   }
 
   // Why (page padding): drop top + horizontal padding so the page extends to
@@ -964,7 +998,8 @@ export default function ActivityPrototypePage(): React.JSX.Element {
                 thread={thread}
                 selected={thread.paneKey === selectedThread?.paneKey}
                 onSelect={() => selectThread(thread)}
-                onToggleRead={() => toggleThreadRead(thread)}
+                onJump={() => jumpToWorkspace(thread)}
+                onMarkUnread={() => markThreadUnread(thread)}
               />
             ))}
             {visibleThreads.length === 0 ? (
@@ -995,17 +1030,16 @@ export default function ActivityPrototypePage(): React.JSX.Element {
         <section className="min-w-0 flex-1 overflow-hidden">
           {selectedThread ? (
             <div className="flex h-full min-h-0 flex-col">
-              <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-4 pt-2 pb-3">
+              {/* Why (no header action button): per-card hover actions on the
+                  thread list (Mark unread, Open) are the primary controls now,
+                  so the header keeps just the thread identity. */}
+              <div className="flex shrink-0 items-start gap-4 border-b border-border px-4 pt-2 pb-3">
                 <div className="min-w-0">
                   <div className="flex min-w-0 items-start gap-2">
                     <span className="inline-flex shrink-0 pt-[3px]">
                       <AgentIcon agent={agentTypeToIconAgent(selectedThread.agentType)} size={16} />
                     </span>
-                    {/* Why: clamp to 2 lines (matches ThreadRow) so longer
-                        prompts don't get cut to one ellipsis. Badge moves to
-                        the secondary line so it stays at a fixed position
-                        regardless of title height. */}
-                    <h2 className="line-clamp-2 break-words text-sm font-semibold leading-snug">
+                    <h2 className="line-clamp-3 break-words text-sm font-semibold leading-snug">
                       {selectedThread.paneTitle}
                     </h2>
                   </div>
@@ -1016,18 +1050,6 @@ export default function ActivityPrototypePage(): React.JSX.Element {
                     </span>
                   </div>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  className="shrink-0 self-center"
-                  onClick={() => {
-                    markThreadRead(selectedThread)
-                    activateAndRevealWorktree(selectedThread.worktree.id)
-                  }}
-                >
-                  Jump to workspace
-                </Button>
               </div>
               {/* Why: Terminal stays mounted in the hidden workspace tree while
                   Activity is open. This target lets that existing TerminalPane
@@ -1093,7 +1115,7 @@ export default function ActivityPrototypePage(): React.JSX.Element {
               ) : (
                 <>
                   <TerminalSquare className="size-7" />
-                  Select an agent to open its terminal.
+                  Select an agent to view its activity
                 </>
               )}
             </div>
