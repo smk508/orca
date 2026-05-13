@@ -520,11 +520,15 @@ describe('OrcaRuntimeService', () => {
         surface: 'background',
         handle: expect.stringMatching(/^term_/)
       })
+      const spawnCall = spawn.mock.calls[0]?.[0] as { env?: Record<string, string> } | undefined
+      const spawnedEnv = spawnCall?.env ?? {}
+      expect(spawnedEnv.ORCA_TAB_ID).toMatch(/^[0-9a-f-]+$/)
+      expect(spawnedEnv.ORCA_PANE_KEY).toBe(`${spawnedEnv.ORCA_TAB_ID}:1`)
       expect(revealTerminalSession).toHaveBeenCalledWith(TEST_WORKTREE_ID, {
         ptyId: 'pty-bg',
         title: null,
         activate: false,
-        tabId: expect.stringMatching(/^[0-9a-f-]+$/)
+        tabId: spawnedEnv.ORCA_TAB_ID
       })
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining('[terminal-create] failed to create inactive tab for pty-bg:'),
@@ -1710,11 +1714,14 @@ describe('OrcaRuntimeService', () => {
         worktreeId: result.worktree.id
       })
     )
+    const setupSpawnEnv =
+      (spawn.mock.calls[1]?.[0] as { env?: Record<string, string> } | undefined)?.env ?? {}
+    expect(setupSpawnEnv.ORCA_PANE_KEY).toBe(`${setupSpawnEnv.ORCA_TAB_ID}:1`)
     expect(revealTerminalSession).toHaveBeenLastCalledWith(result.worktree.id, {
       ptyId: 'pty-setup',
       title: 'Setup',
       activate: false,
-      tabId: expect.stringMatching(/^[0-9a-f-]+$/)
+      tabId: setupSpawnEnv.ORCA_TAB_ID
     })
   })
 
@@ -1771,11 +1778,15 @@ describe('OrcaRuntimeService', () => {
         preAllocatedHandle: expect.stringMatching(/^term_/)
       })
     )
+    const initialSpawnEnv =
+      (spawn.mock.calls[0]?.[0] as { env?: Record<string, string> } | undefined)?.env ?? {}
+    expect(initialSpawnEnv.ORCA_TAB_ID).toMatch(/^[0-9a-f-]+$/)
+    expect(initialSpawnEnv.ORCA_PANE_KEY).toBe(`${initialSpawnEnv.ORCA_TAB_ID}:1`)
     expect(revealTerminalSession).toHaveBeenCalledWith(result.worktree.id, {
       ptyId: 'pty-created-worktree',
       title: null,
       activate: false,
-      tabId: expect.stringMatching(/^[0-9a-f-]+$/)
+      tabId: initialSpawnEnv.ORCA_TAB_ID
     })
   })
 

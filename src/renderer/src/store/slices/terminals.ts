@@ -345,12 +345,13 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       // corrupt agent-status routing. Hook attribution degrades for that
       // single terminal because paneKey is already baked into PTY env, but
       // the rest of the tab works normally. See docs/cli-terminal-hook-pane-key.md.
-      // Why: only honor a hint that's a non-empty string. The IPC boundary at
-      // useIpcEvents.ts spreads `id` whenever `tabId !== undefined`, so a stray
-      // `''` from a future producer would otherwise be persisted as a real tab
-      // id and break paneKey routing (`${tabId}:1` would shape as `:1`).
-      const hintedId =
-        typeof options?.id === 'string' && options.id.length > 0 ? options.id : undefined
+      // Why: only honor a hint that's a non-empty trimmed string. The IPC
+      // boundary at useIpcEvents.ts spreads `id` whenever `tabId !== undefined`,
+      // so a stray `''` or whitespace-only value from a future producer would
+      // otherwise be persisted as a real tab id and break paneKey routing
+      // (`${tabId}:1` would shape as `:1` or `<spaces>:1`).
+      const trimmedHint = typeof options?.id === 'string' ? options.id.trim() : ''
+      const hintedId = trimmedHint.length > 0 ? trimmedHint : undefined
       const idCollides =
         hintedId !== undefined &&
         Object.values(s.tabsByWorktree).some((tabs) => tabs.some((entry) => entry.id === hintedId))

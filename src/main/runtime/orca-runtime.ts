@@ -25,6 +25,7 @@ import type {
 } from '../../shared/types'
 import { isFolderRepo } from '../../shared/repo-kind'
 import { buildSetupRunnerCommand } from '../../shared/setup-runner-command'
+import { FIRST_PANE_ID } from '../../shared/pane-key'
 import {
   DESKTOP_PROTOCOL_VERSION,
   MIN_COMPATIBLE_MOBILE_VERSION
@@ -4426,7 +4427,7 @@ export class OrcaRuntimeService {
       // never splits and the renderer's nextPaneId starts at 1 for a fresh
       // tab. See docs/cli-terminal-hook-pane-key.md.
       const tabId = randomUUID()
-      const paneKey = `${tabId}:1`
+      const paneKey = `${tabId}:${FIRST_PANE_ID}`
       const env = {
         ...opts.env,
         ORCA_PANE_KEY: paneKey,
