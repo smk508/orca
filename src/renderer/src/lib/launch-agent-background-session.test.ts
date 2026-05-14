@@ -6,6 +6,7 @@ const mockSetTabCustomTitle = vi.fn()
 const mockUpdateTabPtyId = vi.fn()
 const mockCloseTab = vi.fn()
 const mockRegisterEagerPtyBuffer = vi.fn()
+const mockSubscribeToPtyData = vi.fn()
 const mockSubscribeToPtyExit = vi.fn()
 const mockPasteDraftWhenAgentReady = vi.fn()
 
@@ -19,7 +20,8 @@ const state = {
   setTabCustomTitle: mockSetTabCustomTitle,
   updateTabPtyId: mockUpdateTabPtyId,
   closeTab: mockCloseTab,
-  clearTabPtyId: vi.fn()
+  clearTabPtyId: vi.fn(),
+  setAgentStatus: vi.fn()
 }
 
 vi.mock('@/store', () => ({
@@ -39,6 +41,7 @@ vi.mock('@/lib/agent-paste-draft', () => ({
 
 vi.mock('@/components/terminal-pane/pty-dispatcher', () => ({
   registerEagerPtyBuffer: mockRegisterEagerPtyBuffer,
+  subscribeToPtyData: mockSubscribeToPtyData,
   subscribeToPtyExit: mockSubscribeToPtyExit
 }))
 
@@ -47,6 +50,7 @@ describe('launchAgentBackgroundSession', () => {
     vi.clearAllMocks()
     mockCreateTab.mockReturnValue({ id: 'tab-1', title: 'Terminal 1' })
     mockSpawn.mockResolvedValue({ id: 'pty-1' })
+    mockSubscribeToPtyData.mockReturnValue(vi.fn())
     mockSubscribeToPtyExit.mockReturnValue(vi.fn())
     vi.stubGlobal('window', {
       api: {
@@ -72,6 +76,11 @@ describe('launchAgentBackgroundSession', () => {
       expect.objectContaining({
         cwd: '/repo/worktree',
         command: "claude 'run the automation'",
+        env: {
+          ORCA_PANE_KEY: 'tab-1:1',
+          ORCA_TAB_ID: 'tab-1',
+          ORCA_WORKTREE_ID: 'wt-1'
+        },
         connectionId: null,
         worktreeId: 'wt-1',
         tabId: 'tab-1',
@@ -81,8 +90,33 @@ describe('launchAgentBackgroundSession', () => {
     expect(mockSetTabCustomTitle).toHaveBeenCalledWith('tab-1', 'Nightly audit')
     expect(mockUpdateTabPtyId).toHaveBeenCalledWith('tab-1', 'pty-1')
     expect(mockRegisterEagerPtyBuffer).toHaveBeenCalledWith('pty-1', expect.any(Function))
+    expect(mockSubscribeToPtyData).toHaveBeenCalledWith('pty-1', expect.any(Function))
     expect(mockSubscribeToPtyExit).toHaveBeenCalledWith('pty-1', expect.any(Function))
     expect(result).toMatchObject({ tabId: 'tab-1', ptyId: 'pty-1' })
+  })
+
+  it('parses agent status from hidden PTY output', async () => {
+    const onAgentStatus = vi.fn()
+    const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
+
+    await launchAgentBackgroundSession({
+      agent: 'claude',
+      worktreeId: 'wt-1',
+      prompt: 'run the automation',
+      onAgentStatus
+    })
+
+    const dataSidecar = mockSubscribeToPtyData.mock.calls[0]?.[1] as (data: string) => void
+    dataSidecar('\x1b]9999;{"state":"done","prompt":"ok","agentType":"codex"}\x07')
+
+    expect(state.setAgentStatus).toHaveBeenCalledWith(
+      'tab-1:1',
+      expect.objectContaining({ state: 'done', prompt: 'ok', agentType: 'codex' }),
+      undefined
+    )
+    expect(onAgentStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ state: 'done', prompt: 'ok', agentType: 'codex' })
+    )
   })
 
   it('uses a sidecar exit watcher so completion survives terminal attachment', async () => {

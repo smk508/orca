@@ -1,9 +1,24 @@
 /* eslint-disable max-lines -- Why: this page owns the automations list/detail
  * orchestration while the form and detail presentation live in sibling files. */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarClock, Plus, RefreshCw } from 'lucide-react'
+import { CalendarClock, Check, Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
@@ -40,9 +55,14 @@ export default function AutomationsPage(): React.JSX.Element {
   const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
   const fetchWorktrees = useAppStore((s) => s.fetchWorktrees)
   const fetchAllWorktrees = useAppStore((s) => s.fetchAllWorktrees)
+  const updateSettings = useAppStore((s) => s.updateSettings)
+  const openSettingsPage = useAppStore((s) => s.openSettingsPage)
+  const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
   const agentStatusByPaneKey = useAppStore((s) => s.agentStatusByPaneKey)
   const retainedAgentsByPaneKey = useAppStore((s) => s.retainedAgentsByPaneKey)
   const settings = useAppStore((s) => s.settings)
+  const selectedId = useAppStore((s) => s.selectedAutomationId)
+  const setSelectedId = useAppStore((s) => s.setSelectedAutomationId)
   const repoMap = useRepoMap()
   const worktreeMap = useWorktreeMap()
   const defaultAgent =
@@ -52,14 +72,16 @@ export default function AutomationsPage(): React.JSX.Element {
 
   const [automations, setAutomations] = useState<Automation[]>([])
   const [runs, setRuns] = useState<AutomationRun[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [editingAutomationId, setEditingAutomationId] = useState<string | null>(null)
   const [relativeNow, setRelativeNow] = useState(Date.now())
   const [draftAtOpen, setDraftAtOpen] = useState<AutomationDraft | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null)
+  const [dontAskDeleteAgain, setDontAskDeleteAgain] = useState(false)
   const editRequestRef = useRef(0)
+  const deleteConfirmButtonRef = useRef<HTMLButtonElement>(null)
   const [draft, setDraft] = useState<AutomationDraft>({
     name: '',
     prompt: '',
@@ -113,11 +135,17 @@ export default function AutomationsPage(): React.JSX.Element {
       ])
       setAutomations(nextAutomations)
       setRuns(nextRuns)
-      setSelectedId((current) => current ?? nextAutomations[0]?.id ?? null)
+      const currentSelectedId = useAppStore.getState().selectedAutomationId
+      const hasCurrentSelection = nextAutomations.some(
+        (automation) => automation.id === currentSelectedId
+      )
+      if (!hasCurrentSelection) {
+        setSelectedId(nextAutomations[0]?.id ?? null)
+      }
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [setSelectedId])
 
   useEffect(() => {
     void fetchAllWorktrees()
@@ -383,8 +411,51 @@ export default function AutomationsPage(): React.JSX.Element {
 
   const deleteAutomation = async (automation: Automation): Promise<void> => {
     await window.api.automations.delete({ id: automation.id })
-    setSelectedId(null)
+    if (useAppStore.getState().selectedAutomationId === automation.id) {
+      setSelectedId(null)
+    }
     await refresh()
+  }
+
+  const persistDeleteAutomationPreference = (): void => {
+    void updateSettings({ skipDeleteAutomationConfirm: true })
+    toast.success("We'll skip this confirmation next time.", {
+      description: 'You can change this in Settings.',
+      duration: 8000,
+      action: {
+        label: 'Open Settings',
+        onClick: () => {
+          openSettingsPage()
+          openSettingsTarget({
+            pane: 'general',
+            repoId: null,
+            sectionId: 'general-skip-delete-automation-confirm'
+          })
+        }
+      }
+    })
+  }
+
+  const requestDeleteAutomation = (automation: Automation): void => {
+    if (settings?.skipDeleteAutomationConfirm) {
+      void deleteAutomation(automation)
+      return
+    }
+    setDontAskDeleteAgain(false)
+    setDeleteTarget(automation)
+  }
+
+  const confirmDeleteAutomation = async (): Promise<void> => {
+    if (!deleteTarget) {
+      return
+    }
+    if (dontAskDeleteAgain) {
+      persistDeleteAutomationPreference()
+    }
+    const target = deleteTarget
+    setDeleteTarget(null)
+    setDontAskDeleteAgain(false)
+    await deleteAutomation(target)
   }
 
   const runNow = async (automation: Automation): Promise<void> => {
@@ -467,6 +538,81 @@ export default function AutomationsPage(): React.JSX.Element {
         onSave={() => void saveAutomation()}
       />
 
+      <Dialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (open) {
+            return
+          }
+          setDeleteTarget(null)
+          setDontAskDeleteAgain(false)
+        }}
+      >
+        <DialogContent
+          className="max-w-md"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault()
+            deleteConfirmButtonRef.current?.focus()
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="text-sm">Delete Automation</DialogTitle>
+            <DialogDescription className="text-xs">
+              Delete{' '}
+              <span className="break-all font-medium text-foreground">{deleteTarget?.name}</span>{' '}
+              and its run history. Workspaces created by previous runs are not deleted.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteTarget ? (
+            <div className="rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-xs">
+              <div className="break-all font-medium text-foreground">{deleteTarget.name}</div>
+              <div className="mt-1 text-muted-foreground">
+                {deleteTarget.workspaceMode === 'new_per_run'
+                  ? 'New workspace each run'
+                  : 'Selected workspace'}
+              </div>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={dontAskDeleteAgain}
+            onClick={() => setDontAskDeleteAgain((prev) => !prev)}
+            className="flex items-center gap-2 rounded-sm px-1 py-1 text-xs text-foreground/80 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span
+              className={`flex size-4 items-center justify-center rounded-sm border transition-colors ${
+                dontAskDeleteAgain
+                  ? 'border-foreground bg-foreground text-background'
+                  : 'border-muted-foreground bg-transparent'
+              }`}
+            >
+              {dontAskDeleteAgain ? <Check className="size-3" strokeWidth={3} /> : null}
+            </span>
+            Don&apos;t ask again
+          </button>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteTarget(null)
+                setDontAskDeleteAgain(false)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              ref={deleteConfirmButtonRef}
+              variant="destructive"
+              onClick={() => void confirmDeleteAutomation()}
+            >
+              <Trash2 className="size-4" />
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,360px)_1fr] overflow-hidden border-t border-border/50">
         <section className="flex min-h-0 flex-col border-r border-border/50 bg-muted/20">
           <div className="min-h-0 flex-1 overflow-auto p-2">
@@ -480,40 +626,69 @@ export default function AutomationsPage(): React.JSX.Element {
                   ? 'New workspace each run'
                   : (automationWorktree?.displayName ?? 'Missing workspace')
               return (
-                <button
-                  key={automation.id}
-                  type="button"
-                  onClick={() => setSelectedId(automation.id)}
-                  className={cn(
-                    'mb-1 flex w-full flex-col gap-1 rounded-md border px-3 py-2 text-left text-sm transition-colors',
-                    selected?.id === automation.id
-                      ? 'border-foreground/30 bg-muted/70 text-foreground shadow-sm'
-                      : 'border-transparent hover:bg-muted/50'
-                  )}
-                >
-                  <span className="font-medium">{automation.name}</span>
-                  <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    {automationRepo ? (
-                      <RepoDotLabel
-                        name={automationRepo.displayName}
-                        color={automationRepo.badgeColor}
-                        dotClassName="size-1.5"
-                      />
-                    ) : (
-                      <span>Unknown project</span>
-                    )}
-                    <span className="shrink-0">/</span>
-                    <span className="truncate">{workspaceLabel}</span>
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {automation.enabled
-                      ? `Next run ${formatAutomationDateTimeWithRelative(
-                          automation.nextRunAt,
-                          relativeNow
-                        )}`
-                      : 'Paused'}
-                  </span>
-                </button>
+                <ContextMenu key={automation.id}>
+                  <ContextMenuTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(automation.id)}
+                      className={cn(
+                        'mb-1 flex w-full flex-col gap-1 rounded-md border px-3 py-2 text-left text-sm transition-colors',
+                        selected?.id === automation.id
+                          ? 'border-foreground/30 bg-muted/70 text-foreground shadow-sm'
+                          : 'border-transparent hover:bg-muted/50'
+                      )}
+                    >
+                      <span className="font-medium">{automation.name}</span>
+                      <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                        {automationRepo ? (
+                          <RepoDotLabel
+                            name={automationRepo.displayName}
+                            color={automationRepo.badgeColor}
+                            dotClassName="size-1.5"
+                          />
+                        ) : (
+                          <span>Unknown project</span>
+                        )}
+                        <span className="shrink-0">/</span>
+                        <span className="truncate">{workspaceLabel}</span>
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {automation.enabled
+                          ? `Next run ${formatAutomationDateTimeWithRelative(
+                              automation.nextRunAt,
+                              relativeNow
+                            )}`
+                          : 'Paused'}
+                      </span>
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent className="w-48">
+                    <ContextMenuItem onSelect={() => void runNow(automation)}>
+                      <Play className="size-3.5" />
+                      Run Now
+                    </ContextMenuItem>
+                    <ContextMenuItem onSelect={() => void openEditDialog(automation)}>
+                      <Pencil className="size-3.5" />
+                      Edit
+                    </ContextMenuItem>
+                    <ContextMenuItem onSelect={() => void toggleAutomation(automation)}>
+                      {automation.enabled ? (
+                        <Pause className="size-3.5" />
+                      ) : (
+                        <Play className="size-3.5" />
+                      )}
+                      {automation.enabled ? 'Pause' : 'Resume'}
+                    </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    <ContextMenuItem
+                      variant="destructive"
+                      onSelect={() => requestDeleteAutomation(automation)}
+                    >
+                      <Trash2 className="size-3.5" />
+                      Delete
+                    </ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               )
             })}
             {automations.length === 0 ? (
@@ -539,7 +714,7 @@ export default function AutomationsPage(): React.JSX.Element {
             onOpenRunWorkspace={openRunWorkspace}
             onEdit={(automation) => void openEditDialog(automation)}
             onToggle={(automation) => void toggleAutomation(automation)}
-            onDelete={(automation) => void deleteAutomation(automation)}
+            onDelete={requestDeleteAutomation}
           />
         </section>
       </div>

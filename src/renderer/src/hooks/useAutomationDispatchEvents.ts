@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { launchAgentBackgroundSession } from '@/lib/launch-agent-background-session'
 import { useAppStore } from '@/store'
 import type { AutomationDispatchResult } from '../../../shared/automations-types'
+import { FIRST_PANE_ID } from '../../../shared/pane-key'
 
 const AUTOMATIONS_CHANGED_EVENT = 'orca:automations-changed'
 
@@ -110,20 +111,69 @@ export function useAutomationDispatchEvents(): void {
 
         let dispatchMarked = false
         let pendingExitCode: number | null = null
-        const markExitResult = (code: number): Promise<void> =>
-          markDispatchResult({
+        let pendingDone = false
+        let completionMarked = false
+        let unsubscribeAgentStatus = (): void => {}
+        const markCompletionResult = async (): Promise<void> => {
+          if (completionMarked) {
+            return
+          }
+          completionMarked = true
+          unsubscribeAgentStatus()
+          await markDispatchResult({
+            runId: run.id,
+            status: 'completed',
+            workspaceId: worktree.id,
+            error: null
+          })
+        }
+        const markExitResult = (code: number): Promise<void> => {
+          unsubscribeAgentStatus()
+          return markDispatchResult({
             runId: run.id,
             status: code === 0 ? 'completed' : 'dispatch_failed',
             workspaceId: worktree.id,
             error: code === 0 ? null : `Automation process exited with code ${code}.`
           })
+        }
+        const handleAgentDone = (): void => {
+          if (completionMarked) {
+            return
+          }
+          if (!dispatchMarked) {
+            pendingDone = true
+            return
+          }
+          void markCompletionResult()
+        }
+        const observeAgentStatus = (tabId: string): void => {
+          const paneKey = `${tabId}:${FIRST_PANE_ID}`
+          const checkCurrentStatus = (): void => {
+            if (useAppStore.getState().agentStatusByPaneKey[paneKey]?.state === 'done') {
+              handleAgentDone()
+            }
+          }
+          // Why: Codex/Claude completion normally arrives through the global
+          // hook IPC listener, not the hidden PTY OSC fallback.
+          unsubscribeAgentStatus = useAppStore.subscribe(checkCurrentStatus)
+          checkCurrentStatus()
+        }
         const result = await launchAgentBackgroundSession({
           agent: automation.agentId,
           worktreeId: worktree.id,
           prompt: automation.prompt,
           launchSource: 'unknown',
           title: run.title,
+          onAgentStatus: (payload) => {
+            if (payload.state !== 'done') {
+              return
+            }
+            handleAgentDone()
+          },
           onExit: (_ptyId, code) => {
+            if (completionMarked) {
+              return
+            }
             if (!dispatchMarked) {
               pendingExitCode = code
               return
@@ -134,16 +184,24 @@ export function useAutomationDispatchEvents(): void {
         if (!result) {
           throw new Error('Unable to build an agent launch plan.')
         }
-        await markDispatchResult({
-          runId: run.id,
-          status: 'dispatched',
-          workspaceId: worktree.id,
-          terminalSessionId: result.tabId,
-          error: null
-        })
-        dispatchMarked = true
-        if (pendingExitCode !== null) {
-          await markExitResult(pendingExitCode)
+        observeAgentStatus(result.tabId)
+        try {
+          await markDispatchResult({
+            runId: run.id,
+            status: 'dispatched',
+            workspaceId: worktree.id,
+            terminalSessionId: result.tabId,
+            error: null
+          })
+          dispatchMarked = true
+          if (pendingDone) {
+            await markCompletionResult()
+          } else if (pendingExitCode !== null) {
+            await markExitResult(pendingExitCode)
+          }
+        } catch (error) {
+          unsubscribeAgentStatus()
+          throw error
         }
         const currentState = useAppStore.getState()
         // Why: Run Now and scheduled dispatches should create workspaces/tabs in

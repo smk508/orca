@@ -7,10 +7,14 @@ import { pasteDraftWhenAgentReady } from '@/lib/agent-paste-draft'
 import { TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
 import type { TuiAgent } from '../../../shared/types'
 import type { LaunchSource } from '../../../shared/telemetry-events'
+import { FIRST_PANE_ID } from '../../../shared/pane-key'
 import {
   registerEagerPtyBuffer,
+  subscribeToPtyData,
   subscribeToPtyExit
 } from '@/components/terminal-pane/pty-dispatcher'
+import { createAgentStatusOscProcessor } from '@/components/terminal-pane/agent-status-osc'
+import type { ParsedAgentStatusPayload } from '../../../shared/agent-status-types'
 
 export type LaunchAgentBackgroundSessionArgs = {
   agent: TuiAgent
@@ -19,6 +23,7 @@ export type LaunchAgentBackgroundSessionArgs = {
   launchSource?: LaunchSource
   title?: string
   onExit?: (ptyId: string, code: number) => void
+  onAgentStatus?: (payload: ParsedAgentStatusPayload) => void
 }
 
 export type LaunchAgentBackgroundSessionResult = {
@@ -30,7 +35,7 @@ export type LaunchAgentBackgroundSessionResult = {
 export async function launchAgentBackgroundSession(
   args: LaunchAgentBackgroundSessionArgs
 ): Promise<LaunchAgentBackgroundSessionResult | null> {
-  const { agent, worktreeId, prompt, launchSource, title, onExit } = args
+  const { agent, worktreeId, prompt, launchSource, title, onExit, onAgentStatus } = args
   const store = useAppStore.getState()
   const worktree = store.allWorktrees().find((entry) => entry.id === worktreeId)
   const repo = worktree ? store.repos.find((entry) => entry.id === worktree.repoId) : null
@@ -72,6 +77,15 @@ export async function launchAgentBackgroundSession(
   if (title) {
     store.setTabCustomTitle(tab.id, title)
   }
+  const paneKey = `${tab.id}:${FIRST_PANE_ID}`
+  // Why: agent hook callbacks are keyed by pane, and background automation
+  // tabs never mount a TerminalPane to inject this env for us.
+  const paneEnv = {
+    ...startupPlan.env,
+    ORCA_PANE_KEY: paneKey,
+    ORCA_TAB_ID: tab.id,
+    ORCA_WORKTREE_ID: worktreeId
+  }
   let result: Awaited<ReturnType<typeof window.api.pty.spawn>>
   try {
     result = await window.api.pty.spawn({
@@ -79,7 +93,7 @@ export async function launchAgentBackgroundSession(
       rows: 40,
       cwd: worktree.path,
       command: startupPlan.launchCommand,
-      ...(startupPlan.env ? { env: startupPlan.env } : {}),
+      env: paneEnv,
       connectionId: repo?.connectionId ?? null,
       worktreeId,
       tabId: tab.id,
@@ -97,16 +111,26 @@ export async function launchAgentBackgroundSession(
   store.updateTabPtyId(tab.id, result.id)
   let exitHandled = false
   let unsubscribeExit = (): void => {}
+  let unsubscribeData = (): void => {}
   const handleExit = (ptyId: string, code: number): void => {
     if (exitHandled) {
       return
     }
     exitHandled = true
     unsubscribeExit()
+    unsubscribeData()
     useAppStore.getState().clearTabPtyId(tab.id, ptyId)
     onExit?.(ptyId, code)
   }
   registerEagerPtyBuffer(result.id, handleExit)
+  const processAgentStatus = createAgentStatusOscProcessor()
+  unsubscribeData = subscribeToPtyData(result.id, (data) => {
+    const processed = processAgentStatus(data)
+    for (const payload of processed.payloads) {
+      useAppStore.getState().setAgentStatus(paneKey, payload, undefined)
+      onAgentStatus?.(payload)
+    }
+  })
   // Why: opening the workspace attaches a real terminal transport and disposes
   // the eager exit handler. This sidecar keeps automation completion tracking
   // alive regardless of whether the tab is hidden or mounted.

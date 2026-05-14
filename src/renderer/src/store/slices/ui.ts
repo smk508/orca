@@ -230,6 +230,8 @@ export type UISlice = {
   closeTaskPage: () => void
   openActivityPage: () => void
   closeActivityPage: () => void
+  selectedAutomationId: string | null
+  setSelectedAutomationId: (id: string | null) => void
   openAutomationsPage: () => void
   closeAutomationsPage: () => void
   setNewWorkspaceDraft: (draft: NonNullable<UISlice['newWorkspaceDraft']>) => void
@@ -513,6 +515,8 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
     set((state) => ({
       activeView: state.previousViewBeforeActivity
     })),
+  selectedAutomationId: null,
+  setSelectedAutomationId: (id) => set({ selectedAutomationId: id }),
   openAutomationsPage: () =>
     set((state) => ({
       activeView: 'automations',
