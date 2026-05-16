@@ -1,5 +1,14 @@
 import React from 'react'
-import { Check, ChevronDown, Filter, Folder, FolderOpen, Search } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  Filter,
+  Folder,
+  FolderOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Search
+} from 'lucide-react'
 import { basename, dirname } from '@/lib/path'
 import { cn } from '@/lib/utils'
 import { getFileTypeIcon } from '@/lib/file-type-icons'
@@ -95,6 +104,8 @@ export function CombinedDiffFileTree({
   sectionIndexByKey,
   activeSectionKey,
   viewedSectionKeys,
+  collapsed,
+  onCollapsedChange,
   onNavigate
 }: {
   mode: CombinedDiffFileTreeMode
@@ -102,6 +113,8 @@ export function CombinedDiffFileTree({
   sectionIndexByKey: ReadonlyMap<string, number>
   activeSectionKey: string | null
   viewedSectionKeys: ReadonlySet<string>
+  collapsed: boolean
+  onCollapsedChange: (collapsed: boolean) => void
   onNavigate: (entry: CombinedDiffFileTreeEntry) => void
 }): React.JSX.Element {
   const [collapsedDirectoryKeys, setCollapsedDirectoryKeys] = React.useState<Set<string>>(
@@ -170,10 +183,37 @@ export function CombinedDiffFileTree({
     [collapsedDirectoryKeys, filteredEntries, mode]
   )
 
+  if (collapsed) {
+    return (
+      <aside className="flex w-10 shrink-0 flex-col items-center border-r border-border bg-background py-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Show file tree"
+          onClick={() => onCollapsedChange(false)}
+        >
+          <PanelLeftOpen className="size-4" />
+        </Button>
+      </aside>
+    )
+  }
+
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-background">
-      <div className="border-b border-border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
-        Files
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+          Files
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Collapse file tree"
+          onClick={() => onCollapsedChange(true)}
+        >
+          <PanelLeftClose className="size-3.5" />
+        </Button>
       </div>
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-2">
         <div className="relative min-w-0 flex-1">

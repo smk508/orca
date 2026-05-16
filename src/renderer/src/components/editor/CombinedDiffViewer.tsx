@@ -178,6 +178,7 @@ export default function CombinedDiffViewer({
   const [clearNotesDialogOpen, setClearNotesDialogOpen] = useState(false)
   const [isClearingNotes, setIsClearingNotes] = useState(false)
   const [notesCopied, setNotesCopied] = useState(false)
+  const [fileTreeCollapsed, setFileTreeCollapsed] = useState(false)
   // Why: `generation` is a state counter used as a React key to force remounting
   // DiffSectionItem components when the entry list changes. A separate ref
   // (`generationRef`) is kept in sync for stale-async-result detection inside
@@ -1102,6 +1103,8 @@ export default function CombinedDiffViewer({
             sectionIndexByKey={sectionIndexByKey}
             activeSectionKey={activeTreeSectionKey}
             viewedSectionKeys={viewedSectionKeys}
+            collapsed={fileTreeCollapsed}
+            onCollapsedChange={setFileTreeCollapsed}
             onNavigate={handleTreeNavigate}
           />
           <div ref={scrollContainerRef} className="min-w-0 flex-1 overflow-auto scrollbar-editor">
