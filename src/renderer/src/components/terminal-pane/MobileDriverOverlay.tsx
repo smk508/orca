@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactElement } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { DriverState } from '@/lib/pane-manager/mobile-driver-state'
+import { shouldFocusMobileDriverAction } from './mobile-driver-overlay-focus'
 
 type Props = {
   driver: DriverState
@@ -127,6 +128,7 @@ function LoudOverlay({
 }: LoudOverlayProps): ReactElement {
   const titleId = useId()
   const bodyId = useId()
+  const rootRef = useRef<HTMLDivElement>(null)
   const actionRef = useRef<HTMLButtonElement>(null)
   // Why: focus the recovery action on mount only when the user isn't already
   // typing into another input (composer, command palette, settings field).
@@ -134,21 +136,14 @@ function LoudOverlay({
   // taking the floor while the desktop user is typing elsewhere would route
   // the next Space/Enter into Take back / Restore. See PR #1899 follow-up.
   useEffect(() => {
-    const active = document.activeElement
-    const isUserInput =
-      active instanceof HTMLElement &&
-      active !== document.body &&
-      (active.tagName === 'INPUT' ||
-        active.tagName === 'TEXTAREA' ||
-        active.tagName === 'SELECT' ||
-        active.isContentEditable)
-    if (isUserInput) {
-      return
+    const paneScope = rootRef.current?.parentElement
+    if (shouldFocusMobileDriverAction(document.activeElement, document.body, paneScope)) {
+      actionRef.current?.focus()
     }
-    actionRef.current?.focus()
   }, [])
   return (
     <div
+      ref={rootRef}
       role="dialog"
       aria-live="assertive"
       aria-labelledby={titleId}
