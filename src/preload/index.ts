@@ -38,6 +38,7 @@ import type { GitHistoryOptions, GitHistoryResult } from '../shared/git-history'
 import type { ShellOpenLocalPathResult } from '../shared/shell-open-types'
 import type { SkillDiscoveryResult } from '../shared/skills'
 import type {
+  RuntimeBrowserDriverState,
   RuntimeStatus,
   RuntimeSyncWindowGraph,
   RuntimeTerminalDriverState
@@ -1230,9 +1231,10 @@ const api = {
       }
       linear: { connected: boolean }
     }> => ipcRenderer.invoke('preflight:check', args),
-    detectAgents: (): Promise<string[]> => ipcRenderer.invoke('preflight:detectAgents'),
-    refreshAgents: (): Promise<RefreshAgentsResult> =>
-      ipcRenderer.invoke('preflight:refreshAgents'),
+    detectAgents: (args?: { wslDistro?: string | null }): Promise<string[]> =>
+      ipcRenderer.invoke('preflight:detectAgents', args),
+    refreshAgents: (args?: { wslDistro?: string | null }): Promise<RefreshAgentsResult> =>
+      ipcRenderer.invoke('preflight:refreshAgents', args),
     detectRemoteAgents: (args: { connectionId: string }): Promise<string[]> =>
       ipcRenderer.invoke('preflight:detectRemoteAgents', args)
   },
@@ -2293,6 +2295,9 @@ const api = {
         ptyId?: string
         activate?: boolean
         tabId?: string
+        leafId?: string
+        splitFromLeafId?: string
+        splitDirection?: 'horizontal' | 'vertical'
       }) => void
     ): (() => void) => {
       const listener = (
@@ -2306,6 +2311,8 @@ const api = {
           activate?: boolean
           tabId?: string
           leafId?: string
+          splitFromLeafId?: string
+          splitDirection?: 'horizontal' | 'vertical'
         }
       ) => callback(data)
       ipcRenderer.on('ui:createTerminal', listener)
@@ -2464,8 +2471,9 @@ const api = {
     readClipboardText: (): Promise<string> => ipcRenderer.invoke('clipboard:readText'),
     readSelectionClipboardText: (): Promise<string> =>
       ipcRenderer.invoke('clipboard:readSelectionText'),
-    saveClipboardImageAsTempFile: (): Promise<string | null> =>
-      ipcRenderer.invoke('clipboard:saveImageAsTempFile'),
+    saveClipboardImageAsTempFile: (args?: {
+      connectionId?: string | null
+    }): Promise<string | null> => ipcRenderer.invoke('clipboard:saveImageAsTempFile', args),
     writeClipboardText: (text: string): Promise<void> =>
       ipcRenderer.invoke('clipboard:writeText', text),
     writeSelectionClipboardText: (text: string): Promise<void> =>
@@ -2627,8 +2635,16 @@ const api = {
         driver: RuntimeTerminalDriverState
       }[]
     > => ipcRenderer.invoke('runtime:getTerminalDrivers'),
+    getBrowserDrivers: (): Promise<
+      {
+        browserPageId: string
+        driver: RuntimeBrowserDriverState
+      }[]
+    > => ipcRenderer.invoke('runtime:getBrowserDrivers'),
     restoreTerminalFit: (ptyId: string): Promise<{ restored: boolean }> =>
       ipcRenderer.invoke('runtime:restoreTerminalFit', { ptyId }),
+    reclaimBrowserForDesktop: (browserPageId: string): Promise<{ reclaimed: boolean }> =>
+      ipcRenderer.invoke('runtime:reclaimBrowserForDesktop', { browserPageId }),
     onTerminalFitOverrideChanged: (
       callback: (event: {
         ptyId: string
@@ -2656,6 +2672,19 @@ const api = {
       ) => callback(data)
       ipcRenderer.on('runtime:terminalDriverChanged', listener)
       return () => ipcRenderer.removeListener('runtime:terminalDriverChanged', listener)
+    },
+    onBrowserDriverChanged: (
+      callback: (event: { browserPageId: string; driver: RuntimeBrowserDriverState }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: {
+          browserPageId: string
+          driver: RuntimeBrowserDriverState
+        }
+      ) => callback(data)
+      ipcRenderer.on('runtime:browserDriverChanged', listener)
+      return () => ipcRenderer.removeListener('runtime:browserDriverChanged', listener)
     }
   },
 

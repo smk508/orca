@@ -160,6 +160,7 @@ import type {
   MigrationUnsupportedPtyEntry
 } from '../shared/agent-status-types'
 import type {
+  RuntimeBrowserDriverState,
   RuntimeStatus,
   RuntimeSyncWindowGraph,
   RuntimeTerminalDriverState
@@ -388,9 +389,9 @@ export type RefreshAgentsResult = {
 }
 
 export type PreflightApi = {
-  check: (args?: { force?: boolean }) => Promise<PreflightStatus>
-  detectAgents: () => Promise<string[]>
-  refreshAgents: () => Promise<RefreshAgentsResult>
+  check: (args?: { force?: boolean; wslDistro?: string | null }) => Promise<PreflightStatus>
+  detectAgents: (args?: { wslDistro?: string | null }) => Promise<string[]>
+  refreshAgents: (args?: { wslDistro?: string | null }) => Promise<RefreshAgentsResult>
   detectRemoteAgents: (args: { connectionId: string }) => Promise<string[]>
 }
 
@@ -1597,6 +1598,8 @@ export type PreloadApi = {
         activate?: boolean
         tabId?: string
         leafId?: string
+        splitFromLeafId?: string
+        splitDirection?: 'horizontal' | 'vertical'
       }) => void
     ) => () => void
     onRequestTerminalCreate: (
@@ -1657,7 +1660,9 @@ export type PreloadApi = {
     onTerminalZoom: (callback: (direction: 'in' | 'out' | 'reset') => void) => () => void
     readClipboardText: () => Promise<string>
     readSelectionClipboardText: () => Promise<string>
-    saveClipboardImageAsTempFile: () => Promise<string | null>
+    saveClipboardImageAsTempFile: (args?: {
+      connectionId?: string | null
+    }) => Promise<string | null>
     writeClipboardText: (text: string) => Promise<void>
     writeSelectionClipboardText: (text: string) => Promise<void>
     writeClipboardImage: (dataUrl: string) => Promise<void>
@@ -1700,7 +1705,14 @@ export type PreloadApi = {
         driver: RuntimeTerminalDriverState
       }[]
     >
+    getBrowserDrivers: () => Promise<
+      {
+        browserPageId: string
+        driver: RuntimeBrowserDriverState
+      }[]
+    >
     restoreTerminalFit: (ptyId: string) => Promise<{ restored: boolean }>
+    reclaimBrowserForDesktop: (browserPageId: string) => Promise<{ reclaimed: boolean }>
     onTerminalFitOverrideChanged: (
       callback: (event: {
         ptyId: string
@@ -1711,6 +1723,9 @@ export type PreloadApi = {
     ) => () => void
     onTerminalDriverChanged: (
       callback: (event: { ptyId: string; driver: RuntimeTerminalDriverState }) => void
+    ) => () => void
+    onBrowserDriverChanged: (
+      callback: (event: { browserPageId: string; driver: RuntimeBrowserDriverState }) => void
     ) => () => void
   }
   runtimeEnvironments: {

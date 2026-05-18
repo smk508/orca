@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- Why: terminal pane component co-locates title state, layout serialization, and portal rendering to keep pane lifecycle consistent. */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
 import type { IDisposable } from '@xterm/xterm'
@@ -56,6 +56,10 @@ import {
 import { isPrimarySelectionEnabled, readPrimarySelectionText } from '@/lib/primary-selection'
 import { WORKSPACE_FILE_PATH_MIME } from '@/lib/workspace-file-drag'
 import { isTerminalSessionStateSaveFailure } from '../../../../shared/terminal-session-state-save-failure'
+import {
+  isSyntheticSinglePaneTitle,
+  sanitizeTerminalLayoutPaneTitles
+} from '@/lib/terminal-pane-title-sanitization'
 
 // Why: registry lives in a leaf module so the store slice can import it
 // without re-entering the `slice → TerminalPane → store → slice` cycle
@@ -77,6 +81,11 @@ type TerminalPaneProps = {
   isolatedPaneKey?: string | null
   onPtyExit: (ptyId: string) => void
   onCloseTab: () => void
+}
+
+function formatClipboardImagePasteError(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error)
+  return `Image paste failed: ${detail}`
 }
 
 export default function TerminalPane({
@@ -261,8 +270,15 @@ export default function TerminalPane({
   )
   const clearCodexRestartNotice = useAppStore((store) => store.clearCodexRestartNotice)
   const savedLayout = useAppStore((store) => store.terminalLayoutsByTabId[tabId] ?? EMPTY_LAYOUT)
+  const terminalTab = useAppStore(
+    (store) => (store.tabsByWorktree[worktreeId] ?? []).find((tab) => tab.id === tabId) ?? null
+  )
   const setTabLayout = useAppStore((store) => store.setTabLayout)
-  const initialLayoutRef = useRef(savedLayout)
+  const restoredLayout = useMemo(
+    () => (terminalTab ? sanitizeTerminalLayoutPaneTitles(savedLayout, terminalTab) : savedLayout),
+    [savedLayout, terminalTab]
+  )
+  const initialLayoutRef = useRef(restoredLayout)
   const updateTabTitle = useAppStore((store) => store.updateTabTitle)
   const setRuntimePaneTitle = useAppStore((store) => store.setRuntimePaneTitle)
   const clearRuntimePaneTitle = useAppStore((store) => store.clearRuntimePaneTitle)
@@ -414,6 +430,47 @@ export default function TerminalPane({
     }
     setTabLayout(tabId, layout)
   }, [tabId, setTabLayout])
+
+  useEffect(() => {
+    if (!terminalTab) {
+      return
+    }
+    const sanitized = sanitizeTerminalLayoutPaneTitles(savedLayout, terminalTab)
+    if (sanitized !== savedLayout) {
+      setTabLayout(tabId, sanitized)
+    }
+  }, [savedLayout, setTabLayout, tabId, terminalTab])
+
+  useEffect(() => {
+    if (!terminalTab) {
+      return
+    }
+    const manager = managerRef.current
+    if (!manager) {
+      return
+    }
+    const panes = manager.getPanes()
+    if (panes.length !== 1) {
+      return
+    }
+    const paneId = panes[0].id
+    const currentTitle = paneTitlesRef.current[paneId]
+    if (!currentTitle || !isSyntheticSinglePaneTitle(currentTitle, terminalTab)) {
+      return
+    }
+    const nextTitles = { ...paneTitlesRef.current }
+    delete nextTitles[paneId]
+    paneTitlesRef.current = nextTitles
+    setPaneTitles((prev) => {
+      if (!prev[paneId] || !isSyntheticSinglePaneTitle(prev[paneId], terminalTab)) {
+        return prev
+      }
+      const next = { ...prev }
+      delete next[paneId]
+      return next
+    })
+    persistLayoutSnapshot()
+  }, [paneCount, paneTitles, persistLayoutSnapshot, terminalTab])
 
   const syncPanePtyLayoutBinding = useCallback(
     (paneId: number, ptyId: string | null): void => {
@@ -844,12 +901,18 @@ export default function TerminalPane({
           // Why: clipboard has no text — check for an image. This is the
           // image-only clipboard case (e.g. screenshot) where Chromium's paste
           // event would never fire on a textarea. We save the image to a temp
-          // file and paste the path so the terminal process can access it.
-          return window.api.ui.saveClipboardImageAsTempFile().then((filePath) => {
-            if (filePath) {
-              pane.terminal.paste(filePath)
-            }
-          })
+          // file owned by the terminal host and paste that path.
+          const connectionId = getConnectionId(worktreeId) ?? null
+          return window.api.ui
+            .saveClipboardImageAsTempFile({ connectionId })
+            .then((filePath) => {
+              if (filePath) {
+                pane.terminal.paste(filePath)
+              }
+            })
+            .catch((error: unknown) => {
+              setTerminalError(formatClipboardImagePasteError(error))
+            })
         })
         .catch(() => {
           /* ignore clipboard failures */
@@ -913,7 +976,7 @@ export default function TerminalPane({
       container.removeEventListener('keydown', onKeyPaste, { capture: true })
       container.removeEventListener('paste', onPaste, { capture: true })
     }
-  }, [isActive])
+  }, [isActive, worktreeId])
 
   // Why: a click inside the terminal container is a deliberate interaction
   // with the pane — dismiss the bell indicator for this tab and worktree
@@ -1114,10 +1177,12 @@ export default function TerminalPane({
     managerRef,
     paneTransportsRef,
     paneCwdRef,
+    worktreeId,
     fallbackCwd: cwd ?? '',
     toggleExpandPane,
     onRequestClosePane: handleRequestClosePane,
     onSetTitle: handleStartRename,
+    onPasteError: setTerminalError,
     rightClickToPaste
   })
 
