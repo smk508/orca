@@ -96,7 +96,7 @@ import type {
   AgentStatusIpcPayload,
   MigrationUnsupportedPtyEntry
 } from '../shared/agent-status-types'
-import type { AgentInterruptInferenceRequest } from '../shared/agent-interrupt-profiles'
+import type { AgentInterruptInferenceRequest } from '../shared/agent-interrupt-intent'
 import type { SpeechModelManifest, SpeechModelState } from '../shared/speech-types'
 import type { TelemetryConsentState } from '../shared/telemetry-consent-types'
 import type { RefreshAgentsResult } from './api-types'

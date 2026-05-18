@@ -224,9 +224,9 @@ export function connectPanePty(
       interruptInference.observeInputIntent('ctrl-c')
     }
   }
-  // Why: plain Escape must be observed from the focused xterm key event, not
-  // raw `\x1b` bytes, because Alt/meta chords and terminal sequences share the
-  // ESC prefix.
+  // Why: infer only from focused xterm key events. Raw PTY bytes cannot
+  // distinguish plain Escape from Alt/meta sequences, and programmatic writes
+  // should not clear agent status.
   const terminalKeyTarget = pane.terminal.element ?? pane.container
   const terminalKeyTargetSupportsEvents =
     typeof terminalKeyTarget?.addEventListener === 'function' &&

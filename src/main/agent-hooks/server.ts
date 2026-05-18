@@ -43,9 +43,9 @@ import {
   normalizeAgentStatusPayload
 } from '../../shared/agent-status-types'
 import {
-  supportsAgentInterruptIntent,
+  isAgentInterruptInputIntent,
   type AgentInterruptInferenceRequest
-} from '../../shared/agent-interrupt-profiles'
+} from '../../shared/agent-interrupt-intent'
 import { parseLegacyNumericPaneKey, parsePaneKey } from '../../shared/stable-pane-id'
 import type { LegacyPaneKeyAliasEntry } from '../../shared/types'
 
@@ -289,7 +289,7 @@ export class AgentHookServer {
     if (!isValidPaneKey(request.paneKey)) {
       return false
     }
-    if (!supportsAgentInterruptIntent(request.baselineAgentType, request.intent)) {
+    if (!isAgentInterruptInputIntent(request.intent)) {
       return false
     }
     const existing = this.state.lastStatusByPaneKey.get(request.paneKey) as
@@ -300,7 +300,7 @@ export class AgentHookServer {
     }
     const payload = existing.payload
     const agentType: AgentType | undefined = payload.agentType
-    // Why: Escape inference is a fallback for a missing final hook. A strict
+    // Why: input-intent inference is a fallback for a missing final hook. A strict
     // baseline match keeps a delayed timer from overwriting any newer hook,
     // including same-millisecond prompt or agent identity changes.
     if (
@@ -309,8 +309,7 @@ export class AgentHookServer {
       payload.prompt !== request.baselinePrompt ||
       existing.receivedAt !== request.baselineUpdatedAt ||
       existing.stateStartedAt !== request.baselineStateStartedAt ||
-      Date.now() - existing.receivedAt > AGENT_STATUS_STALE_AFTER_MS ||
-      !supportsAgentInterruptIntent(agentType, request.intent)
+      Date.now() - existing.receivedAt > AGENT_STATUS_STALE_AFTER_MS
     ) {
       return false
     }

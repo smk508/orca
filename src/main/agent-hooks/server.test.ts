@@ -115,10 +115,6 @@ describe('AgentHookServer listener replay', () => {
           payload: expect.objectContaining({ state: 'done', interrupted: true })
         })
       )
-      expect(trackMock).toHaveBeenCalledWith('agent_status_inferred_interrupt', {
-        agent_type: 'codex',
-        intent: 'plain-escape'
-      })
     } finally {
       vi.useRealTimers()
     }
@@ -166,16 +162,12 @@ describe('AgentHookServer listener replay', () => {
           agentType: 'codex'
         })
       ])
-      expect(trackMock).not.toHaveBeenCalledWith(
-        'agent_status_inferred_interrupt',
-        expect.anything()
-      )
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('rejects inferred interrupts for stale, non-working, and unprofiled rows', () => {
+  it('rejects inferred interrupts for stale and non-working rows', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)
     try {
@@ -203,27 +195,6 @@ describe('AgentHookServer listener replay', () => {
 
       server.ingestRemote(
         {
-          paneKey: GOOD_PANE,
-          tabId: 'tab-good',
-          worktreeId: 'wt-1',
-          payload: { state: 'working', prompt: 'gemini task', agentType: 'gemini' }
-        },
-        'conn-1'
-      )
-      const unsupported = server.getStatusSnapshot().find((entry) => entry.paneKey === GOOD_PANE)!
-      expect(
-        server.inferInterrupt({
-          paneKey: GOOD_PANE,
-          baselineUpdatedAt: unsupported.receivedAt,
-          baselineStateStartedAt: unsupported.stateStartedAt,
-          baselinePrompt: 'gemini task',
-          baselineAgentType: 'gemini',
-          intent: 'plain-escape'
-        })
-      ).toBe(false)
-
-      server.ingestRemote(
-        {
           paneKey: FRESH_PANE,
           tabId: 'tab-fresh',
           worktreeId: 'wt-1',
@@ -243,6 +214,48 @@ describe('AgentHookServer listener replay', () => {
           intent: 'plain-escape'
         })
       ).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('applies inferred interrupts for arbitrary agent types and Ctrl+C intent', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    try {
+      const server = new AgentHookServer()
+      server.ingestRemote(
+        {
+          paneKey: GOOD_PANE,
+          tabId: 'tab-good',
+          worktreeId: 'wt-1',
+          payload: { state: 'working', prompt: 'custom task', agentType: 'custom-agent' }
+        },
+        'conn-1'
+      )
+      const baseline = server.getStatusSnapshot().find((entry) => entry.paneKey === GOOD_PANE)!
+
+      vi.setSystemTime(1_250)
+      expect(
+        server.inferInterrupt({
+          paneKey: GOOD_PANE,
+          baselineUpdatedAt: baseline.receivedAt,
+          baselineStateStartedAt: baseline.stateStartedAt,
+          baselinePrompt: 'custom task',
+          baselineAgentType: 'custom-agent',
+          intent: 'ctrl-c'
+        })
+      ).toBe(true)
+
+      expect(server.getStatusSnapshot()).toEqual([
+        expect.objectContaining({
+          paneKey: GOOD_PANE,
+          state: 'done',
+          prompt: 'custom task',
+          agentType: 'custom-agent',
+          interrupted: true
+        })
+      ])
     } finally {
       vi.useRealTimers()
     }

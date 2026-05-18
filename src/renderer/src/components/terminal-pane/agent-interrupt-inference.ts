@@ -3,11 +3,10 @@ import {
   type AgentStatusEntry
 } from '../../../../shared/agent-status-types'
 import {
-  getAgentInterruptProfile,
-  supportsAgentInterruptIntent,
+  AGENT_INTERRUPT_SETTLE_MS,
   type AgentInterruptInferenceRequest,
   type AgentInterruptInputIntent
-} from '../../../../shared/agent-interrupt-profiles'
+} from '../../../../shared/agent-interrupt-intent'
 import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
 
 export type AgentInterruptInference = {
@@ -28,11 +27,9 @@ type CapturedInterruptBaseline = {
   updatedAt: number
   stateStartedAt: number
   prompt: string
-  agentType: NonNullable<AgentStatusEntry['agentType']>
+  agentType: AgentStatusEntry['agentType']
   intent: AgentInterruptInputIntent
 }
-
-const DOUBLE_CTRL_C_WINDOW_MS = 750
 
 export function isPlainEscapeKeyEvent(
   event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'repeat'>
@@ -70,7 +67,6 @@ export function createAgentInterruptInference({
 }: AgentInterruptInferenceDeps): AgentInterruptInference {
   let pendingTimer: ReturnType<typeof setTimeout> | null = null
   let pendingBaseline: CapturedInterruptBaseline | null = null
-  let lastCtrlCAt: number | null = null
 
   const clearPending = (): void => {
     if (pendingTimer !== null) {
@@ -87,8 +83,6 @@ export function createAgentInterruptInference({
     const agentType = entry.agentType
     if (
       entry.state !== 'working' ||
-      !agentType ||
-      !supportsAgentInterruptIntent(agentType, intent) ||
       !isExplicitAgentStatusFresh(entry, now(), AGENT_STATUS_STALE_AFTER_MS)
     ) {
       return null
@@ -135,18 +129,6 @@ export function createAgentInterruptInference({
 
   return {
     observeInputIntent(intent) {
-      if (intent === 'ctrl-c') {
-        const observedAt = now()
-        const completedDouble =
-          lastCtrlCAt !== null && observedAt - lastCtrlCAt <= DOUBLE_CTRL_C_WINDOW_MS
-        lastCtrlCAt = observedAt
-        if (!completedDouble) {
-          return
-        }
-        intent = 'double-ctrl-c'
-      } else {
-        lastCtrlCAt = null
-      }
       const entry = getStatusEntry()
       if (!entry) {
         clearPending()
@@ -157,18 +139,12 @@ export function createAgentInterruptInference({
         clearPending()
         return
       }
-      const profile = getAgentInterruptProfile(baseline.agentType)
-      if (!profile) {
-        clearPending()
-        return
-      }
       clearPending()
       pendingBaseline = baseline
-      pendingTimer = setTimer(flushPending, profile.settleMs)
+      pendingTimer = setTimer(flushPending, AGENT_INTERRUPT_SETTLE_MS)
     },
     dispose() {
       clearPending()
-      lastCtrlCAt = null
     }
   }
 }

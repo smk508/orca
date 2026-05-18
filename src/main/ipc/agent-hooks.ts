@@ -4,7 +4,7 @@ import type {
   AgentStatusIpcPayload,
   MigrationUnsupportedPtyEntry
 } from '../../shared/agent-status-types'
-import type { AgentInterruptInferenceRequest } from '../../shared/agent-interrupt-profiles'
+import type { AgentInterruptInferenceRequest } from '../../shared/agent-interrupt-intent'
 import { agentHookServer, isValidPaneKey } from '../agent-hooks/server'
 import {
   clearMigrationUnsupportedPtysForPaneKey,
