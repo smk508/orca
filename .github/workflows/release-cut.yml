@@ -567,7 +567,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          # Why: macOS signing/notarization is the release critical path; keep
+          # the same hosted image family but use GitHub's larger M2 runner.
+          - os: macos-15-xlarge
             platform: mac
             release_command: ORCA_MAC_RELEASE=1 pnpm exec electron-builder --config config/electron-builder.config.cjs --mac --publish always
             eb_cache_path: |
