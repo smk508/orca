@@ -1,6 +1,10 @@
+/* eslint-disable max-lines -- Why: these tests mock the floating panel's
+ * React/store environment directly so close and bootstrap behavior can be
+ * asserted without mounting the full Electron renderer. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
-import type { TerminalTab } from '../../../../shared/types'
+import type { BrowserTab, Tab, TabGroup, TerminalTab } from '../../../../shared/types'
+import type { OpenFile } from '@/store/slices/editor'
 
 type EffectCallback = () => void | (() => void)
 
@@ -11,6 +15,11 @@ type ReactElementLike = {
 
 type FloatingPanelStoreState = {
   tabsByWorktree: Record<string, TerminalTab[]>
+  browserTabsByWorktree: Record<string, BrowserTab[]>
+  browserPagesByWorkspace: Record<string, unknown[]>
+  groupsByWorktree: Record<string, TabGroup[]>
+  unifiedTabsByWorktree: Record<string, Tab[]>
+  openFiles: OpenFile[]
   activeTabIdByWorktree: Record<string, string | null>
   expandedPaneByTabId: Record<string, boolean>
   createTab: (
@@ -19,12 +28,23 @@ type FloatingPanelStoreState = {
     shellOverride?: string,
     options?: { activate?: boolean }
   ) => TerminalTab
+  createBrowserTab: (
+    worktreeId: string,
+    url: string,
+    options?: { title?: string; targetGroupId?: string }
+  ) => BrowserTab
   closeTab: (tabId: string) => void
-  setActiveTabForWorktree: (worktreeId: string, tabId: string) => void
-  setTabBarOrder: (worktreeId: string, order: string[]) => void
+  closeBrowserTab: (tabId: string) => void
+  closeFile: (fileId: string) => void
+  markFileDirty: (fileId: string, dirty: boolean) => void
+  activateTab: (tabId: string) => void
+  setActiveTab: (tabId: string) => void
   setTabCustomTitle: (tabId: string, title: string | null) => void
   setTabColor: (tabId: string, color: string | null) => void
   setTabPaneExpanded: (tabId: string, expanded: boolean) => void
+  pinFile: (fileId: string, tabId?: string) => void
+  openFile: (file: unknown, options?: unknown) => void
+  browserDefaultUrl: string
   tabBarOrderByWorktree: Record<string, string[]>
   settings: { floatingTerminalCwd?: string }
 }
@@ -40,13 +60,19 @@ const storeBox = vi.hoisted(() => ({
 }))
 
 const mocks = vi.hoisted(() => ({
+  activateTab: vi.fn(),
+  closeBrowserTab: vi.fn(),
+  closeFile: vi.fn(),
   closeTab: vi.fn(),
+  createBrowserTab: vi.fn(),
   createTab: vi.fn(),
   focusTerminalTabSurface: vi.fn(),
   getFloatingTerminalCwd: vi.fn(),
   getInstallStatus: vi.fn(),
-  setActiveTabForWorktree: vi.fn(),
-  setTabBarOrder: vi.fn(),
+  markFileDirty: vi.fn(),
+  openFile: vi.fn(),
+  pinFile: vi.fn(),
+  setActiveTab: vi.fn(),
   setTabColor: vi.fn(),
   setTabCustomTitle: vi.fn(),
   setTabPaneExpanded: vi.fn()
@@ -110,10 +136,70 @@ vi.mock('@/components/terminal-pane/TerminalPane', () => ({
   }
 }))
 
+vi.mock('@/components/browser-pane/BrowserPane', () => ({
+  default: function BrowserPane() {
+    return null
+  }
+}))
+
+vi.mock('@/components/editor/EditorPanel', () => ({
+  default: function EditorPanel() {
+    return null
+  }
+}))
+
 vi.mock('@/components/ui/button', () => ({
   Button: function Button() {
     return null
   }
+}))
+
+vi.mock('@/components/ui/dialog', () => ({
+  Dialog: function Dialog(props: { children?: unknown }) {
+    return props.children
+  },
+  DialogContent: function DialogContent(props: { children?: unknown }) {
+    return props.children
+  },
+  DialogDescription: function DialogDescription(props: { children?: unknown }) {
+    return props.children
+  },
+  DialogFooter: function DialogFooter(props: { children?: unknown }) {
+    return props.children
+  },
+  DialogHeader: function DialogHeader(props: { children?: unknown }) {
+    return props.children
+  },
+  DialogTitle: function DialogTitle(props: { children?: unknown }) {
+    return props.children
+  }
+}))
+
+vi.mock('@/components/terminal/useTerminalSaveDialog', () => ({
+  useTerminalSaveDialog: () => ({
+    handleSaveDialogCancel: vi.fn(),
+    handleSaveDialogDiscard: vi.fn(),
+    handleSaveDialogSave: vi.fn(),
+    requestCloseFile: mocks.closeFile,
+    saveDialogFile: null,
+    saveDialogFileId: null
+  })
+}))
+
+vi.mock('@/lib/connection-context', () => ({
+  getConnectionId: () => undefined
+}))
+
+vi.mock('@/lib/create-untitled-markdown', () => ({
+  createUntitledMarkdownFile: vi.fn()
+}))
+
+vi.mock('@/lib/ipc-error', () => ({
+  extractIpcErrorMessage: (_err: unknown, fallback: string) => fallback
+}))
+
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn() }
 }))
 
 vi.mock('@/lib/focus-terminal-tab-surface', () => ({
@@ -174,7 +260,32 @@ function makeTab(overrides: Partial<TerminalTab> = {}): TerminalTab {
 
 function setFloatingTabs(tabs: TerminalTab[]): void {
   const state = storeBox.state as FloatingPanelStoreState
+  const groupId = 'floating-group'
+  const unifiedTabs = tabs.map<Tab>((tab, index) => ({
+    id: tab.id,
+    entityId: tab.id,
+    groupId,
+    worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
+    contentType: 'terminal',
+    label: tab.title,
+    customLabel: tab.customTitle,
+    color: tab.color,
+    sortOrder: index,
+    createdAt: tab.createdAt
+  }))
   state.tabsByWorktree = { [FLOATING_TERMINAL_WORKTREE_ID]: tabs }
+  state.unifiedTabsByWorktree = { [FLOATING_TERMINAL_WORKTREE_ID]: unifiedTabs }
+  state.groupsByWorktree = {
+    [FLOATING_TERMINAL_WORKTREE_ID]: [
+      {
+        id: groupId,
+        worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
+        activeTabId: unifiedTabs[0]?.id ?? null,
+        tabOrder: unifiedTabs.map((tab) => tab.id),
+        recentTabIds: unifiedTabs.map((tab) => tab.id)
+      }
+    ]
+  }
   state.activeTabIdByWorktree = { [FLOATING_TERMINAL_WORKTREE_ID]: tabs[0]?.id ?? null }
   state.tabBarOrderByWorktree = { [FLOATING_TERMINAL_WORKTREE_ID]: tabs.map((tab) => tab.id) }
 }
@@ -182,15 +293,27 @@ function setFloatingTabs(tabs: TerminalTab[]): void {
 function resetStore(tabs: TerminalTab[] = []): void {
   storeBox.state = {
     tabsByWorktree: { [FLOATING_TERMINAL_WORKTREE_ID]: tabs },
+    browserTabsByWorktree: {},
+    browserPagesByWorkspace: {},
+    groupsByWorktree: {},
+    unifiedTabsByWorktree: {},
+    openFiles: [],
     activeTabIdByWorktree: { [FLOATING_TERMINAL_WORKTREE_ID]: tabs[0]?.id ?? null },
     expandedPaneByTabId: {},
+    activateTab: mocks.activateTab,
+    closeBrowserTab: mocks.closeBrowserTab,
+    closeFile: mocks.closeFile,
     createTab: mocks.createTab,
+    createBrowserTab: mocks.createBrowserTab,
     closeTab: mocks.closeTab,
-    setActiveTabForWorktree: mocks.setActiveTabForWorktree,
-    setTabBarOrder: mocks.setTabBarOrder,
+    markFileDirty: mocks.markFileDirty,
+    openFile: mocks.openFile,
+    pinFile: mocks.pinFile,
+    setActiveTab: mocks.setActiveTab,
     setTabCustomTitle: mocks.setTabCustomTitle,
     setTabColor: mocks.setTabColor,
     setTabPaneExpanded: mocks.setTabPaneExpanded,
+    browserDefaultUrl: 'about:blank',
     tabBarOrderByWorktree: { [FLOATING_TERMINAL_WORKTREE_ID]: tabs.map((tab) => tab.id) },
     settings: { floatingTerminalCwd: '~' }
   } satisfies FloatingPanelStoreState
@@ -278,10 +401,8 @@ describe('FloatingTerminalPanel close behavior', () => {
     await renderPanel(true)
     runEffects()
     expect(mocks.createTab).toHaveBeenCalledTimes(1)
-    expect(mocks.setActiveTabForWorktree).toHaveBeenCalledWith(
-      FLOATING_TERMINAL_WORKTREE_ID,
-      'created-tab'
-    )
+    expect(mocks.createTab).toHaveBeenCalledWith(FLOATING_TERMINAL_WORKTREE_ID)
+    expect(mocks.focusTerminalTabSurface).toHaveBeenCalledWith('created-tab')
 
     await renderPanel(true)
     runEffects()
@@ -373,6 +494,9 @@ describe('FloatingTerminalPanel close behavior', () => {
     ;(storeBox.state as FloatingPanelStoreState).tabBarOrderByWorktree = {
       [FLOATING_TERMINAL_WORKTREE_ID]: ['tab-c', 'tab-a', 'tab-b']
     }
+    ;(storeBox.state as FloatingPanelStoreState).groupsByWorktree[
+      FLOATING_TERMINAL_WORKTREE_ID
+    ][0].tabOrder = ['tab-c', 'tab-a', 'tab-b']
 
     const element = await renderPanel(true)
     const tabBar = findByTypeName(element, 'TabBar')

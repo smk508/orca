@@ -9,6 +9,7 @@ import {
 } from '../../runtime/runtime-compatibility-test-fixture'
 import { GRAB_BUDGET, type BrowserPageAnnotation } from '../../../../shared/browser-grab-types'
 import { clearRuntimeCompatibilityCacheForTests } from '../../runtime/runtime-rpc-client'
+import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
 
 const runtimeEnvironmentCall = vi.fn()
 const runtimeEnvironmentTransportCall = vi.fn()
@@ -177,6 +178,20 @@ describe('createBrowserSlice annotations', () => {
     const stored = store.getState().browserAnnotationsByPageId[pageId]?.[0]
     expect(stored?.comment).toHaveLength(GRAB_BUDGET.annotationCommentMaxLength)
     expect(stored?.payload.screenshot).toBeNull()
+  })
+})
+
+describe('createBrowserSlice floating tabs', () => {
+  it('focuses the address bar for new floating browser tabs without changing the main surface', () => {
+    const store = createTestStore()
+    store.setState({ activeWorktreeId: 'wt-1', activeTabType: 'terminal' } as Partial<AppState>)
+
+    const tab = store.getState().createBrowserTab(FLOATING_TERMINAL_WORKTREE_ID, 'about:blank', {
+      focusAddressBar: true
+    })
+
+    expect(store.getState().pendingAddressBarFocusByTabId[tab.id]).toBe(true)
+    expect(store.getState().activeTabType).toBe('terminal')
   })
 })
 
