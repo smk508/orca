@@ -71,6 +71,16 @@ function buildImportedHookSettings(
   }
 }
 
+function formatCandidateSource(candidate: SetupScriptImportCandidate): string {
+  const [primaryFile, ...remainingFiles] = candidate.files
+  if (!primaryFile) {
+    return candidate.label
+  }
+  return remainingFiles.length > 0
+    ? `${candidate.label} (${primaryFile} +${remainingFiles.length})`
+    : `${candidate.label} (${primaryFile})`
+}
+
 function SetupScriptPromptCard(): React.JSX.Element | null {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen)
   const repos = useAppStore((s) => s.repos)
@@ -169,7 +179,11 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
         promptState.candidate,
         promptState.hasSharedHooks
       )
-      await updateRepo(activeRepo.id, { hookSettings: nextSettings })
+      const didUpdate = await updateRepo(activeRepo.id, { hookSettings: nextSettings })
+      if (!didUpdate) {
+        toast.error('Failed to import setup script')
+        return
+      }
       setPromptState((current) =>
         current?.repoId === activeRepo.id ? { ...current, hasEffectiveSetup: true } : current
       )
@@ -198,9 +212,7 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
 
   const candidate = promptState.candidate
   const title = 'Setup scripts'
-  const description = candidate
-    ? `Detected setup config for ${activeRepo.displayName}.`
-    : `Automate workspace setup for ${activeRepo.displayName}.`
+  const candidateSource = candidate ? formatCandidateSource(candidate) : null
   const actionLabel = candidate ? 'Import setup' : 'Configure'
   const ActionIcon = candidate ? Download : Settings
 
@@ -229,7 +241,15 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
         </Tooltip>
 
         <p className="mt-2 pr-6 text-sm font-semibold leading-snug">{title}</p>
-        <p className="mt-1 text-xs leading-snug text-muted-foreground">{description}</p>
+        <p className="mt-1 text-xs leading-snug text-muted-foreground">
+          {candidateSource ? (
+            <>
+              Detected setup config from <span className="break-all">{candidateSource}</span>.
+            </>
+          ) : (
+            <>Automate workspace setup for {activeRepo.displayName}.</>
+          )}
+        </p>
 
         <Button
           type="button"
