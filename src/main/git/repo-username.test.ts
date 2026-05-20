@@ -56,7 +56,7 @@ describe('getGitUsername', () => {
 
     expect(execSyncMock).toHaveBeenCalledTimes(2)
     for (const [, options] of execSyncMock.mock.calls) {
-      expect(options).toMatchObject({ timeout: 1500 })
+      expect(options).toMatchObject({ timeout: 2500 })
     }
   })
 
@@ -69,7 +69,7 @@ describe('getGitUsername', () => {
     expect(getGitUsername('/repo')).toBe('')
 
     expect(execSyncMock).toHaveBeenCalledTimes(1)
-    expect(execSyncMock.mock.calls[0][1]).toMatchObject({ timeout: 1500 })
+    expect(execSyncMock.mock.calls[0][1]).toMatchObject({ timeout: 2500 })
   })
 
   it('uses auth status fallback after fast GitHub CLI API failure', () => {

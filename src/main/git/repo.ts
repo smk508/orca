@@ -6,7 +6,7 @@ import hostedGitInfo from 'hosted-git-info'
 import { gitExecFileSync, gitExecFileAsync } from './runner'
 import type { BaseRefSearchResult } from '../../shared/types'
 
-const GH_LOGIN_TIMEOUT_MS = 1500
+const GH_LOGIN_TIMEOUT_MS = 2500
 
 /**
  * Ordered probe list used to resolve a repo's default base ref when no
