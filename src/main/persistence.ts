@@ -2582,12 +2582,16 @@ export class Store {
     return !leases?.some((lease) => lease.state === 'terminated' || lease.state === 'expired')
   }
 
-  private getRelayPtyIdForSshLeaseBinding(targetId: string, ptyId: string): string {
+  private getRelayPtyIdForSshLeaseComparison(targetId: string, ptyId: string): string {
     try {
       return toRelaySshPtyId(targetId, ptyId)
     } catch {
       return ptyId
     }
+  }
+
+  private getRelayPtyIdForSshLeaseStorage(targetId: string, ptyId: string): string {
+    return toRelaySshPtyId(targetId, ptyId)
   }
 
   private sshRemotePtyLeaseMatchesBinding(
@@ -2600,7 +2604,7 @@ export class Store {
       leafId?: string
     }
   ): boolean {
-    const bindingPtyId = this.getRelayPtyIdForSshLeaseBinding(lease.targetId, binding.ptyId)
+    const bindingPtyId = this.getRelayPtyIdForSshLeaseComparison(lease.targetId, binding.ptyId)
     if (lease.ptyId !== bindingPtyId) {
       return false
     }
@@ -2645,7 +2649,7 @@ export class Store {
       leafId?: string
     }
   ): boolean {
-    const bindingPtyId = this.getRelayPtyIdForSshLeaseBinding(binding.targetId, binding.ptyId)
+    const bindingPtyId = this.getRelayPtyIdForSshLeaseComparison(binding.targetId, binding.ptyId)
     if (lease.targetId !== binding.targetId || lease.ptyId !== bindingPtyId) {
       return false
     }
@@ -2825,6 +2829,12 @@ export class Store {
     if (normalizedLease.leafId !== undefined && !isTerminalLeafId(normalizedLease.leafId)) {
       delete normalizedLease.leafId
     }
+    // Why: app-facing SSH PTY ids are globally scoped; durable relay leases
+    // stay target-local so reconnect can call relay pty.attach with raw ids.
+    normalizedLease.ptyId = this.getRelayPtyIdForSshLeaseStorage(
+      normalizedLease.targetId,
+      normalizedLease.ptyId
+    )
     const now = Date.now()
     const existingIndex = this.state.sshRemotePtyLeases.findIndex(
       (entry) =>
@@ -2871,8 +2881,9 @@ export class Store {
   }
 
   markSshRemotePtyLease(targetId: string, ptyId: string, state: SshRemotePtyLease['state']): void {
+    const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
     const lease = this.state.sshRemotePtyLeases?.find(
-      (entry) => entry.targetId === targetId && entry.ptyId === ptyId
+      (entry) => entry.targetId === targetId && entry.ptyId === relayPtyId
     )
     if (!lease || lease.state === state) {
       return
@@ -2889,13 +2900,14 @@ export class Store {
   }
 
   removeSshRemotePtyLease(targetId: string, ptyId: string): void {
+    const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
     const leases = (this.state.sshRemotePtyLeases ?? []).filter(
-      (lease) => lease.targetId === targetId && lease.ptyId === ptyId
+      (lease) => lease.targetId === targetId && lease.ptyId === relayPtyId
     )
     const before = this.state.sshRemotePtyLeases?.length ?? 0
     this.clearSshRemotePtyBindingsForLeases(targetId, leases)
     this.state.sshRemotePtyLeases = (this.state.sshRemotePtyLeases ?? []).filter(
-      (lease) => lease.targetId !== targetId || lease.ptyId !== ptyId
+      (lease) => lease.targetId !== targetId || lease.ptyId !== relayPtyId
     )
     if (this.state.sshRemotePtyLeases.length !== before) {
       this.flush()

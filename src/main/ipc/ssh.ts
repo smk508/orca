@@ -650,7 +650,22 @@ export function registerSshHandlers(
       .getSshRemotePtyLeases(args.targetId)
       .filter((lease) => lease.state !== 'terminated' && lease.state !== 'expired')
       .map((lease) => lease.ptyId)
-    const ptyIds = Array.from(new Set([...getPtyIdsForConnection(args.targetId), ...leasedIds]))
+    const ptyIdsByRelayId = new Map<string, string>()
+    for (const ptyId of getPtyIdsForConnection(args.targetId)) {
+      const relayPtyId = toRelaySshPtyId(args.targetId, ptyId)
+      ptyIdsByRelayId.set(relayPtyId, toAppSshPtyId(args.targetId, ptyId))
+    }
+    for (const ptyId of leasedIds) {
+      const relayPtyId = toRelaySshPtyId(args.targetId, ptyId)
+      ptyIdsByRelayId.set(
+        relayPtyId,
+        ptyIdsByRelayId.get(relayPtyId) ?? toAppSshPtyId(args.targetId, ptyId)
+      )
+    }
+    const ptyIds = Array.from(ptyIdsByRelayId, ([relayPtyId, appPtyId]) => ({
+      relayPtyId,
+      appPtyId
+    }))
 
     if (ptyIds.length > 0 && !provider) {
       throw new Error(
@@ -659,17 +674,17 @@ export function registerSshHandlers(
     }
     const shutdownResults = provider
       ? await Promise.allSettled(
-          ptyIds.map((ptyId) => provider.shutdown(ptyId, { immediate: true, keepHistory: false }))
+          ptyIds.map(({ appPtyId }) =>
+            provider.shutdown(appPtyId, { immediate: true, keepHistory: false })
+          )
         )
       : []
     const shutdownFailures: string[] = []
     for (const [index, result] of shutdownResults.entries()) {
-      const ptyId = ptyIds[index]
-      const appPtyId = toAppSshPtyId(args.targetId, ptyId)
-      const relayPtyId = toRelaySshPtyId(args.targetId, ptyId)
+      const { appPtyId, relayPtyId } = ptyIds[index]
       if (result.status !== 'fulfilled' && !isSshPtyNotFoundError(result.reason)) {
         shutdownFailures.push(
-          `${ptyId}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+          `${relayPtyId}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
         )
         continue
       }

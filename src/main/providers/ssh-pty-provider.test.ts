@@ -144,12 +144,12 @@ describe('SshPtyProvider', () => {
   })
 
   it('resize sends pty.resize notification', () => {
-    provider.resize('pty-1', 120, 40)
+    provider.resize(scopedPty1, 120, 40)
     expect(mux.notify).toHaveBeenCalledWith('pty.resize', { id: 'pty-1', cols: 120, rows: 40 })
   })
 
   it('shutdown sends pty.shutdown request', async () => {
-    await provider.shutdown('pty-1', { immediate: true })
+    await provider.shutdown(scopedPty1, { immediate: true })
     expect(mux.request).toHaveBeenCalledWith('pty.shutdown', {
       id: 'pty-1',
       immediate: true,
@@ -158,7 +158,7 @@ describe('SshPtyProvider', () => {
   })
 
   it('shutdown forwards keepHistory: true over the relay', async () => {
-    await provider.shutdown('pty-1', { immediate: true, keepHistory: true })
+    await provider.shutdown(scopedPty1, { immediate: true, keepHistory: true })
     expect(mux.request).toHaveBeenCalledWith('pty.shutdown', {
       id: 'pty-1',
       immediate: true,
@@ -167,36 +167,54 @@ describe('SshPtyProvider', () => {
   })
 
   it('sendSignal sends pty.sendSignal request', async () => {
-    await provider.sendSignal('pty-1', 'SIGINT')
+    await provider.sendSignal(scopedPty1, 'SIGINT')
     expect(mux.request).toHaveBeenCalledWith('pty.sendSignal', { id: 'pty-1', signal: 'SIGINT' })
   })
 
   it('getCwd sends pty.getCwd request', async () => {
     mux.request.mockResolvedValue('/home/user/project')
-    const cwd = await provider.getCwd('pty-1')
+    const cwd = await provider.getCwd(scopedPty1)
     expect(cwd).toBe('/home/user/project')
+    expect(mux.request).toHaveBeenCalledWith('pty.getCwd', { id: 'pty-1' })
   })
 
   it('clearBuffer sends pty.clearBuffer request', async () => {
-    await provider.clearBuffer('pty-1')
+    await provider.clearBuffer(scopedPty1)
     expect(mux.request).toHaveBeenCalledWith('pty.clearBuffer', { id: 'pty-1' })
   })
 
   it('acknowledgeDataEvent sends pty.ackData notification', () => {
-    provider.acknowledgeDataEvent('pty-1', 1024)
+    provider.acknowledgeDataEvent(scopedPty1, 1024)
     expect(mux.notify).toHaveBeenCalledWith('pty.ackData', { id: 'pty-1', charCount: 1024 })
   })
 
   it('hasChildProcesses sends request and returns result', async () => {
     mux.request.mockResolvedValue(true)
-    const result = await provider.hasChildProcesses('pty-1')
+    const result = await provider.hasChildProcesses(scopedPty1)
     expect(result).toBe(true)
+    expect(mux.request).toHaveBeenCalledWith('pty.hasChildProcesses', { id: 'pty-1' })
   })
 
   it('getForegroundProcess returns process name', async () => {
     mux.request.mockResolvedValue('node')
-    const result = await provider.getForegroundProcess('pty-1')
+    const result = await provider.getForegroundProcess(scopedPty1)
     expect(result).toBe('node')
+    expect(mux.request).toHaveBeenCalledWith('pty.getForegroundProcess', { id: 'pty-1' })
+  })
+
+  it('serializes scoped app ids using raw relay ids', async () => {
+    mux.request.mockResolvedValue('serialized')
+
+    const result = await provider.serialize([scopedPty1])
+
+    expect(result).toBe('serialized')
+    expect(mux.request).toHaveBeenCalledWith('pty.serialize', { ids: ['pty-1'] })
+  })
+
+  it('rejects scoped ids owned by another SSH connection', async () => {
+    await expect(provider.shutdown('ssh:conn-2@@pty-1', { immediate: true })).rejects.toThrow(
+      'belongs to SSH connection "conn-2"'
+    )
   })
 
   it('listProcesses returns process list', async () => {
