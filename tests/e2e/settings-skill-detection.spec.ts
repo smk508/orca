@@ -6,10 +6,7 @@ import type {
   SkillDiscoveryResult,
   SkillSourceKind
 } from '../../src/shared/skills'
-import {
-  ORCHESTRATION_ENABLED_STORAGE_KEY,
-  ORCHESTRATION_SKILL_INSTALLED_STORAGE_KEY
-} from '../../src/renderer/src/lib/orchestration-setup-state'
+import { ORCHESTRATION_ENABLED_STORAGE_KEY } from '../../src/renderer/src/lib/orchestration-setup-state'
 
 type MockSkillDiscoveryGlobal = typeof globalThis & {
   __orcaSettingsSkillDiscoveryResult?: SkillDiscoveryResult
@@ -69,16 +66,14 @@ async function setMockSkillDiscovery(
 
 async function openOrchestrationSettings(page: Page): Promise<void> {
   await page.evaluate(
-    ({ enabledKey, installedKey }) => {
+    ({ enabledKey }) => {
       localStorage.removeItem(enabledKey)
-      localStorage.removeItem(installedKey)
       const state = window.__store!.getState()
       state.setSettingsSearchQuery('orchestration')
       state.openSettingsPage()
     },
     {
-      enabledKey: ORCHESTRATION_ENABLED_STORAGE_KEY,
-      installedKey: ORCHESTRATION_SKILL_INSTALLED_STORAGE_KEY
+      enabledKey: ORCHESTRATION_ENABLED_STORAGE_KEY
     }
   )
   await expect(page.getByPlaceholder('Search settings')).toBeVisible({ timeout: 10_000 })

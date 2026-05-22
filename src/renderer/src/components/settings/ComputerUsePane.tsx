@@ -25,8 +25,6 @@ import { Button } from '../ui/button'
 import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
 import type { SettingsSearchEntry } from './settings-search'
 
-const COMPUTER_USE_SKILL_INSTALLED_STORAGE_KEY = 'orca.computerUse.skillInstalled'
-
 export const COMPUTER_USE_PANE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   {
     title: 'Computer Use',
@@ -89,9 +87,6 @@ export function ComputerUsePane(): React.JSX.Element {
   const [loading, setLoading] = useState(true)
   const [pendingId, setPendingId] = useState<ComputerUsePermissionId | null>(null)
   const [helperUnavailableReason, setHelperUnavailableReason] = useState<string | null>(null)
-  const [computerUseSkillMarkedInstalled, setComputerUseSkillMarkedInstalled] = useState<boolean>(
-    () => localStorage.getItem(COMPUTER_USE_SKILL_INSTALLED_STORAGE_KEY) === '1'
-  )
   const {
     installed: computerUseSkillDetected,
     loading: computerUseSkillLoading,
@@ -100,7 +95,6 @@ export function ComputerUsePane(): React.JSX.Element {
   } = useInstalledAgentSkill(COMPUTER_USE_SKILL_NAME, {
     sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
   })
-  const computerUseSkillInstalled = computerUseSkillDetected || computerUseSkillMarkedInstalled
 
   const stateById = useMemo(
     () => new Map(states.map((state) => [state.id, state.status] as const)),
@@ -153,11 +147,6 @@ export function ComputerUsePane(): React.JSX.Element {
     } finally {
       setPendingId(null)
     }
-  }
-
-  const markComputerUseSkillInstalled = (value: boolean): void => {
-    setComputerUseSkillMarkedInstalled(value)
-    localStorage.setItem(COMPUTER_USE_SKILL_INSTALLED_STORAGE_KEY, value ? '1' : '0')
   }
 
   const isMac = platform === null || platform === 'darwin'
@@ -236,22 +225,17 @@ export function ComputerUsePane(): React.JSX.Element {
       <AgentSkillSetupPanel
         title="Computer Use skill"
         detectedDescription="Detected on this machine. Agents can use Orca's computer controls."
-        markedDescription="Marked as installed on this machine."
-        missingDescription="Agents need this skill before they can use Orca's computer controls. If you already installed it, use Re-check instead of running the installer again."
+        missingDescription="Agents need this skill before they can use Orca's computer controls. If you already installed it, click Re-check instead of running the installer again."
         command={COMPUTER_USE_SKILL_INSTALL_COMMAND}
         terminalTitle="Computer Use setup"
         terminalAriaLabel="Computer Use skill install terminal"
         terminalWorktreeId="settings-computer-use-skill-terminal"
-        installed={computerUseSkillInstalled}
+        installed={computerUseSkillDetected}
         detected={computerUseSkillDetected}
-        markedInstalled={computerUseSkillMarkedInstalled}
         loading={computerUseSkillLoading}
         error={computerUseSkillError}
         icon={<MonitorCog className="size-5" />}
         onRecheck={refreshComputerUseSkill}
-        onToggleMarkedInstalled={() =>
-          markComputerUseSkillInstalled(!computerUseSkillMarkedInstalled)
-        }
       />
     </div>
   )

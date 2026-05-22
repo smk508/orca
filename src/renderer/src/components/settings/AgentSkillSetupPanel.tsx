@@ -10,7 +10,6 @@ type AgentSkillSetupPanelVariant = 'card' | 'inline'
 type AgentSkillSetupPanelProps = {
   title: string
   detectedDescription: string
-  markedDescription: string
   missingDescription: string
   command: string
   terminalTitle: string
@@ -18,7 +17,6 @@ type AgentSkillSetupPanelProps = {
   terminalWorktreeId: string
   installed: boolean
   detected: boolean
-  markedInstalled?: boolean
   loading: boolean
   error: string | null
   installDisabled?: boolean
@@ -27,13 +25,11 @@ type AgentSkillSetupPanelProps = {
   variant?: AgentSkillSetupPanelVariant
   className?: string
   onRecheck: () => void | Promise<void>
-  onToggleMarkedInstalled?: () => void
 }
 
 export function AgentSkillSetupPanel({
   title,
   detectedDescription,
-  markedDescription,
   missingDescription,
   command,
   terminalTitle,
@@ -41,7 +37,6 @@ export function AgentSkillSetupPanel({
   terminalWorktreeId,
   installed,
   detected,
-  markedInstalled = false,
   loading,
   error,
   installDisabled = false,
@@ -49,8 +44,7 @@ export function AgentSkillSetupPanel({
   icon,
   variant = 'card',
   className,
-  onRecheck,
-  onToggleMarkedInstalled
+  onRecheck
 }: AgentSkillSetupPanelProps): React.JSX.Element {
   const [terminalOpen, setTerminalOpen] = useState(false)
 
@@ -60,11 +54,7 @@ export function AgentSkillSetupPanel({
     }
   }, [installed])
 
-  const body = detected
-    ? detectedDescription
-    : markedInstalled
-      ? markedDescription
-      : missingDescription
+  const body = detected ? detectedDescription : missingDescription
 
   return (
     <div
@@ -93,15 +83,6 @@ export function AgentSkillSetupPanel({
           </div>
           <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">{body}</p>
           {error ? <p className="mt-1 text-[12px] text-destructive">{error}</p> : null}
-          {!detected && !loading && onToggleMarkedInstalled ? (
-            <button
-              type="button"
-              className="mt-1 text-[12px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:hover:text-muted-foreground"
-              onClick={onToggleMarkedInstalled}
-            >
-              {markedInstalled ? 'Undo manual installed marker' : 'Mark installed'}
-            </button>
-          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {!installed ? (
@@ -134,7 +115,7 @@ export function AgentSkillSetupPanel({
             command={command}
             title={terminalTitle}
             ariaLabel={terminalAriaLabel}
-            description="Press Enter to run the installer. If you already installed this skill, skip this terminal and use Re-check instead."
+            description="Press Enter to run the installer. If you already installed this skill, skip this terminal and click Re-check instead."
           />
         </div>
       ) : null}

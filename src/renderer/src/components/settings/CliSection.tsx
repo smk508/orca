@@ -24,8 +24,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/
 import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
 import { WslCliRegistration } from './WslCliRegistration'
 
-const CLI_SKILL_INSTALLED_STORAGE_KEY = 'orca.cli.skillInstalled'
-
 type CliSectionProps = {
   currentPlatform: string
 }
@@ -58,9 +56,6 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busyAction, setBusyAction] = useState<'install' | 'remove' | null>(null)
-  const [cliSkillMarkedInstalled, setCliSkillMarkedInstalled] = useState<boolean>(
-    () => localStorage.getItem(CLI_SKILL_INSTALLED_STORAGE_KEY) === '1'
-  )
   const {
     installed: cliSkillDetected,
     loading: cliSkillLoading,
@@ -69,7 +64,6 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
   } = useInstalledAgentSkill(ORCA_CLI_SKILL_NAME, {
     sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
   })
-  const cliSkillInstalled = cliSkillDetected || cliSkillMarkedInstalled
 
   const refreshStatus = async (): Promise<void> => {
     setLoading(true)
@@ -119,11 +113,6 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
     } finally {
       setBusyAction(null)
     }
-  }
-
-  const markCliSkillInstalled = (value: boolean): void => {
-    setCliSkillMarkedInstalled(value)
-    localStorage.setItem(CLI_SKILL_INSTALLED_STORAGE_KEY, value ? '1' : '0')
   }
 
   return (
@@ -237,19 +226,16 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
               variant="inline"
               title="CLI skill"
               detectedDescription="Detected on this machine. Agents know how to use Orca and report status."
-              markedDescription="Marked as installed on this machine."
-              missingDescription="Agents need this skill before they can use Orca and report status. If you already installed it, use Re-check instead of running the installer again."
+              missingDescription="Agents need this skill before they can use Orca and report status. If you already installed it, click Re-check instead of running the installer again."
               command={ORCA_CLI_SKILL_INSTALL_COMMAND}
               terminalTitle="CLI skill setup"
               terminalAriaLabel="CLI skill install terminal"
               terminalWorktreeId="settings-cli-skill-terminal"
-              installed={cliSkillInstalled}
+              installed={cliSkillDetected}
               detected={cliSkillDetected}
-              markedInstalled={cliSkillMarkedInstalled}
               loading={cliSkillLoading}
               error={cliSkillError}
               onRecheck={refreshCliSkill}
-              onToggleMarkedInstalled={() => markCliSkillInstalled(!cliSkillMarkedInstalled)}
             />
           </div>
         ) : null}

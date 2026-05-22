@@ -9,10 +9,8 @@ import {
 } from '@/hooks/useInstalledAgentSkills'
 import {
   ORCHESTRATION_ENABLED_STORAGE_KEY,
-  ORCHESTRATION_SKILL_INSTALLED_STORAGE_KEY,
   ORCHESTRATION_SETUP_STATE_EVENT,
   isOrchestrationSetupEnabled,
-  isOrchestrationSkillMarkedInstalled,
   notifyOrchestrationSetupStateChanged
 } from '@/lib/orchestration-setup-state'
 import { SearchableSetting } from './SearchableSetting'
@@ -29,9 +27,6 @@ export function OrchestrationPane(): React.JSX.Element {
     return isOrchestrationSetupEnabled()
   })
 
-  const [orchestrationSkillInstalled, setOrchestrationSkillInstalled] = useState<boolean>(() => {
-    return isOrchestrationSkillMarkedInstalled()
-  })
   const {
     installed: orchestrationSkillDetected,
     loading: orchestrationSkillLoading,
@@ -41,12 +36,10 @@ export function OrchestrationPane(): React.JSX.Element {
     enabled: orchestrationEnabled,
     sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
   })
-  const orchestrationSkillReady = orchestrationSkillDetected || orchestrationSkillInstalled
 
   useEffect(() => {
     const syncSetupState = (): void => {
       setOrchestrationEnabled(isOrchestrationSetupEnabled())
-      setOrchestrationSkillInstalled(isOrchestrationSkillMarkedInstalled())
     }
     window.addEventListener(ORCHESTRATION_SETUP_STATE_EVENT, syncSetupState)
     return () => {
@@ -57,12 +50,6 @@ export function OrchestrationPane(): React.JSX.Element {
   const toggleOrchestration = (value: boolean): void => {
     setOrchestrationEnabled(value)
     localStorage.setItem(ORCHESTRATION_ENABLED_STORAGE_KEY, value ? '1' : '0')
-    notifyOrchestrationSetupStateChanged()
-  }
-
-  const markOrchestrationSkillInstalled = (value: boolean): void => {
-    setOrchestrationSkillInstalled(value)
-    localStorage.setItem(ORCHESTRATION_SKILL_INSTALLED_STORAGE_KEY, value ? '1' : '0')
     notifyOrchestrationSetupStateChanged()
   }
 
@@ -109,22 +96,17 @@ export function OrchestrationPane(): React.JSX.Element {
         <AgentSkillSetupPanel
           title="Orchestration skill"
           detectedDescription="Detected on this machine. Agents can use inter-agent orchestration."
-          markedDescription="Marked as installed on this machine."
-          missingDescription="Agents need this skill before they can use inter-agent orchestration. If you already installed it, use Re-check instead of running the installer again."
+          missingDescription="Agents need this skill before they can use inter-agent orchestration. If you already installed it, click Re-check instead of running the installer again."
           command={ORCHESTRATION_SKILL_INSTALL_COMMAND}
           terminalTitle="Orchestration setup"
           terminalAriaLabel="Orchestration skill install terminal"
           terminalWorktreeId="settings-orchestration-skill-terminal"
-          installed={orchestrationSkillReady}
+          installed={orchestrationSkillDetected}
           detected={orchestrationSkillDetected}
-          markedInstalled={orchestrationSkillInstalled}
           loading={orchestrationSkillLoading}
           error={orchestrationSkillError}
           icon={<Workflow className="size-5" />}
           onRecheck={handleRecheckOrchestrationSkill}
-          onToggleMarkedInstalled={() =>
-            markOrchestrationSkillInstalled(!orchestrationSkillInstalled)
-          }
         />
       ) : null}
     </SearchableSetting>

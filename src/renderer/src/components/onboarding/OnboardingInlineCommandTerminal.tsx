@@ -8,7 +8,7 @@ import { useAppStore } from '@/store'
 const ONBOARDING_INLINE_TERMINAL_WORKTREE_ID = 'onboarding-inline-terminal'
 const AUTO_INSERT_DELAY_MS = 250
 const READY_RETRY_MS = 100
-const READY_MAX_ATTEMPTS = 50
+const PTY_TEXT_FALLBACK_MS = 750
 
 type OnboardingInlineCommandTerminalProps = {
   command: string
@@ -121,40 +121,62 @@ export function OnboardingInlineCommandTerminal({
   }, [command, tabId])
 
   useEffect(() => {
-    if (!tabId || autoInsertedRef.current === command) {
+    if (!tabId || !cwd || autoInsertedRef.current === command) {
       return
     }
     let canceled = false
     let insertionTimer: number | null = null
+    let retryTimer: number | null = null
+    let ptyFirstSeenAt: number | null = null
 
-    const waitForTerminal = (attempt: number): void => {
+    const scheduleInsert = (): void => {
+      if (insertionTimer !== null) {
+        return
+      }
+      insertionTimer = window.setTimeout(() => {
+        if (!canceled) {
+          autoInsertedRef.current = command
+          insertCommand()
+        }
+      }, AUTO_INSERT_DELAY_MS)
+    }
+
+    const waitForTerminal = (): void => {
       if (canceled) {
         return
       }
       const terminalElement = findTerminalTabElement(tabId)
       const hasPty = Boolean(terminalElement?.querySelector('[data-pty-id]'))
-      if (terminalReadyForCommand(terminalElement) || (hasPty && attempt >= READY_MAX_ATTEMPTS)) {
-        insertionTimer = window.setTimeout(() => {
-          if (!canceled) {
-            autoInsertedRef.current = command
-            insertCommand()
-          }
-        }, AUTO_INSERT_DELAY_MS)
+      if (terminalReadyForCommand(terminalElement)) {
+        scheduleInsert()
         return
       }
-      if (attempt < READY_MAX_ATTEMPTS) {
-        window.setTimeout(() => waitForTerminal(attempt + 1), READY_RETRY_MS)
+      if (hasPty) {
+        ptyFirstSeenAt ??= Date.now()
+        // Why: GPU/canvas terminal renderers may not expose visible prompt text
+        // in .xterm-rows. Once the PTY has settled briefly, paste the draft
+        // instead of waiting on a DOM signal that may never arrive.
+        if (Date.now() - ptyFirstSeenAt >= PTY_TEXT_FALLBACK_MS) {
+          scheduleInsert()
+          return
+        }
+      } else {
+        ptyFirstSeenAt = null
       }
+      retryTimer = window.setTimeout(waitForTerminal, READY_RETRY_MS)
     }
 
-    waitForTerminal(0)
+    waitForTerminal()
     return () => {
       canceled = true
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer)
+      }
       if (insertionTimer !== null) {
         window.clearTimeout(insertionTimer)
       }
     }
-  }, [command, insertCommand, tabId])
+  }, [command, cwd, insertCommand, tabId])
 
   // Why: grid 0fr → 1fr animates to the child's natural height without a
   // hardcoded max-height, so we don't leave dead space if the terminal

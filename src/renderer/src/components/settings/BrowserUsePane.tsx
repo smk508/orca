@@ -6,10 +6,7 @@ import {
   ORCA_CLI_SKILL_INSTALL_COMMAND,
   ORCA_CLI_SKILL_NAME
 } from '@/lib/agent-feature-install-commands'
-import {
-  BROWSER_USE_ENABLED_STORAGE_KEY,
-  BROWSER_USE_SKILL_INSTALLED_STORAGE_KEY
-} from '@/lib/browser-use-setup-state'
+import { BROWSER_USE_ENABLED_STORAGE_KEY } from '@/lib/browser-use-setup-state'
 import {
   GLOBAL_AGENT_SKILL_SOURCE_KINDS,
   useInstalledAgentSkill
@@ -110,17 +107,6 @@ export function BrowserUseSetup({
     sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
   })
 
-  // Why: discovery can fail for unusual setups, so keep the manual marker as a
-  // fallback instead of making this guided flow depend only on auto-detection.
-  const [skillMarkedInstalled, setSkillMarkedInstalled] = useState<boolean>(() => {
-    return localStorage.getItem(BROWSER_USE_SKILL_INSTALLED_STORAGE_KEY) === '1'
-  })
-
-  const markSkillInstalled = (value: boolean): void => {
-    setSkillMarkedInstalled(value)
-    localStorage.setItem(BROWSER_USE_SKILL_INSTALLED_STORAGE_KEY, value ? '1' : '0')
-  }
-
   const handleEnableCli = async (): Promise<void> => {
     setCliBusy(true)
     try {
@@ -168,9 +154,7 @@ export function BrowserUseSetup({
   const showStep1 = matchesSettingsSearch(searchQuery, [BROWSER_USE_PANE_SEARCH_ENTRIES[0]])
   const showStep2 = matchesSettingsSearch(searchQuery, [BROWSER_USE_PANE_SEARCH_ENTRIES[1]])
   const showStep3 = matchesSettingsSearch(searchQuery, [BROWSER_USE_PANE_SEARCH_ENTRIES[2]])
-  const skillInstalled = skillDetected || skillMarkedInstalled
-
-  const completedCount = [cliEnabled, skillInstalled, cookiesImported].filter(Boolean).length
+  const completedCount = [cliEnabled, skillDetected, cookiesImported].filter(Boolean).length
 
   const sourceLabel = defaultProfile?.source
     ? `${BROWSER_FAMILY_LABELS[defaultProfile.source.browserFamily] ?? defaultProfile.source.browserFamily}${defaultProfile.source.profileName ? ` (${defaultProfile.source.profileName})` : ''}`
@@ -317,14 +301,11 @@ export function BrowserUseSetup({
         >
           <BrowserUseSkillStep
             command={ORCA_CLI_SKILL_INSTALL_COMMAND}
-            skillInstalled={skillInstalled}
             skillDetected={skillDetected}
-            skillMarkedInstalled={skillMarkedInstalled}
             skillLoading={skillLoading}
             skillError={skillError}
             disabled={!cliEnabled}
             onRecheck={refreshSkill}
-            onToggleInstalled={() => markSkillInstalled(!skillMarkedInstalled)}
           />
         </SearchableSetting>
       ) : null}
@@ -335,7 +316,7 @@ export function BrowserUseSetup({
           description="Import cookies from Chrome, Edge, or other browsers so agents can reuse your logins."
           keywords={BROWSER_USE_PANE_SEARCH_ENTRIES[2].keywords}
           className={`rounded-xl border border-border/60 bg-card/50 p-4 ${
-            cliEnabled && skillInstalled ? '' : 'opacity-60'
+            cliEnabled && skillDetected ? '' : 'opacity-60'
           }`}
         >
           <div className="flex items-start gap-3">
