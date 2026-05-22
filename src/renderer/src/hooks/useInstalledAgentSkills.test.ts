@@ -1,6 +1,16 @@
-import { describe, expect, it } from 'vitest'
-import type { DiscoveredSkill } from '../../../shared/skills'
-import { GLOBAL_AGENT_SKILL_SOURCE_KINDS, hasInstalledAgentSkill } from './useInstalledAgentSkills'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { DiscoveredSkill, SkillDiscoveryResult } from '../../../shared/skills'
+import {
+  GLOBAL_AGENT_SKILL_SOURCE_KINDS,
+  _installedAgentSkillDiscoveryInternalsForTests,
+  hasInstalledAgentSkill
+} from './useInstalledAgentSkills'
+
+afterEach(() => {
+  _installedAgentSkillDiscoveryInternalsForTests.reset()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
 
 function skill(overrides: Partial<DiscoveredSkill>): DiscoveredSkill {
   return {
@@ -18,6 +28,28 @@ function skill(overrides: Partial<DiscoveredSkill>): DiscoveredSkill {
     updatedAt: null,
     ...overrides
   }
+}
+
+function discoveryResult(skills: DiscoveredSkill[] = []): SkillDiscoveryResult {
+  return {
+    skills,
+    sources: [],
+    scannedAt: Date.now()
+  }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (reason?: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 describe('hasInstalledAgentSkill', () => {
@@ -79,5 +111,35 @@ describe('hasInstalledAgentSkill', () => {
         sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
       })
     ).toBe(true)
+  })
+})
+
+describe('discoverInstalledAgentSkills', () => {
+  it('starts a fresh scan when a forced refresh arrives during a background scan', async () => {
+    const firstScan = deferred<SkillDiscoveryResult>()
+    const secondScan = deferred<SkillDiscoveryResult>()
+    const discover = vi.fn<() => Promise<SkillDiscoveryResult>>()
+    discover.mockReturnValueOnce(firstScan.promise)
+    discover.mockReturnValueOnce(secondScan.promise)
+    vi.stubGlobal('window', {
+      api: { skills: { discover } }
+    })
+
+    const backgroundRefresh =
+      _installedAgentSkillDiscoveryInternalsForTests.discoverInstalledAgentSkills(false)
+    const forcedRefresh =
+      _installedAgentSkillDiscoveryInternalsForTests.discoverInstalledAgentSkills(true)
+
+    expect(discover).toHaveBeenCalledTimes(1)
+
+    const staleResult = discoveryResult([])
+    firstScan.resolve(staleResult)
+    await expect(backgroundRefresh).resolves.toBe(staleResult)
+
+    expect(discover).toHaveBeenCalledTimes(2)
+
+    const freshResult = discoveryResult([skill({ name: 'orca-cli' })])
+    secondScan.resolve(freshResult)
+    await expect(forcedRefresh).resolves.toBe(freshResult)
   })
 })

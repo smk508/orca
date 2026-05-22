@@ -17,6 +17,7 @@ type InstalledAgentSkillMatchOptions = {
 
 let cachedDiscovery: SkillDiscoveryResult | null = null
 let pendingDiscovery: Promise<SkillDiscoveryResult> | null = null
+let pendingDiscoverySatisfiesForcedRefresh = false
 
 function normalizeSkillName(value: string): string {
   return value.trim().toLowerCase()
@@ -53,20 +54,54 @@ export function notifyInstalledAgentSkillsChanged(): void {
   }
 }
 
+function startInstalledAgentSkillDiscovery(force: boolean): Promise<SkillDiscoveryResult> {
+  const discovery = window.api.skills
+    .discover()
+    .then((result) => {
+      cachedDiscovery = result
+      return result
+    })
+    .finally(() => {
+      if (pendingDiscovery === discovery) {
+        pendingDiscovery = null
+        pendingDiscoverySatisfiesForcedRefresh = false
+      }
+    })
+  pendingDiscovery = discovery
+  pendingDiscoverySatisfiesForcedRefresh = force
+  return discovery
+}
+
 async function discoverInstalledAgentSkills(force: boolean): Promise<SkillDiscoveryResult> {
-  if (pendingDiscovery) {
-    return pendingDiscovery
-  }
   if (!force && cachedDiscovery) {
     return cachedDiscovery
   }
 
-  pendingDiscovery = window.api.skills.discover()
-  try {
-    cachedDiscovery = await pendingDiscovery
-    return cachedDiscovery
-  } finally {
+  const inFlightDiscovery = pendingDiscovery
+  if (inFlightDiscovery) {
+    if (!force || pendingDiscoverySatisfiesForcedRefresh) {
+      return inFlightDiscovery
+    }
+    try {
+      await inFlightDiscovery
+    } catch {
+      // Why: an explicit re-check should still read current disk state even if
+      // the older background scan failed.
+    }
+    if (pendingDiscovery && pendingDiscovery !== inFlightDiscovery) {
+      return pendingDiscovery
+    }
+  }
+
+  return startInstalledAgentSkillDiscovery(force)
+}
+
+export const _installedAgentSkillDiscoveryInternalsForTests = {
+  discoverInstalledAgentSkills,
+  reset(): void {
+    cachedDiscovery = null
     pendingDiscovery = null
+    pendingDiscoverySatisfiesForcedRefresh = false
   }
 }
 

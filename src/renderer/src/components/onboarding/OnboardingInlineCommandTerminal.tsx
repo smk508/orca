@@ -64,7 +64,12 @@ export function OnboardingInlineCommandTerminal({
     setActiveTabForWorktree(worktreeId, tab.id)
     setTabCustomTitle(tab.id, title)
     setTabId(tab.id)
-  }, [createTab, setActiveTabForWorktree, setTabCustomTitle, title, worktreeId])
+    return () => {
+      // Why: inline setup panels can disappear after detection succeeds; close
+      // the backing tab so installer shells do not keep running invisibly.
+      closeTab(tab.id)
+    }
+  }, [closeTab, createTab, setActiveTabForWorktree, setTabCustomTitle, title, worktreeId])
 
   useEffect(() => {
     if (prefersReducedMotion) {
