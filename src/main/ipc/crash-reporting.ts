@@ -1,6 +1,6 @@
 /* oxlint-disable max-lines -- Why: crash-reporting IPC keeps report selection, diagnostic upload, feedback submission, and orphan cleanup in one handler boundary. */
 import { arch as osArch, platform as osPlatform, release as osRelease } from 'node:os'
-import { app, clipboard, dialog, ipcMain } from 'electron'
+import { app, clipboard, ipcMain } from 'electron'
 import {
   formatCrashReportText,
   formatUncapturedCrashReportText,
@@ -77,20 +77,6 @@ function buildUncapturedCrashReportText(
   )
 }
 
-async function confirmCrashDiagnosticBundleUpload(): Promise<boolean> {
-  const result = await dialog.showMessageBox({
-    type: 'question',
-    buttons: ['Upload Logs', 'Send Without Logs'],
-    defaultId: 1,
-    cancelId: 1,
-    title: 'Upload diagnostic logs?',
-    message: 'Upload recent local diagnostic logs with this crash report?',
-    detail:
-      'The logs are redacted before upload. Choose "Send Without Logs" to submit only the crash report text.'
-  })
-  return result.response === 0
-}
-
 async function collectAndUploadCrashDiagnosticBundle(): Promise<CrashDiagnosticBundleUpload> {
   const status = getDiagnosticsStatus()
   if (!status.bundleEnabled) {
@@ -124,19 +110,6 @@ async function collectAndUploadCrashDiagnosticBundle(): Promise<CrashDiagnosticB
       diagnosticBundle: {
         status: 'not_uploaded',
         reason: 'diagnostic upload endpoint is not configured for this build',
-        bundleSubmissionId: bundle.bundleSubmissionId,
-        bytes: bundle.bytes,
-        spanCount: bundle.spanCount
-      }
-    }
-  }
-
-  const uploadConfirmed = await confirmCrashDiagnosticBundleUpload()
-  if (!uploadConfirmed) {
-    return {
-      diagnosticBundle: {
-        status: 'not_uploaded',
-        reason: 'diagnostic bundle upload cancelled',
         bundleSubmissionId: bundle.bundleSubmissionId,
         bytes: bundle.bytes,
         spanCount: bundle.spanCount

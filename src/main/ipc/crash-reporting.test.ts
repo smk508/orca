@@ -212,12 +212,7 @@ describe('registerCrashReportingHandlers', () => {
       payload: diagnosticBundle().payload,
       bundleSubmissionId: diagnosticBundle().bundleSubmissionId
     })
-    expect(showMessageBoxMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        buttons: ['Upload Logs', 'Send Without Logs'],
-        message: expect.stringContaining('Upload recent local diagnostic logs')
-      })
-    )
+    expect(showMessageBoxMock).not.toHaveBeenCalled()
     expect(markSent).toHaveBeenCalledWith(pending.id)
   })
 
@@ -266,10 +261,10 @@ describe('registerCrashReportingHandlers', () => {
     expect(submitFeedbackMock).toHaveBeenCalledWith(
       expect.objectContaining({ feedback: expect.stringContaining('[redacted-path]') })
     )
-    expect(showMessageBoxMock).toHaveBeenCalled()
+    expect(showMessageBoxMock).not.toHaveBeenCalled()
   })
 
-  it('sends an uncaptured crash report without logs when native upload confirmation is cancelled', async () => {
+  it('uploads crash logs even if a native confirmation mock would have cancelled', async () => {
     showMessageBoxMock.mockResolvedValue({ response: 1 })
     registerCrashReportingHandlers({
       getById: vi.fn(async () => null),
@@ -292,17 +287,22 @@ describe('registerCrashReportingHandlers', () => {
       ok: true,
       report: null,
       diagnosticBundle: {
-        status: 'not_uploaded',
-        reason: 'diagnostic bundle upload cancelled',
+        status: 'uploaded',
+        ticketId: 'ticketabcdefghijklmnop',
         bundleSubmissionId: 'bundleabcdefghijklmnop',
         bytes: 25,
         spanCount: 1
       }
     })
-    expect(uploadDiagnosticBundleMock).not.toHaveBeenCalled()
+    expect(showMessageBoxMock).not.toHaveBeenCalled()
+    expect(uploadDiagnosticBundleMock).toHaveBeenCalledWith({
+      tokenEndpoint: 'https://diagnostics.example.com/diagnostics/token',
+      payload: diagnosticBundle().payload,
+      bundleSubmissionId: diagnosticBundle().bundleSubmissionId
+    })
     expect(submitFeedbackMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        feedback: expect.stringContaining('diagnostic bundle upload cancelled')
+        feedback: expect.stringContaining('ticketabcdefghijklmnop')
       })
     )
   })

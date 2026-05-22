@@ -195,7 +195,8 @@ export function CrashReportDialog(): React.JSX.Element {
             {title}
           </DialogTitle>
           <DialogDescription className="text-xs">
-            Send a privacy-safe diagnostic report to help us understand what happened.
+            Send a privacy-safe crash report. Recent redacted diagnostic logs are included when
+            available.
           </DialogDescription>
         </DialogHeader>
 
@@ -212,7 +213,7 @@ export function CrashReportDialog(): React.JSX.Element {
             <div className="rounded-md border border-border/70 bg-muted/30 p-3 text-xs text-muted-foreground">
               {loading
                 ? 'Checking for crash reports...'
-                : 'No automatic crash report was captured. You can still send details and attach recent diagnostic logs when available.'}
+                : 'No automatic crash report was captured. You can still send details and include recent diagnostic logs when available.'}
             </div>
           )}
           <textarea
