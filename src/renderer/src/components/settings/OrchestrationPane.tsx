@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Copy } from 'lucide-react'
 import { toast } from 'sonner'
+import { AgentSkillInstalledIndicator } from '../AgentSkillInstalledIndicator'
 import { Button } from '../ui/button'
 import { Label } from '../ui/label'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
+import { ORCHESTRATION_SKILL_NAME } from '@/lib/agent-feature-install-commands'
 import { ORCHESTRATION_SKILL_INSTALL_COMMAND } from '@/lib/orchestration-install-command'
+import { useInstalledAgentSkill } from '@/hooks/useInstalledAgentSkills'
 import {
   ORCHESTRATION_ENABLED_STORAGE_KEY,
   ORCHESTRATION_SKILL_INSTALLED_STORAGE_KEY,
@@ -29,6 +32,11 @@ export function OrchestrationPane(): React.JSX.Element {
   const [orchestrationSkillInstalled, setOrchestrationSkillInstalled] = useState<boolean>(() => {
     return isOrchestrationSkillMarkedInstalled()
   })
+  const { installed: orchestrationSkillDetected } = useInstalledAgentSkill(
+    ORCHESTRATION_SKILL_NAME,
+    { enabled: orchestrationEnabled }
+  )
+  const orchestrationSkillReady = orchestrationSkillDetected || orchestrationSkillInstalled
 
   useEffect(() => {
     const syncSetupState = (): void => {
@@ -126,20 +134,25 @@ export function OrchestrationPane(): React.JSX.Element {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            {orchestrationSkillReady ? <AgentSkillInstalledIndicator /> : null}
           </div>
           <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
             <span>
-              {orchestrationSkillInstalled
-                ? 'Marked as installed on this machine.'
-                : "Check off once you've run it on this computer."}
+              {orchestrationSkillDetected
+                ? 'Detected as installed on this machine.'
+                : orchestrationSkillInstalled
+                  ? 'Marked as installed on this machine.'
+                  : "Check off once you've run it on this computer."}
             </span>
-            <button
-              type="button"
-              className="underline-offset-2 hover:text-foreground hover:underline"
-              onClick={() => markOrchestrationSkillInstalled(!orchestrationSkillInstalled)}
-            >
-              {orchestrationSkillInstalled ? 'Undo' : 'I ran it'}
-            </button>
+            {!orchestrationSkillDetected ? (
+              <button
+                type="button"
+                className="underline-offset-2 hover:text-foreground hover:underline"
+                onClick={() => markOrchestrationSkillInstalled(!orchestrationSkillInstalled)}
+              >
+                {orchestrationSkillInstalled ? 'Undo' : 'I ran it'}
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

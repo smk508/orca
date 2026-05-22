@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react'
 import { Copy, FolderOpen, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import type { CliInstallStatus } from '../../../../shared/cli-install-types'
-import { ORCA_CLI_SKILL_INSTALL_COMMAND } from '@/lib/agent-feature-install-commands'
+import {
+  ORCA_CLI_SKILL_INSTALL_COMMAND,
+  ORCA_CLI_SKILL_NAME
+} from '@/lib/agent-feature-install-commands'
+import { useInstalledAgentSkill } from '@/hooks/useInstalledAgentSkills'
+import { AgentSkillInstalledIndicator } from '../AgentSkillInstalledIndicator'
 import { Button } from '../ui/button'
 import {
   Dialog,
@@ -48,6 +53,7 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [busyAction, setBusyAction] = useState<'install' | 'remove' | null>(null)
+  const { installed: cliSkillInstalled } = useInstalledAgentSkill(ORCA_CLI_SKILL_NAME)
 
   const refreshStatus = async (): Promise<void> => {
     setLoading(true)
@@ -240,6 +246,7 @@ export function CliSection({ currentPlatform }: CliSectionProps): React.JSX.Elem
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
+                  {cliSkillInstalled ? <AgentSkillInstalledIndicator /> : null}
                 </div>
               </div>
             </div>
