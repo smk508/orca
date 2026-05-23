@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo } from 'react'
 import { useDroppable } from '@dnd-kit/core'
-import { Columns2, Ellipsis, Rows2, X } from 'lucide-react'
+import { Columns2, Ellipsis, Maximize2, Minimize2, Rows2, X } from 'lucide-react'
 import { useAppStore } from '../../store'
 import {
   DropdownMenu,
@@ -14,6 +14,8 @@ import { TabBarQuickCommandsButton } from '../tab-bar/TabBarQuickCommandsButton'
 import { useTabGroupWorkspaceModel } from './useTabGroupWorkspaceModel'
 import TabGroupDropOverlay from './TabGroupDropOverlay'
 import { resolveGroupTabFromVisibleId } from './tab-group-visible-id'
+import { toggleTerminalPaneExpand } from '../terminal/terminal-tab-actions'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   getTabPaneBodyDroppableId,
   type HoveredTabInsertion,
@@ -78,6 +80,11 @@ export default function TabGroupPanel({
     () => ({ anchorName: bodyAnchorName }) as React.CSSProperties,
     [bodyAnchorName]
   )
+  const activeTerminalTabId = activeTab?.contentType === 'terminal' ? activeTab.entityId : null
+  const activeTerminalCanExpand =
+    activeTerminalTabId !== null && model.canExpandPaneByTabId[activeTerminalTabId] === true
+  const activeTerminalExpanded =
+    activeTerminalTabId !== null && model.expandedPaneByTabId[activeTerminalTabId] === true
 
   const tabBar = (
     <TabBar
@@ -116,7 +123,7 @@ export default function TabGroupPanel({
       onNewFileTab={commands.newFileTab}
       onSetCustomTitle={commands.setTabCustomTitle}
       onSetTabColor={commands.setTabColor}
-      onTogglePaneExpand={() => {}}
+      onTogglePaneExpand={toggleTerminalPaneExpand}
       editorFiles={editorItems}
       browserTabs={browserItems}
       activeFileId={
@@ -161,8 +168,15 @@ export default function TabGroupPanel({
     />
   )
 
-  const menuButtonClassName =
-    'flex h-7 w-7 -translate-y-0.5 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+  const actionIconButtonBaseClassName =
+    'flex h-7 w-7 -translate-y-0.5 shrink-0 items-center justify-center rounded-md hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+  const menuButtonClassName = `${actionIconButtonBaseClassName} text-muted-foreground hover:bg-accent/50`
+  const paneExpandButtonLabel = activeTerminalExpanded ? 'Collapse pane' : 'Expand pane'
+  const paneExpandButtonClassName = `${actionIconButtonBaseClassName} ${
+    activeTerminalExpanded
+      ? 'bg-accent text-foreground hover:bg-accent'
+      : 'text-muted-foreground hover:bg-accent/50'
+  }`
   // Why: focused-only — the QC split-button and Pane Actions ellipsis both
   // appear together so the action cluster never reflows when focus shifts
   // between groups. Unfocused groups collapse the cluster fully (no
@@ -242,6 +256,38 @@ export default function TabGroupPanel({
             className={actionChromeClassName}
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
+            {/* Why: split-terminal expansion is pane state, so it needs a
+                persistent header affordance instead of hiding only inside the tab. */}
+            {isFocused && activeTerminalCanExpand && activeTerminalTabId !== null ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={paneExpandButtonLabel}
+                    aria-pressed={activeTerminalExpanded}
+                    data-pane-expand-state={activeTerminalExpanded ? 'expanded' : 'normal'}
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    onPointerDown={(event) => {
+                      event.stopPropagation()
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      toggleTerminalPaneExpand(activeTerminalTabId)
+                    }}
+                    className={paneExpandButtonClassName}
+                  >
+                    {activeTerminalExpanded ? (
+                      <Minimize2 className="size-4" />
+                    ) : (
+                      <Maximize2 className="size-4" />
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" sideOffset={4}>
+                  {paneExpandButtonLabel}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
             {isFocused ? (
               <TabBarQuickCommandsButton worktreeId={worktreeId} groupId={groupId} />
             ) : null}

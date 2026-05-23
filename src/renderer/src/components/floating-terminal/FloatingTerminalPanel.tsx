@@ -19,6 +19,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { useTerminalSaveDialog } from '@/components/terminal/useTerminalSaveDialog'
+import { toggleTerminalPaneExpand } from '@/components/terminal/terminal-tab-actions'
 import { appendUniqueOpenFileIds } from '@/components/terminal/unsaved-close-queue'
 import { getConnectionId } from '@/lib/connection-context'
 import { createUntitledMarkdownFile } from '@/lib/create-untitled-markdown'
@@ -105,7 +106,6 @@ export function FloatingTerminalPanel({
   const setActiveTab = useAppStore((s) => s.setActiveTab)
   const setTabCustomTitle = useAppStore((s) => s.setTabCustomTitle)
   const setTabColor = useAppStore((s) => s.setTabColor)
-  const setTabPaneExpanded = useAppStore((s) => s.setTabPaneExpanded)
   const pinFile = useAppStore((s) => s.pinFile)
   const openFile = useAppStore((s) => s.openFile)
   const browserDefaultUrl = useAppStore((s) => s.browserDefaultUrl)
@@ -855,9 +855,7 @@ export function FloatingTerminalPanel({
               onOpenFileTab={openFloatingMarkdownTab}
               onSetCustomTitle={setTabCustomTitle}
               onSetTabColor={setTabColor}
-              onTogglePaneExpand={(tabId) =>
-                setTabPaneExpanded(tabId, expandedPaneByTabId[tabId] !== true)
-              }
+              onTogglePaneExpand={toggleTerminalPaneExpand}
               editorFiles={editorItems}
               browserTabs={browserItems}
               activeFileId={activeEditorUnifiedId}

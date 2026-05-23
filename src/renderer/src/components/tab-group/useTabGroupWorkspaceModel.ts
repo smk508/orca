@@ -57,7 +57,8 @@ export function useTabGroupWorkspaceModel({
       terminalTabs: state.tabsByWorktree[worktreeId] ?? EMPTY_TERMINAL_TABS,
       openFiles: state.openFiles,
       browserTabs: state.browserTabsByWorktree[worktreeId] ?? EMPTY_BROWSER_TABS,
-      expandedPaneByTabId: state.expandedPaneByTabId
+      expandedPaneByTabId: state.expandedPaneByTabId,
+      canExpandPaneByTabId: state.canExpandPaneByTabId
     }))
   )
 
@@ -496,6 +497,7 @@ export function useTabGroupWorkspaceModel({
     tabBarOrder,
     groupTabs,
     expandedPaneByTabId: worktreeState.expandedPaneByTabId,
+    canExpandPaneByTabId: worktreeState.canExpandPaneByTabId,
     commands: {
       focusGroup: () => {
         focusGroup(worktreeId, groupId)
