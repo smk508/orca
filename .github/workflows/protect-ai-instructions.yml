@@ -1,0 +1,364 @@
+name: Protect AI instruction files
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  reject-external-ai-instruction-changes:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Reject external changes to AI instruction files
+        # Why: this workflow is a security boundary; pin the action so a
+        # retargeted tag cannot change the code that evaluates PR metadata.
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const trustedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            const commentMarker = '<!-- orca-ai-instruction-guard -->';
+            const pr = context.payload.pull_request;
+            const authorAssociation = context.payload.pull_request.author_association;
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullNumber = pr.number;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: pullNumber,
+              per_page: 100,
+            });
+
+            if (typeof pr.changed_files === 'number' && files.length < pr.changed_files) {
+              await failWithWarning([
+                'Unable to inspect all changed files.',
+                `GitHub returned ${files.length} of ${pr.changed_files}.`,
+                'Split the PR or ask a maintainer to review it manually.',
+              ]);
+              return;
+            }
+
+            const filenameFindings = [];
+            for (const file of files) {
+              for (const finding of findInvisibleUnicode(file.filename)) {
+                filenameFindings.push(formatFinding(file.filename, finding));
+              }
+            }
+
+            if (filenameFindings.length > 0) {
+              await failWithWarning([
+                'Changed file paths contain invisible Unicode or control characters.',
+                'Rename the files before merging.',
+                'Findings:',
+                ...filenameFindings,
+              ].join('\n'));
+              return;
+            }
+
+            const protectedBasenames = new Set([
+              '.cursorrules',
+              '.clinerules',
+              '.goosehints',
+              '.roorules',
+              '.roomodes',
+              '.windsurfrules',
+              'agent.md',
+              'agents.md',
+              'claude.md',
+              'codex.md',
+              'gemini.md',
+              'qwen.md',
+            ]);
+
+            const protectedExactPaths = new Set([
+              'codeowners',
+              '.github/codeowners',
+              '.github/copilot-instructions.md',
+              '.github/workflows/protect-ai-instructions.yml',
+              'docs/codeowners',
+            ]);
+
+            const protectedDirectoryMarkers = [
+              '.agents/',
+              '.augment/',
+              '.claude/',
+              '.codex/',
+              '.cursor/',
+              '.gemini/',
+              '.github/instructions/',
+              '.openhands/',
+              '.roo/',
+              '.windsurf/',
+            ];
+
+            function normalizePath(path) {
+              return path.replace(/\\/g, '/').toLowerCase();
+            }
+
+            function isInDirectory(path, marker) {
+              return path === marker.slice(0, -1) || path.startsWith(marker) || path.includes(`/${marker}`);
+            }
+
+            function isProtectedPath(filename) {
+              const path = normalizePath(filename);
+              const basename = path.split('/').pop();
+
+              if (protectedBasenames.has(basename) || protectedExactPaths.has(path)) {
+                return true;
+              }
+
+              return protectedDirectoryMarkers.some((marker) => isInDirectory(path, marker));
+            }
+
+            const blockedFiles = files
+              .map((file) => file.filename)
+              .filter(isProtectedPath);
+
+            if (blockedFiles.length === 0) {
+              core.info('No AI instruction files changed.');
+              return;
+            }
+
+            if (trustedAssociations.has(authorAssociation)) {
+              core.info(`Trusted PR author association ${authorAssociation}; allowing AI instruction file changes.`);
+              for (const filename of blockedFiles) {
+                core.info(`Allowed: ${JSON.stringify(filename)}`);
+              }
+
+              const unicodeFindings = await scanChangedFilesForInvisibleUnicode(blockedFiles);
+              if (unicodeFindings.length === 0) {
+                return;
+              }
+
+              await failWithWarning([
+                'AI instruction files contain invisible Unicode/control characters or could not be scanned.',
+                'Remove hidden characters and keep these files as scan-compatible UTF-8 text before merging.',
+                'Findings:',
+                ...unicodeFindings,
+              ].join('\n'));
+              return;
+            }
+
+            // Why: external PRs must not be able to change files that shape how
+            // local and hosted agents read the repository.
+            await failWithWarning([
+              'External pull requests cannot modify AI instruction or agent configuration files.',
+              'Ask a repository maintainer to make these changes from a trusted branch.',
+              'Blocked files:',
+              ...blockedFiles.map((filename) => `- ${JSON.stringify(filename)}`),
+            ].join('\n'));
+
+            async function failWithWarning(lines) {
+              const message = Array.isArray(lines) ? lines.join('\n') : lines;
+
+              try {
+                await upsertWarningComment(message);
+              } catch (error) {
+                core.warning(`Unable to post AI instruction guard warning comment: ${error.message}`);
+              }
+
+              core.setFailed(message);
+            }
+
+            async function upsertWarningComment(message) {
+              const body = buildWarningComment(message);
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: pullNumber,
+                per_page: 100,
+              });
+
+              const existingComment = comments.find((comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(commentMarker)
+              );
+
+              if (existingComment) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existingComment.id,
+                  body,
+                });
+                return;
+              }
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                body,
+              });
+            }
+
+            function buildWarningComment(message) {
+              const maxMessageLength = 50000;
+              const commentMessage = message.length > maxMessageLength
+                ? `${message.slice(0, maxMessageLength)}\n\n... truncated; open the failed check log for full details ...`
+                : message;
+
+              return [
+                commentMarker,
+                '# SECURITY WARNING: AI instruction file change blocked',
+                '',
+                'This PR changes files that control how AI coding agents read this repository, or it contains hidden Unicode/control characters in a changed path or protected instruction file.',
+                '',
+                'External contributors cannot modify these files directly. Ask a repository maintainer to make the change from a trusted branch after review.',
+                '',
+                '<details open>',
+                '<summary>Blocked by policy</summary>',
+                '',
+                '<pre>',
+                escapeHtml(commentMessage),
+                '</pre>',
+                '',
+                '</details>',
+              ].join('\n');
+            }
+
+            function escapeHtml(value) {
+              return value
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            }
+
+            async function scanChangedFilesForInvisibleUnicode(filenames) {
+              const findings = [];
+              const headOwner = pr.head.repo.owner.login;
+              const headRepo = pr.head.repo.name;
+              const ref = pr.head.sha;
+
+              for (const filename of filenames) {
+                const file = files.find((candidate) => candidate.filename === filename);
+                if (file?.status === 'removed') {
+                  continue;
+                }
+
+                const content = await github.rest.repos.getContent({
+                  owner: headOwner,
+                  repo: headRepo,
+                  path: filename,
+                  ref,
+                });
+
+                if (
+                  Array.isArray(content.data) ||
+                  content.data.type !== 'file' ||
+                  typeof content.data.content !== 'string' ||
+                  content.data.encoding !== 'base64'
+                ) {
+                  findings.push(`- ${JSON.stringify(filename)}: unable to scan content`);
+                  continue;
+                }
+
+                const text = Buffer.from(content.data.content, content.data.encoding).toString('utf8');
+                for (const finding of findInvisibleUnicode(text)) {
+                  findings.push(formatFinding(filename, finding));
+                }
+              }
+
+              return findings;
+            }
+
+            function findInvisibleUnicode(text) {
+              const findings = [];
+              let line = 1;
+              let column = 1;
+
+              for (const char of text) {
+                const codePoint = char.codePointAt(0);
+                const reason = getInvisibleUnicodeReason(codePoint);
+
+                if (reason) {
+                  findings.push({
+                    line,
+                    column,
+                    codePoint: formatCodePoint(codePoint),
+                    reason,
+                  });
+                }
+
+                if (char === '\n') {
+                  line += 1;
+                  column = 1;
+                } else {
+                  column += 1;
+                }
+              }
+
+              return findings;
+            }
+
+            function getInvisibleUnicodeReason(codePoint) {
+              if (codePoint === 0x09 || codePoint === 0x0a || codePoint === 0x0d) {
+                return null;
+              }
+
+              if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+                return 'ASCII/C1 control character';
+              }
+
+              if (codePoint >= 0x202a && codePoint <= 0x202e) {
+                return 'bidirectional embedding/override control';
+              }
+
+              if (codePoint >= 0x2066 && codePoint <= 0x2069) {
+                return 'bidirectional isolate control';
+              }
+
+              if (codePoint >= 0xe0000 && codePoint <= 0xe007f) {
+                return 'Unicode tag character';
+              }
+
+              if ((codePoint >= 0xfe00 && codePoint <= 0xfe0f) || (codePoint >= 0xe0100 && codePoint <= 0xe01ef)) {
+                return 'variation selector';
+              }
+
+              const invisibleCharacters = new Map([
+                [0x00ad, 'soft hyphen'],
+                [0x034f, 'combining grapheme joiner'],
+                [0x061c, 'Arabic letter mark'],
+                [0x180e, 'Mongolian vowel separator'],
+                [0x200b, 'zero-width space'],
+                [0x200c, 'zero-width non-joiner'],
+                [0x200d, 'zero-width joiner'],
+                [0x200e, 'left-to-right mark'],
+                [0x200f, 'right-to-left mark'],
+                [0x2060, 'word joiner'],
+                [0x2061, 'function application'],
+                [0x2062, 'invisible times'],
+                [0x2063, 'invisible separator'],
+                [0x2064, 'invisible plus'],
+                [0x206a, 'inhibit symmetric swapping'],
+                [0x206b, 'activate symmetric swapping'],
+                [0x206c, 'inhibit Arabic form shaping'],
+                [0x206d, 'activate Arabic form shaping'],
+                [0x206e, 'national digit shapes'],
+                [0x206f, 'nominal digit shapes'],
+                [0xfeff, 'byte order mark / zero-width no-break space'],
+              ]);
+
+              return invisibleCharacters.get(codePoint) ?? null;
+            }
+
+            function formatCodePoint(codePoint) {
+              return `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
+            }
+
+            function formatFinding(filename, finding) {
+              return `- ${JSON.stringify(filename)}:${finding.line}:${finding.column} ${finding.codePoint} ${finding.reason}`;
+            }
