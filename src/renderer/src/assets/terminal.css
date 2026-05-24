@@ -221,8 +221,8 @@
   --orca-pane-title-separator: var(--terminal-pane-title-on-light-separator);
 }
 
-/* Floating title overlay. The title owns the top strip of the pane while xterm
-   keeps its full geometry and can scroll underneath it. */
+/* Floating title overlay. The title owns the top strip of the pane, while titled
+   panes reserve matching terminal height so the first row remains visible. */
 .pane-title-overlay-layer {
   position: absolute;
   inset: 0;
@@ -337,4 +337,13 @@
   height: calc(100% - var(--pane-padding-y, 4px));
   margin-top: var(--pane-padding-y, 4px);
   margin-left: var(--pane-padding-x, 4px);
+}
+
+.pane[data-has-title] .xterm-container {
+  margin-top: var(--orca-pane-title-height);
+  height: calc(100% - var(--orca-pane-title-height));
+}
+
+.pane[data-has-title] .pane-drag-handle {
+  display: none;
 }

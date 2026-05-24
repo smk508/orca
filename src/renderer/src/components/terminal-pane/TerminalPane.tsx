@@ -17,7 +17,7 @@ import {
 import type { ManagedPane, PaneManager } from '@/lib/pane-manager/pane-manager'
 import TerminalSearch from '@/components/TerminalSearch'
 import type { PtyTransport } from './pty-transport'
-import { isWindowsUserAgent, shellEscapePath } from './pane-helpers'
+import { fitPanes, isWindowsUserAgent, shellEscapePath } from './pane-helpers'
 import { getConnectionId } from '@/lib/connection-context'
 import { resolveTerminalDropTargetShell } from './terminal-drop-handler'
 import { EMPTY_LAYOUT, serializeTerminalLayout } from './layout-serialization'
@@ -1247,6 +1247,31 @@ export default function TerminalPane({
     }
   }, [tabId, worktreeId, clearTerminalTabUnread, clearWorktreeUnread])
 
+  // Sync the pane title reservation before paint. The title UI stays outside
+  // xterm's DOM, but xterm must still fit below it so the first terminal row is
+  // never hidden under the title strip.
+  useLayoutEffect(() => {
+    const manager = managerRef.current
+    if (!manager) {
+      return
+    }
+    let needsFit = false
+    for (const pane of manager.getPanes()) {
+      const shouldReserveTitleSpace = !!paneTitles[pane.id] || renamingPaneId === pane.id
+      const hadTitle = pane.container.hasAttribute('data-has-title')
+      if (shouldReserveTitleSpace && !hadTitle) {
+        pane.container.setAttribute('data-has-title', '')
+        needsFit = true
+      } else if (!shouldReserveTitleSpace && hadTitle) {
+        pane.container.removeAttribute('data-has-title')
+        needsFit = true
+      }
+    }
+    if (needsFit) {
+      fitPanes(manager)
+    }
+  }, [paneCount, paneLayoutRevision, paneTitles, renamingPaneId])
+
   const syncPaneTitleOverlayRects = useCallback((): void => {
     const manager = managerRef.current
     const container = containerRef.current
@@ -1803,9 +1828,9 @@ export default function TerminalPane({
         onOpenChange={setQuickCommandEditorOpen}
         onSave={saveQuickCommand}
       />
-      {/* Title bars are a true Orca-owned overlay: xterm keeps its full geometry
-          and scrolls underneath, while editor controls stay outside xterm's
-          helper textarea focus zone. */}
+      {/* Title bars live in Orca-owned React DOM rather than xterm's pane
+          subtree. The pane still reserves title height for terminal layout,
+          while editor controls stay outside xterm's helper textarea focus zone. */}
       <div
         className="pane-title-overlay-layer"
         data-pane-title-surface={titleUsesLightSurface ? 'light' : 'dark'}
