@@ -85,6 +85,35 @@ describe('syncSystemConfigIntoManagedCodexHome', () => {
     expect(runtimeConfig).not.toContain('[hooks.state."system-hooks:stop:0:0"]')
   })
 
+  it('normalizes deprecated codex_hooks feature flag only in runtime config', () => {
+    writeFileSync(
+      getSystemConfigPath(),
+      ['model = "system-model"', '', '[features]', 'codex_hooks = true', ''].join('\n'),
+      'utf-8'
+    )
+
+    syncSystemConfigIntoManagedCodexHome()
+
+    const runtimeConfig = readFileSync(getRuntimeConfigPath(), 'utf-8')
+    expect(runtimeConfig).toContain('[features]\nhooks = true')
+    expect(runtimeConfig).not.toContain('codex_hooks')
+    expect(readFileSync(getSystemConfigPath(), 'utf-8')).toContain('codex_hooks = true')
+  })
+
+  it('drops deprecated codex_hooks when the new hooks flag already exists', () => {
+    writeFileSync(
+      getSystemConfigPath(),
+      ['[features]', 'hooks = true', 'codex_hooks = true', ''].join('\n'),
+      'utf-8'
+    )
+
+    syncSystemConfigIntoManagedCodexHome()
+
+    const runtimeConfig = readFileSync(getRuntimeConfigPath(), 'utf-8')
+    expect(runtimeConfig).toContain('[features]\nhooks = true')
+    expect(runtimeConfig).not.toContain('codex_hooks')
+  })
+
   it('mirrors system config updates while preserving runtime-owned trust sections', () => {
     mkdirSync(join(userDataDir, 'codex-runtime-home', 'home'), { recursive: true })
     writeFileSync(

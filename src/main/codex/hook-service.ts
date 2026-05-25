@@ -1,4 +1,5 @@
 /* eslint-disable max-lines -- Why: getStatus + install + remove all share the managed-command and trust-key derivation. Splitting would hide that the three operations must agree on group index, event label, and command bytes. */
+import { existsSync } from 'fs'
 import { join } from 'path'
 import type { SFTPWrapper } from 'ssh2'
 import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared/agent-hook-types'
@@ -761,6 +762,7 @@ export class CodexHookService {
 
   remove(): AgentHookInstallStatus {
     const configPath = getConfigPath()
+    const configExists = existsSync(configPath)
     const config = readHooksJson(configPath)
     if (!config) {
       return {
@@ -773,6 +775,7 @@ export class CodexHookService {
     }
 
     const nextHooks = { ...config.hooks }
+    let removedManagedHooks = false
     // Why: same broad matcher as install(), so remove() also cleans up stale
     // entries from older builds even if the current scriptPath has moved.
     const isManagedCommand = createManagedCommandMatcher(getManagedScriptFileName())
@@ -784,14 +787,19 @@ export class CodexHookService {
         continue
       }
       const cleaned = removeManagedCommands(definitions, isManagedCommand)
+      if (JSON.stringify(cleaned) !== JSON.stringify(definitions)) {
+        removedManagedHooks = true
+      }
       if (cleaned.length === 0) {
         delete nextHooks[eventName]
       } else {
         nextHooks[eventName] = cleaned
       }
     }
-    config.hooks = nextHooks
-    writeHooksJson(configPath, config)
+    if (configExists && removedManagedHooks) {
+      config.hooks = nextHooks
+      writeHooksJson(configPath, config)
+    }
 
     // Why: also drop our trust entries so config.toml doesn't accumulate dead
     // [hooks.state."..."] blocks across install/remove cycles. Best-effort —

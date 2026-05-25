@@ -28,7 +28,9 @@ function syncSystemConfigIntoManagedCodexHomeUnsafe(): void {
     return
   }
 
-  const systemConfig = systemConfigExists ? readFileSync(systemConfigPath, 'utf-8') : ''
+  const systemConfig = normalizeDeprecatedCodexHookFeatureFlag(
+    systemConfigExists ? readFileSync(systemConfigPath, 'utf-8') : ''
+  )
   if (!runtimeConfigExists) {
     // Why: trust blocks reference a hooks.json path, so system-home hook trust
     // entries are not valid in Orca's runtime CODEX_HOME until install remaps them.
@@ -40,6 +42,70 @@ function syncSystemConfigIntoManagedCodexHomeUnsafe(): void {
   const mergedConfig = mergeSystemCodexConfigIntoRuntime(runtimeConfig, systemConfig)
   if (mergedConfig !== runtimeConfig) {
     writeFileAtomically(runtimeConfigPath, mergedConfig)
+  }
+}
+
+function normalizeDeprecatedCodexHookFeatureFlag(config: string): string {
+  if (!config.includes('codex_hooks')) {
+    return config
+  }
+
+  const lines = config.split('\n')
+  const featureSections: { start: number; end: number }[] = []
+  let featureStart: number | null = null
+
+  for (let index = 0; index <= lines.length; index += 1) {
+    const line = lines[index]
+    const isHeader = line === undefined || /^[ \t]*\[[^\]]+\][ \t]*(?:#.*)?$/.test(line)
+    if (!isHeader) {
+      continue
+    }
+
+    if (featureStart !== null) {
+      featureSections.push({ start: featureStart, end: index })
+      featureStart = null
+    }
+    if (line !== undefined && /^[ \t]*\[features\][ \t]*(?:#.*)?$/.test(line)) {
+      featureStart = index
+    }
+  }
+
+  for (const section of featureSections.reverse()) {
+    normalizeFeatureSectionLines(lines, section.start + 1, section.end)
+  }
+  return lines.join('\n')
+}
+
+function normalizeFeatureSectionLines(lines: string[], start: number, end: number): void {
+  const deprecatedIndexes: number[] = []
+  let hasHooksKey = false
+  for (let index = start; index < end; index += 1) {
+    const line = lines[index] ?? ''
+    if (/^[ \t]*hooks[ \t]*=/.test(line)) {
+      hasHooksKey = true
+    }
+    if (/^[ \t]*codex_hooks[ \t]*=/.test(line)) {
+      deprecatedIndexes.push(index)
+    }
+  }
+  if (deprecatedIndexes.length === 0) {
+    return
+  }
+
+  if (!hasHooksKey) {
+    const firstDeprecatedIndex = deprecatedIndexes.shift()
+    if (firstDeprecatedIndex !== undefined) {
+      // Why: Codex 0.133 warns on the old key. Mirror into Orca's runtime
+      // config using the new key without rewriting the user's real config.
+      lines[firstDeprecatedIndex] = lines[firstDeprecatedIndex]!.replace(
+        /^([ \t]*)codex_hooks([ \t]*=)/,
+        '$1hooks$2'
+      )
+    }
+  }
+
+  for (const index of deprecatedIndexes.reverse()) {
+    lines.splice(index, 1)
   }
 }
 
