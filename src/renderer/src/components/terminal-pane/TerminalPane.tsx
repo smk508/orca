@@ -1879,6 +1879,19 @@ export default function TerminalPane({
                 />
               ) : (
                 <>
+                  {paneCount > 1 && (
+                    <div
+                      className="pane-title-drag-handle"
+                      aria-hidden="true"
+                      onPointerDown={(event) => {
+                        managerRef.current?.beginPaneDragFromPointerDown(
+                          pane.id,
+                          event.currentTarget,
+                          event.nativeEvent
+                        )
+                      }}
+                    />
+                  )}
                   <button
                     type="button"
                     className="pane-title-text"

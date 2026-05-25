@@ -249,6 +249,38 @@
   user-select: none;
 }
 
+.pane-title-drag-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  opacity: 0;
+  background: color-mix(in srgb, var(--orca-pane-title-fg) 36%, transparent);
+  transition: opacity 150ms ease;
+}
+
+.pane-title-drag-handle::after {
+  content: '···';
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0;
+  color: var(--orca-pane-title-button-hover-fg);
+}
+
+.pane-title-drag-handle:hover {
+  opacity: 1;
+}
+
+.pane-title-drag-handle:active {
+  cursor: grabbing;
+}
+
 .pane-title-text {
   align-self: stretch;
   display: block;
@@ -342,8 +374,4 @@
 .pane[data-has-title] .xterm-container {
   margin-top: var(--orca-pane-title-height);
   height: calc(100% - var(--orca-pane-title-height));
-}
-
-.pane[data-has-title] .pane-drag-handle {
-  display: none;
 }

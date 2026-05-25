@@ -35,12 +35,12 @@ export function createDragReorderState(): DragReorderState {
   }
 }
 
-/** Attach drag-to-reorder handlers to a pane's drag handle. */
-export function attachPaneDrag(
+export function beginPaneDragFromPointerDown(
   handle: HTMLElement,
   paneId: number,
   state: DragReorderState,
-  callbacks: DragReorderCallbacks
+  callbacks: DragReorderCallbacks,
+  e: PointerEvent
 ): void {
   let dragging = false
   let startX = 0
@@ -48,122 +48,142 @@ export function attachPaneDrag(
   let activePointerId: number | null = null
   const DRAG_THRESHOLD = 5
 
-  const onPointerDown = (e: PointerEvent): void => {
-    // Only start drag if there are 2+ panes
-    if (callbacks.getPanes().size < 2) {
+  if (e.button !== 0 || e.ctrlKey) {
+    return
+  }
+  // Only start drag if there are 2+ panes
+  if (callbacks.getPanes().size < 2) {
+    return
+  }
+  e.preventDefault()
+  e.stopPropagation()
+  handle.setPointerCapture(e.pointerId)
+  activePointerId = e.pointerId
+  startX = e.clientX
+  startY = e.clientY
+  dragging = false
+
+  const cleanupDrag = (commitDrop: boolean): void => {
+    const pointerId = activePointerId
+    handle.removeEventListener('pointermove', onPointerMoveOuter)
+    handle.removeEventListener('pointerup', onPointerUpOuter)
+    handle.removeEventListener('pointercancel', onPointerCancelOuter)
+    handle.removeEventListener('lostpointercapture', onLostPointerCaptureOuter)
+    window.removeEventListener('pointermove', onPointerMoveOuter, true)
+    window.removeEventListener('pointerup', onPointerUpOuter, true)
+    window.removeEventListener('pointercancel', onPointerCancelOuter, true)
+    window.removeEventListener('blur', onWindowBlur, true)
+    activePointerId = null
+    state.cleanupActiveDrag = null
+    if (pointerId !== null && handle.hasPointerCapture(pointerId)) {
+      handle.releasePointerCapture(pointerId)
+    }
+
+    if (!dragging) {
       return
     }
-    e.preventDefault()
-    e.stopPropagation()
-    handle.setPointerCapture(e.pointerId)
-    activePointerId = e.pointerId
-    startX = e.clientX
-    startY = e.clientY
+
     dragging = false
-
-    const cleanupDrag = (commitDrop: boolean): void => {
-      const pointerId = activePointerId
-      handle.removeEventListener('pointermove', onPointerMoveOuter)
-      handle.removeEventListener('pointerup', onPointerUpOuter)
-      handle.removeEventListener('pointercancel', onPointerCancelOuter)
-      handle.removeEventListener('lostpointercapture', onLostPointerCaptureOuter)
-      window.removeEventListener('blur', onWindowBlur, true)
-      activePointerId = null
-      state.cleanupActiveDrag = null
-      if (pointerId !== null && handle.hasPointerCapture(pointerId)) {
-        handle.releasePointerCapture(pointerId)
-      }
-
-      if (!dragging) {
-        return
-      }
-
-      dragging = false
-      callbacks.getRoot().classList.remove('is-pane-dragging')
-      const sourcePane = callbacks.getPanes().get(paneId)
-      if (sourcePane) {
-        sourcePane.container.classList.remove('is-drag-source')
-      }
-
-      try {
-        if (commitDrop && state.currentDropTarget && state.dragSourcePaneId !== null) {
-          handlePaneDrop(
-            state.dragSourcePaneId,
-            state.currentDropTarget.paneId,
-            state.currentDropTarget.zone,
-            state,
-            callbacks
-          )
-        }
-      } finally {
-        // Why: pointer capture can be lost when a terminal-pane drag crosses
-        // an Electron webview. Always clear the visual/input drag state so the
-        // terminal does not stay frozen behind the blue drop overlay.
-        callbacks.onDragActiveChange?.(false)
-        hideDropOverlay(state)
-        state.dragSourcePaneId = null
-        state.currentDropTarget = null
-      }
+    callbacks.getRoot().classList.remove('is-pane-dragging')
+    const sourcePane = callbacks.getPanes().get(paneId)
+    if (sourcePane) {
+      sourcePane.container.classList.remove('is-drag-source')
     }
 
-    const onPointerMoveOuter = (ev: PointerEvent): void => {
-      if (ev.pointerId !== activePointerId || callbacks.isDestroyed()) {
-        if (callbacks.isDestroyed()) {
-          cleanupDrag(false)
-        }
-        return
+    try {
+      if (commitDrop && state.currentDropTarget && state.dragSourcePaneId !== null) {
+        handlePaneDrop(
+          state.dragSourcePaneId,
+          state.currentDropTarget.paneId,
+          state.currentDropTarget.zone,
+          state,
+          callbacks
+        )
       }
-      const dx = ev.clientX - startX
-      const dy = ev.clientY - startY
-      if (!dragging && Math.hypot(dx, dy) >= DRAG_THRESHOLD) {
-        dragging = true
-        state.dragSourcePaneId = paneId
-        callbacks.getRoot().classList.add('is-pane-dragging')
-        callbacks.onDragActiveChange?.(true)
-        const sourcePane = callbacks.getPanes().get(paneId)
-        if (sourcePane) {
-          sourcePane.container.classList.add('is-drag-source')
-        }
-        showDropOverlay(state)
-      }
-      if (dragging) {
-        updateDropTarget(ev.clientX, ev.clientY, state, callbacks)
-      }
+    } finally {
+      // Why: pointer capture can be lost when a terminal-pane drag crosses
+      // an Electron webview. Always clear the visual/input drag state so the
+      // terminal does not stay frozen behind the blue drop overlay.
+      callbacks.onDragActiveChange?.(false)
+      hideDropOverlay(state)
+      state.dragSourcePaneId = null
+      state.currentDropTarget = null
     }
-
-    const onPointerUpOuter = (ev: PointerEvent): void => {
-      if (ev.pointerId !== activePointerId) {
-        return
-      }
-      cleanupDrag(true)
-    }
-
-    const onPointerCancelOuter = (ev: PointerEvent): void => {
-      if (ev.pointerId !== activePointerId) {
-        return
-      }
-      cleanupDrag(false)
-    }
-
-    const onLostPointerCaptureOuter = (ev: PointerEvent): void => {
-      if (ev.pointerId !== activePointerId) {
-        return
-      }
-      cleanupDrag(false)
-    }
-
-    const onWindowBlur = (): void => {
-      cleanupDrag(false)
-    }
-
-    state.cleanupActiveDrag = cleanupDrag
-    handle.addEventListener('pointermove', onPointerMoveOuter)
-    handle.addEventListener('pointerup', onPointerUpOuter)
-    handle.addEventListener('pointercancel', onPointerCancelOuter)
-    handle.addEventListener('lostpointercapture', onLostPointerCaptureOuter)
-    window.addEventListener('blur', onWindowBlur, true)
   }
 
+  const onPointerMoveOuter = (ev: PointerEvent): void => {
+    if (ev.pointerId !== activePointerId || callbacks.isDestroyed()) {
+      if (callbacks.isDestroyed()) {
+        cleanupDrag(false)
+      }
+      return
+    }
+    const dx = ev.clientX - startX
+    const dy = ev.clientY - startY
+    if (!dragging && Math.hypot(dx, dy) >= DRAG_THRESHOLD) {
+      dragging = true
+      state.dragSourcePaneId = paneId
+      callbacks.getRoot().classList.add('is-pane-dragging')
+      callbacks.onDragActiveChange?.(true)
+      const sourcePane = callbacks.getPanes().get(paneId)
+      if (sourcePane) {
+        sourcePane.container.classList.add('is-drag-source')
+      }
+      showDropOverlay(state)
+    }
+    if (dragging) {
+      updateDropTarget(ev.clientX, ev.clientY, state, callbacks)
+    }
+  }
+
+  const onPointerUpOuter = (ev: PointerEvent): void => {
+    if (ev.pointerId !== activePointerId) {
+      return
+    }
+    cleanupDrag(true)
+  }
+
+  const onPointerCancelOuter = (ev: PointerEvent): void => {
+    if (ev.pointerId !== activePointerId) {
+      return
+    }
+    cleanupDrag(false)
+  }
+
+  const onLostPointerCaptureOuter = (ev: PointerEvent): void => {
+    if (ev.pointerId !== activePointerId) {
+      return
+    }
+    cleanupDrag(false)
+  }
+
+  const onWindowBlur = (): void => {
+    cleanupDrag(false)
+  }
+
+  state.cleanupActiveDrag = cleanupDrag
+  handle.addEventListener('pointermove', onPointerMoveOuter)
+  handle.addEventListener('pointerup', onPointerUpOuter)
+  handle.addEventListener('pointercancel', onPointerCancelOuter)
+  handle.addEventListener('lostpointercapture', onLostPointerCaptureOuter)
+  // Why: title bars live outside the pane subtree; keep tracking if Chromium
+  // routes captured pointer moves through the window rather than the handle.
+  window.addEventListener('pointermove', onPointerMoveOuter, true)
+  window.addEventListener('pointerup', onPointerUpOuter, true)
+  window.addEventListener('pointercancel', onPointerCancelOuter, true)
+  window.addEventListener('blur', onWindowBlur, true)
+}
+
+/** Attach drag-to-reorder handlers to a pane's drag handle. */
+export function attachPaneDrag(
+  handle: HTMLElement,
+  paneId: number,
+  state: DragReorderState,
+  callbacks: DragReorderCallbacks
+): void {
+  const onPointerDown = (e: PointerEvent): void => {
+    beginPaneDragFromPointerDown(handle, paneId, state, callbacks, e)
+  }
   handle.addEventListener('pointerdown', onPointerDown)
 }
 
