@@ -22,7 +22,7 @@ describe('AgentFeatureSetupStep', () => {
     expect(html).toContain('Agent Browser Use')
     expect(html).toContain('Computer Use')
     expect(html).toContain('Agent Orchestration')
-    expect(html).toContain('Set up features')
+    expect(html).toContain('Enable capabilities')
     expect(html).toContain('role="checkbox"')
   })
 })

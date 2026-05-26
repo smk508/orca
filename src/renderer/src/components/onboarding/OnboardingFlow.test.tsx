@@ -57,7 +57,7 @@ describe('OnboardingFlow', () => {
 
     expect(html).toContain('Set up Orca for agents')
     expect(html).toContain('Turn on advanced Orca capabilities for agents.')
-    expect(html).toContain('Set up features')
+    expect(html).toContain('Enable capabilities')
     expect(html).toContain('Continue')
     expect(html).toContain('Skip to project setup')
     expect(html).not.toContain('>Skip</button>')

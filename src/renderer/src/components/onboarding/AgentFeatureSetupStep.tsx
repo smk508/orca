@@ -40,7 +40,7 @@ export function AgentFeatureSetupStep({
             onClick={onStartFeatureSetup}
           >
             {setupBusyLabel ? <Loader2 className="size-4 animate-spin" /> : null}
-            {setupBusyLabel ?? 'Set up features'}
+            {setupBusyLabel ?? 'Enable capabilities'}
           </Button>
         </div>
       ) : null}
