@@ -60,7 +60,7 @@ export function AgentFeatureSetupStep({
     <>
       <FeatureSetupChecklist value={featureSetup} onChange={onFeatureSetupChange} />
       {showSetupAction ? (
-        <div className="mt-4 flex flex-col items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-4 flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 text-[12px] leading-relaxed text-muted-foreground">
             {showCliNotice ? (
               <span id="agent-feature-setup-cli-notice">{AGENT_SKILL_CLI_PREREQUISITE_NOTICE}</span>
@@ -71,13 +71,13 @@ export function AgentFeatureSetupStep({
           <Button
             type="button"
             variant="default"
-            className="w-full shrink-0 sm:w-auto"
+            className="shrink-0"
             disabled={!hasSelectedFeatures || Boolean(setupBusyLabel)}
             aria-describedby={showCliNotice ? 'agent-feature-setup-cli-notice' : undefined}
             onClick={onStartFeatureSetup}
           >
             {setupBusyLabel ? <Loader2 className="size-4 animate-spin" /> : null}
-            {setupBusyLabel ?? 'Set up selected features'}
+            {setupBusyLabel ?? 'Set up features'}
           </Button>
         </div>
       ) : null}

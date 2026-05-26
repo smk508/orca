@@ -48,15 +48,7 @@ export function FeatureSetupChecklist({
   onChange
 }: FeatureSetupChecklistProps): React.JSX.Element {
   return (
-    <section className="mt-6 space-y-3">
-      <div className="space-y-1">
-        <h2 className="text-sm font-semibold text-foreground">Set up agent features</h2>
-        <p className="text-[13px] leading-relaxed text-muted-foreground">
-          Pick the capabilities you want ready after onboarding. Selected features run setup on the
-          next click and show a terminal here with the skill command ready for review.
-        </p>
-      </div>
-
+    <section className="mt-6">
       <div className="grid gap-3 md:grid-cols-3">
         {FEATURE_SETUP_ROWS.map((row) => {
           const selected = value[row.id]

@@ -31,7 +31,8 @@ const stepCopy = {
   },
   agentSetup: {
     title: 'Set up Orca for agents',
-    subtitle: 'Choose the capabilities Orca should enable on this computer.'
+    subtitle:
+      'Pick the capabilities you want ready after onboarding. Selected features run setup on the next click and show a terminal here with the skill command ready for review.'
   },
   integrations: {
     title: 'Connect your task sources',

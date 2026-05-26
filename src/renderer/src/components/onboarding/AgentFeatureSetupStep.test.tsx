@@ -19,11 +19,10 @@ describe('AgentFeatureSetupStep', () => {
       />
     )
 
-    expect(html).toContain('Set up agent features')
     expect(html).toContain('Agent Browser Use')
     expect(html).toContain('Computer Use')
     expect(html).toContain('Agent Orchestration')
-    expect(html).toContain('Set up selected features')
+    expect(html).toContain('Set up features')
     expect(html).toContain(
       'Before opening setup, Orca may show a system prompt to register the orca command on PATH.'
     )

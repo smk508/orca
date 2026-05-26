@@ -56,7 +56,10 @@ describe('OnboardingFlow', () => {
     )
 
     expect(html).toContain('Set up Orca for agents')
-    expect(html).toContain('Set up selected features')
+    expect(html).toContain(
+      'Pick the capabilities you want ready after onboarding. Selected features run setup on the next click and show a terminal here with the skill command ready for review.'
+    )
+    expect(html).toContain('Set up features')
     expect(html).toContain('Before opening setup, Orca may show a system prompt')
     expect(html).toContain('Continue')
     expect(html).toContain('Skip to project setup')
