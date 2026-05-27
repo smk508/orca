@@ -2609,6 +2609,7 @@ function BrowserPagePane({
   const addBrowserPageAnnotation = useAppStore((s) => s.addBrowserPageAnnotation)
   const deleteBrowserPageAnnotation = useAppStore((s) => s.deleteBrowserPageAnnotation)
   const clearBrowserPageAnnotations = useAppStore((s) => s.clearBrowserPageAnnotations)
+  const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
   const clearBrowserPageAnnotationsRef = useRef(clearBrowserPageAnnotations)
   clearBrowserPageAnnotationsRef.current = clearBrowserPageAnnotations
   const createBrowserTab = useAppStore((s) => s.createBrowserTab)
@@ -2746,9 +2747,17 @@ function BrowserPagePane({
     if (!grab.contextMenu) {
       const text = formatGrabPayloadAsText(grab.payload)
       void window.api.ui.writeClipboardText(text)
+      recordFeatureInteraction('browser-grab')
       showGrabToast('Copied', 'success', grab.payload)
     }
-  }, [grab.state, grab.payload, grab.contextMenu, grabIntent, showGrabToast])
+  }, [
+    grab.state,
+    grab.payload,
+    grab.contextMenu,
+    grabIntent,
+    recordFeatureInteraction,
+    showGrabToast
+  ])
 
   useEffect(() => {
     if (grab.state === 'idle' || grab.state === 'error') {
@@ -3723,6 +3732,7 @@ function BrowserPagePane({
   const startGrabIntent = useCallback(
     (nextIntent: GrabIntent): void => {
       setGrabIntent(nextIntent)
+      recordFeatureInteraction(nextIntent === 'annotate' ? 'browser-annotations' : 'browser-grab')
       if (nextIntent === 'copy') {
         setPendingAnnotationPayload(null)
       } else {
@@ -3732,7 +3742,7 @@ function BrowserPagePane({
         grab.toggle()
       }
     },
-    [grab, grabIntent]
+    [grab, grabIntent, recordFeatureInteraction]
   )
 
   // CmdOrCtrl+C toggles grab mode
@@ -3814,11 +3824,13 @@ function BrowserPagePane({
         if (key === 'c') {
           const text = formatGrabPayloadAsText(payload)
           void window.api.ui.writeClipboardText(text)
+          recordFeatureInteraction('browser-grab')
           showGrabToast('Copied', 'success', payload)
         } else {
           const dataUrl = payload.screenshot?.dataUrl
           if (dataUrl?.startsWith('data:image/png;base64,')) {
             void window.api.ui.writeClipboardImage(dataUrl)
+            recordFeatureInteraction('browser-grab')
             showGrabToast('Screenshotted', 'success', payload)
           } else {
             showGrabToast('No screenshot available', 'error', payload)
@@ -3872,7 +3884,7 @@ function BrowserPagePane({
         })()
       }
     },
-    [grab, grabIntent, showGrabToast]
+    [grab, grabIntent, recordFeatureInteraction, showGrabToast]
   )
 
   useEffect(() => {
@@ -3925,9 +3937,10 @@ function BrowserPagePane({
     }
     const text = formatGrabPayloadAsText(payload)
     void window.api.ui.writeClipboardText(text)
+    recordFeatureInteraction('browser-grab')
     showGrabToast('Copied', 'success', payload)
     grab.rearm()
-  }, [grab, showGrabToast])
+  }, [grab, recordFeatureInteraction, showGrabToast])
 
   const handleGrabCopyScreenshot = useCallback(() => {
     grabMenuActionTakenRef.current = true
@@ -3940,9 +3953,10 @@ function BrowserPagePane({
       return
     }
     void window.api.ui.writeClipboardImage(dataUrl)
+    recordFeatureInteraction('browser-grab')
     showGrabToast('Screenshotted', 'success', payload)
     grab.rearm()
-  }, [grab, showGrabToast])
+  }, [grab, recordFeatureInteraction, showGrabToast])
 
   const handleAddBrowserAnnotation = useCallback(
     (comment: string, intent: BrowserAnnotationIntent): void => {
@@ -3959,12 +3973,20 @@ function BrowserPagePane({
         createdAt: new Date().toISOString(),
         payload: createBrowserAnnotationPayload(payload)
       })
+      recordFeatureInteraction('browser-annotations')
       setPendingAnnotationPayload(null)
       setBrowserAnnotationTrayOpen(true)
       showGrabToast('Annotation added', 'success', payload)
       grab.rearm()
     },
-    [addBrowserPageAnnotation, browserTab.id, grab, pendingAnnotationPayload, showGrabToast]
+    [
+      addBrowserPageAnnotation,
+      browserTab.id,
+      grab,
+      pendingAnnotationPayload,
+      recordFeatureInteraction,
+      showGrabToast
+    ]
   )
 
   const handleCancelPendingBrowserAnnotation = useCallback((): void => {
@@ -3979,16 +4001,18 @@ function BrowserPagePane({
       return
     }
     void window.api.ui.writeClipboardText(browserAnnotationsPrompt)
+    recordFeatureInteraction('browser-annotations')
     clearTimeout(annotationCopyTimerRef.current)
     setBrowserAnnotationsCopied(true)
     annotationCopyTimerRef.current = setTimeout(() => setBrowserAnnotationsCopied(false), 1400)
-  }, [browserAnnotationsPrompt])
+  }, [browserAnnotationsPrompt, recordFeatureInteraction])
 
   const handleClearBrowserAnnotations = useCallback((): void => {
     clearTimeout(annotationCopyTimerRef.current)
     setBrowserAnnotationsCopied(false)
+    recordFeatureInteraction('browser-annotations')
     clearBrowserPageAnnotations(browserTab.id)
-  }, [browserTab.id, clearBrowserPageAnnotations])
+  }, [browserTab.id, clearBrowserPageAnnotations, recordFeatureInteraction])
 
   const navigateToUrl = useCallback(
     (url: string): void => {

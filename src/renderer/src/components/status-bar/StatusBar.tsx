@@ -128,6 +128,7 @@ function ClaudeSwitcherMenu({
   const openSettingsPage = useAppStore((s) => s.openSettingsPage)
   const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
   const fetchSettings = useAppStore((s) => s.fetchSettings)
+  const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
   const fetchInactiveClaudeAccountUsage = useAppStore((s) => s.fetchInactiveClaudeAccountUsage)
   const inactiveClaudeAccounts = useAppStore((s) => s.rateLimits.inactiveClaudeAccounts)
   const claudeAccountSyncKey = useAppStore((s) => {
@@ -168,6 +169,7 @@ function ClaudeSwitcherMenu({
     setIsSwitching(true)
     try {
       const next = await window.api.claudeAccounts.select({ accountId })
+      recordFeatureInteraction('claude-account-switching')
       setAccounts(next)
       await fetchSettings()
       setAccountsExpanded(false)
@@ -483,6 +485,7 @@ function CodexSwitcherMenu({
   const openSettingsPage = useAppStore((s) => s.openSettingsPage)
   const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
   const fetchSettings = useAppStore((s) => s.fetchSettings)
+  const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
   const fetchInactiveCodexAccountUsage = useAppStore((s) => s.fetchInactiveCodexAccountUsage)
   const inactiveCodexAccounts = useAppStore((s) => s.rateLimits.inactiveCodexAccounts)
   const codexAccountSyncKey = useAppStore((s) => {
@@ -516,6 +519,7 @@ function CodexSwitcherMenu({
     setIsSwitching(true)
     try {
       const next = await window.api.codexAccounts.select({ accountId })
+      recordFeatureInteraction('codex-account-switching')
       setAccounts(next)
       await fetchSettings()
       if (previousActiveAccountId !== next.activeAccountId) {
@@ -1008,7 +1012,10 @@ function StatusBarInner({ floatingTerminalOpen }: StatusBarProps): React.JSX.Ele
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem
             checked={statusBarItems.includes('ssh')}
-            onCheckedChange={() => toggleStatusBarItem('ssh')}
+            onCheckedChange={() => {
+              recordFeatureInteraction('ssh')
+              toggleStatusBarItem('ssh')
+            }}
           >
             <Server className="size-3.5" />
             SSH Status
@@ -1025,7 +1032,10 @@ function StatusBarInner({ floatingTerminalOpen }: StatusBarProps): React.JSX.Ele
           </DropdownMenuCheckboxItem>
           <DropdownMenuCheckboxItem
             checked={statusBarItems.includes('ports')}
-            onCheckedChange={() => toggleStatusBarItem('ports')}
+            onCheckedChange={() => {
+              recordFeatureInteraction('ports')
+              toggleStatusBarItem('ports')
+            }}
           >
             <Plug className="size-3.5" />
             Ports

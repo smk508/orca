@@ -51,7 +51,8 @@ const WorkspaceCleanup = z
   .strict()
 const FeatureInteractionRecord = z
   .object({
-    firstInteractedAt: z.number().finite().nonnegative()
+    firstInteractedAt: z.number().finite().nonnegative(),
+    interactionCount: z.number().int().positive().optional()
   })
   .strict()
 const FeatureInteractions = z

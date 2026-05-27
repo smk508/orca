@@ -36,7 +36,7 @@ describe('feature tips', () => {
       completedTipIds: getCompletedFeatureTipIds({
         voiceDictationEnabled: false,
         featureInteractions: {
-          'voice-dictation': { firstInteractedAt: 100 }
+          'voice-dictation': { firstInteractedAt: 100, interactionCount: 1 }
         }
       })
     })

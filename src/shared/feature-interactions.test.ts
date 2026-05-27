@@ -26,19 +26,28 @@ describe('feature interactions', () => {
       'automations',
       'automation-created',
       'automation-run',
+      'browser-annotations',
+      'browser-grab',
       'workspace-creation',
       'agent-browser-use',
       'agent-orchestration',
       'ai-commit-pr',
+      'claude-account-switching',
       'computer-use',
+      'codex-account-switching',
       'floating-workspace',
       'mobile-pairing',
       'notifications',
+      'ports',
       'quick-commands',
       'resource-manager',
       'review-notes',
+      'ssh',
+      'terminal-panes',
+      'terminal-tabs',
       'usage-tracking',
-      'voice-dictation'
+      'voice-dictation',
+      'workspace-cleanup'
     ]
 
     expect(catalogMatchesPublicUnion).toBe(true)
@@ -48,25 +57,36 @@ describe('feature interactions', () => {
     }
   })
 
-  it('normalizes persisted records by removing unknown ids and malformed timestamps', () => {
+  it('normalizes persisted records by removing unknown ids and malformed values', () => {
     expect(
       normalizeFeatureInteractions({
         tasks: { firstInteractedAt: 100 },
         browser: { firstInteractedAt: Number.NaN },
+        automations: { firstInteractedAt: 200, interactionCount: 3 },
+        'browser-grab': { firstInteractedAt: 250, interactionCount: 0 },
         unknown: { firstInteractedAt: 200 },
         'voice-dictation': { firstInteractedAt: 300 }
       })
     ).toEqual({
-      tasks: { firstInteractedAt: 100 },
-      'voice-dictation': { firstInteractedAt: 300 }
+      tasks: { firstInteractedAt: 100, interactionCount: 1 },
+      automations: { firstInteractedAt: 200, interactionCount: 3 },
+      'browser-grab': { firstInteractedAt: 250, interactionCount: 1 },
+      'voice-dictation': { firstInteractedAt: 300, interactionCount: 1 }
     })
   })
 
   it('treats only valid known records as interacted', () => {
-    expect(hasFeatureInteraction({ tasks: { firstInteractedAt: 100 } }, 'tasks')).toBe(true)
-    expect(hasFeatureInteraction({ tasks: { firstInteractedAt: 100 } }, 'browser')).toBe(false)
     expect(
-      hasFeatureInteraction({ tasks: { firstInteractedAt: Number.POSITIVE_INFINITY } }, 'tasks')
+      hasFeatureInteraction({ tasks: { firstInteractedAt: 100, interactionCount: 1 } }, 'tasks')
+    ).toBe(true)
+    expect(
+      hasFeatureInteraction({ tasks: { firstInteractedAt: 100, interactionCount: 1 } }, 'browser')
+    ).toBe(false)
+    expect(
+      hasFeatureInteraction(
+        { tasks: { firstInteractedAt: Number.POSITIVE_INFINITY, interactionCount: 1 } },
+        'tasks'
+      )
     ).toBe(false)
   })
 })

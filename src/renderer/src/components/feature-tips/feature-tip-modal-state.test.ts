@@ -51,7 +51,7 @@ describe('feature tip modal state', () => {
       modalData: {},
       seenTipIds: [],
       featureInteractions: {
-        'voice-dictation': { firstInteractedAt: 100 }
+        'voice-dictation': { firstInteractedAt: 100, interactionCount: 1 }
       },
       settings: makeSettings()
     })

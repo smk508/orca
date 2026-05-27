@@ -26,6 +26,8 @@ type WorktreeCardPortsProps = {
 export function WorktreeCardPortsTrigger({
   ports
 }: WorktreeCardPortsProps): React.JSX.Element | null {
+  const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
+
   if (ports.length === 0) {
     return null
   }
@@ -35,7 +37,10 @@ export function WorktreeCardPortsTrigger({
       type="button"
       className="inline-flex size-3.5 shrink-0 items-center justify-center rounded text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
       aria-label={`${ports.length} live ${ports.length === 1 ? 'port' : 'ports'}`}
-      onClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation()
+        recordFeatureInteraction('ports')
+      }}
     >
       <Plug className="size-3.5" />
     </button>
@@ -88,6 +93,7 @@ function WorktreePortRow({ port }: { port: WorkspacePort }): React.JSX.Element {
   const setRemoteBrowserPageHandle = useAppStore((s) => s.setRemoteBrowserPageHandle)
   const setWorkspacePortScan = useAppStore((s) => s.setWorkspacePortScan)
   const setWorkspacePortScanRefreshing = useAppStore((s) => s.setWorkspacePortScanRefreshing)
+  const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
   const runtimeTarget = useMemo(() => getActiveRuntimeTarget(settings), [settings])
   const processLabel = port.processName ?? (port.pid ? `PID ${port.pid}` : 'Unknown process')
   const address = addressForPort(port)
@@ -96,6 +102,7 @@ function WorktreePortRow({ port }: { port: WorkspacePort }): React.JSX.Element {
   const handleOpen = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation()
+      recordFeatureInteraction('ports')
       void openWorkspacePortInBrowser({
         port,
         runtimeTarget,
@@ -108,17 +115,25 @@ function WorktreePortRow({ port }: { port: WorkspacePort }): React.JSX.Element {
         }
       })
     },
-    [createBrowserTab, port, runtimeTarget, setRemoteBrowserPageHandle, settings]
+    [
+      createBrowserTab,
+      port,
+      recordFeatureInteraction,
+      runtimeTarget,
+      setRemoteBrowserPageHandle,
+      settings
+    ]
   )
 
   const handleCopy = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation()
+      recordFeatureInteraction('ports')
       const address = addressForPort(port)
       void window.api.ui.writeClipboardText(address)
       toast.success(`Copied ${address}`)
     },
-    [port]
+    [port, recordFeatureInteraction]
   )
 
   const handleStop = useCallback(
@@ -127,6 +142,7 @@ function WorktreePortRow({ port }: { port: WorkspacePort }): React.JSX.Element {
       if (!canStopWorkspacePort(port)) {
         return
       }
+      recordFeatureInteraction('ports')
       const run = async (): Promise<void> => {
         const result = await killWorkspacePortForTarget(runtimeTarget, {
           repoId: port.owner.repoId,
@@ -151,7 +167,13 @@ function WorktreePortRow({ port }: { port: WorkspacePort }): React.JSX.Element {
       }
       void run()
     },
-    [port, runtimeTarget, setWorkspacePortScan, setWorkspacePortScanRefreshing]
+    [
+      port,
+      recordFeatureInteraction,
+      runtimeTarget,
+      setWorkspacePortScan,
+      setWorkspacePortScanRefreshing
+    ]
   )
 
   return (
@@ -197,15 +219,17 @@ function WorktreePortRow({ port }: { port: WorkspacePort }): React.JSX.Element {
 export function WorktreeCardPortsDetails({
   ports
 }: WorktreeCardPortsProps): React.JSX.Element | null {
+  const recordFeatureInteraction = useAppStore((s) => s.recordFeatureInteraction)
   const handleGoToWorktree = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation()
+      recordFeatureInteraction('ports')
       const ownerPort = ports[0]
       if (!ownerPort || !goToWorkspacePortOwner(ownerPort)) {
         toast.error('Workspace unavailable')
       }
     },
-    [ports]
+    [ports, recordFeatureInteraction]
   )
 
   if (ports.length === 0) {

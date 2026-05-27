@@ -25,12 +25,13 @@ Automatic contextual tours require this flag to be `true`. Existing users still 
 
 `featureInteractions` answers: "Has the user actually interacted with this feature?"
 
-This is the product-state signal for already-discovered features. It lives in `PersistedUIState.featureInteractions`, keyed by `FeatureInteractionId`, and stores the first local interaction timestamp:
+This is the product-state signal for already-discovered features. It lives in `PersistedUIState.featureInteractions`, keyed by `FeatureInteractionId`, and stores the first local interaction timestamp plus a local interaction count:
 
 ```ts
 {
   tasks: {
-    firstInteractedAt: 1716500000000
+    firstInteractedAt: 1716500000000,
+    interactionCount: 3
   }
 }
 ```

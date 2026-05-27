@@ -157,7 +157,7 @@ describe('client UI RPC methods', () => {
       },
       featureTipsSeenIds: ['voice-dictation'],
       featureInteractions: {
-        tasks: { firstInteractedAt: 100 }
+        tasks: { firstInteractedAt: 100, interactionCount: 2 }
       },
       contextualToursSeenIds: ['tasks'],
       contextualToursAutoEligible: true
@@ -190,7 +190,7 @@ describe('client UI RPC methods', () => {
       },
       featureTipsSeenIds: ['voice-dictation'],
       featureInteractions: {
-        tasks: { firstInteractedAt: 100 }
+        tasks: { firstInteractedAt: 100, interactionCount: 2 }
       },
       contextualToursSeenIds: ['tasks'],
       contextualToursAutoEligible: true

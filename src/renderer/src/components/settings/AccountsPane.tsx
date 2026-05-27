@@ -197,6 +197,7 @@ export function AccountsPane({ settings, updateSettings }: AccountsPaneProps): R
     action: typeof codexAction,
     operation: () => Promise<CodexRateLimitAccountsState>
   ): Promise<void> => {
+    recordFeatureInteraction('codex-account-switching')
     const previousActiveAccountId = codexAccounts.activeAccountId
     setCodexAction(action)
     try {
@@ -228,6 +229,7 @@ export function AccountsPane({ settings, updateSettings }: AccountsPaneProps): R
     action: typeof claudeAction,
     operation: () => Promise<ClaudeRateLimitAccountsState>
   ): Promise<void> => {
+    recordFeatureInteraction('claude-account-switching')
     const previousActiveAccountId = claudeAccounts.activeAccountId
     setClaudeAction(action)
     try {

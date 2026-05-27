@@ -359,6 +359,10 @@ export function AppearancePane({
                   onChange={() => {
                     if (toggle.id === 'resource-usage') {
                       recordFeatureInteraction('resource-manager')
+                    } else if (toggle.id === 'ports') {
+                      recordFeatureInteraction('ports')
+                    } else if (toggle.id === 'ssh') {
+                      recordFeatureInteraction('ssh')
                     } else if (
                       toggle.id === 'claude' ||
                       toggle.id === 'codex' ||

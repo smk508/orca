@@ -6,19 +6,28 @@ export type FeatureInteractionId =
   | 'automations'
   | 'automation-created'
   | 'automation-run'
+  | 'browser-annotations'
+  | 'browser-grab'
   | 'workspace-creation'
   | 'agent-browser-use'
   | 'agent-orchestration'
   | 'ai-commit-pr'
+  | 'claude-account-switching'
   | 'computer-use'
+  | 'codex-account-switching'
   | 'floating-workspace'
   | 'mobile-pairing'
   | 'notifications'
+  | 'ports'
   | 'quick-commands'
   | 'resource-manager'
   | 'review-notes'
+  | 'ssh'
+  | 'terminal-panes'
+  | 'terminal-tabs'
   | 'usage-tracking'
   | 'voice-dictation'
+  | 'workspace-cleanup'
 
 export type FeatureInteractionDefinition = {
   id: FeatureInteractionId
@@ -29,6 +38,8 @@ export type FeatureInteractionDefinition = {
 export type FeatureInteractionRecord = {
   /** Unix timestamp in milliseconds for the first local interaction. */
   firstInteractedAt: number
+  /** Number of local interactions recorded for this feature. */
+  interactionCount: number
 }
 
 export type FeatureInteractionState = Partial<
@@ -67,6 +78,14 @@ export const FEATURE_INTERACTIONS = [
     interaction: 'automation run queued'
   },
   {
+    id: 'browser-annotations',
+    interaction: 'browser annotation added, copied, or cleared'
+  },
+  {
+    id: 'browser-grab',
+    interaction: 'browser element grab or screenshot used'
+  },
+  {
     id: 'workspace-creation',
     interaction: 'workspace creation flow opened'
   },
@@ -83,8 +102,16 @@ export const FEATURE_INTERACTIONS = [
     interaction: 'AI commit message or pull request generation enabled or used'
   },
   {
+    id: 'claude-account-switching',
+    interaction: 'Claude managed account added, selected, reauthenticated, or removed'
+  },
+  {
     id: 'computer-use',
     interaction: 'Computer Use setup or permission flow opened'
+  },
+  {
+    id: 'codex-account-switching',
+    interaction: 'Codex managed account added, selected, reauthenticated, or removed'
   },
   {
     id: 'floating-workspace',
@@ -99,6 +126,10 @@ export const FEATURE_INTERACTIONS = [
     interaction: 'desktop notifications enabled or tested'
   },
   {
+    id: 'ports',
+    interaction: 'Ports popover opened, configured, or port action used'
+  },
+  {
     id: 'quick-commands',
     interaction: 'terminal quick command created or edited'
   },
@@ -111,12 +142,28 @@ export const FEATURE_INTERACTIONS = [
     interaction: 'review note added or sent to an agent'
   },
   {
+    id: 'ssh',
+    interaction: 'SSH target added, imported, tested, connected, disconnected, or configured'
+  },
+  {
+    id: 'terminal-panes',
+    interaction: 'terminal/editor/browser pane split, moved, resized, or merged'
+  },
+  {
+    id: 'terminal-tabs',
+    interaction: 'workspace tab created, moved, reordered, pinned, renamed, or closed'
+  },
+  {
     id: 'usage-tracking',
     interaction: 'Stats & Usage or provider usage details opened or configured'
   },
   {
     id: 'voice-dictation',
     interaction: 'dictation session started'
+  },
+  {
+    id: 'workspace-cleanup',
+    interaction: 'workspace disk space scan, review, or cleanup action used'
   }
 ] as const satisfies readonly FeatureInteractionDefinition[]
 
@@ -132,7 +179,7 @@ export function hasFeatureInteraction(
   state: FeatureInteractionState | null | undefined,
   id: FeatureInteractionId
 ): boolean {
-  return isValidFeatureInteractionRecord(state?.[id])
+  return normalizeFeatureInteractionRecord(state?.[id]) !== null
 }
 
 export function normalizeFeatureInteractions(value: unknown): FeatureInteractionState {
@@ -143,22 +190,33 @@ export function normalizeFeatureInteractions(value: unknown): FeatureInteraction
   const input = value as Record<string, unknown>
   const out: FeatureInteractionState = {}
   for (const id of FEATURE_INTERACTION_IDS) {
-    const record = input[id]
-    if (isValidFeatureInteractionRecord(record)) {
-      out[id] = { firstInteractedAt: record.firstInteractedAt }
+    const record = normalizeFeatureInteractionRecord(input[id])
+    if (record) {
+      out[id] = record
     }
   }
   return out
 }
 
-function isValidFeatureInteractionRecord(value: unknown): value is FeatureInteractionRecord {
+function normalizeFeatureInteractionRecord(value: unknown): FeatureInteractionRecord | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    return false
+    return null
   }
-  const firstInteractedAt = (value as Record<string, unknown>).firstInteractedAt
-  return (
-    typeof firstInteractedAt === 'number' &&
-    Number.isFinite(firstInteractedAt) &&
-    firstInteractedAt >= 0
-  )
+  const input = value as Record<string, unknown>
+  const firstInteractedAt = input.firstInteractedAt
+  if (
+    typeof firstInteractedAt !== 'number' ||
+    !Number.isFinite(firstInteractedAt) ||
+    firstInteractedAt < 0
+  ) {
+    return null
+  }
+  const rawInteractionCount = input.interactionCount
+  const interactionCount =
+    typeof rawInteractionCount === 'number' &&
+    Number.isInteger(rawInteractionCount) &&
+    rawInteractionCount > 0
+      ? rawInteractionCount
+      : 1
+  return { firstInteractedAt, interactionCount }
 }

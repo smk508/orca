@@ -931,12 +931,13 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
       if (!s.persistedUIReady) {
         return s
       }
-      if (s.featureInteractions[id]) {
-        return s
-      }
+      const existing = s.featureInteractions[id]
       const next: FeatureInteractionState = {
         ...s.featureInteractions,
-        [id]: { firstInteractedAt: Date.now() }
+        [id]: {
+          firstInteractedAt: existing?.firstInteractedAt ?? Date.now(),
+          interactionCount: (existing?.interactionCount ?? 0) + 1
+        }
       }
       if (typeof window !== 'undefined') {
         window.api.ui.set({ featureInteractions: next }).catch(console.error)

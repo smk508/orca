@@ -4,19 +4,20 @@ This document defines local feature-interaction state used to decide whether Orc
 
 ## Decision
 
-Track first meaningful interaction for education-targeted features in `PersistedUIState.featureInteractions`.
+Track first meaningful interaction plus local interaction count for education-targeted features in `PersistedUIState.featureInteractions`.
 
 Do not upload this state as broad analytics. Product analytics should continue to use bounded telemetry events and downstream product events. Local interaction state answers a different question: "Has this user already found enough of this feature that education would be redundant?"
 
 ## Rules
 
 - Add a `FeatureInteractionId` in `src/shared/feature-interactions.ts` before using it.
-- Record only the first meaningful interaction.
+- Preserve `firstInteractedAt`, and increment `interactionCount` on each later meaningful interaction.
 - Prefer explicit actions over passive visibility.
 - Passive visibility is acceptable only when opening the surface is itself the product use, such as opening Tasks.
 - Record after persisted UI is hydrated by using `recordFeatureInteraction(...)`; it no-ops before hydration.
 - Keep IDs stable. If the meaning changes materially, add a new ID.
 - Do not include user text, paths, URLs, repo names, branch names, hostnames, commands, prompts, or tokens in this state.
+- Old records without `interactionCount` hydrate as `interactionCount: 1`.
 
 ## Feature Catalog
 
@@ -28,11 +29,20 @@ Do not upload this state as broad analytics. Product analytics should continue t
 | Quick Commands | `quick-commands` | A terminal quick command is created or edited. | Suppress future tips about saved terminal commands. No contextual tour is planned for this branch. |
 | Computer Use | `computer-use` | Computer Use is selected in onboarding, a permission setup is opened, or the skill setup terminal opens. | Suppress future tips once the user has started setup. No contextual tour is planned until there is a better non-settings entry point. |
 | Mobile pairing | `mobile-pairing` | Mobile is enabled or a mobile pairing QR/code is generated. | Suppress future mobile-pairing tips. No contextual tour is planned for this branch. |
+| Browser element grab | `browser-grab` | Browser grab mode is started, an element is copied, or an element screenshot is copied. | Suppress future tips about grabbing page context once the user has used the element picker. |
+| Browser annotations | `browser-annotations` | Browser annotation mode is started, an annotation is added, browser annotations are copied, or browser annotations are cleared. | Suppress future tips about annotating local pages and sending concrete UI feedback to an agent. |
 | Workspace board actions | `workspace-board-actions` | A card/status action, lane configuration, density change, pin drop, or board drag action is used. | Keep the existing workspace-board tour, and avoid repeating deeper board-action education after real use. |
 | Automation creation | `automation-created` | A local automation or external Hermes cron is created. | Keep the existing Automations tour, and suppress creation-focused education after the user creates one. |
 | Automation run | `automation-run` | A local or external automation run is manually queued. | Keep the existing Automations tour, and suppress run/inspection education after the user queues a run. |
 | Resource Manager | `resource-manager` | The Resource Manager status-bar popover is opened, or its status-bar visibility is toggled in Appearance/status-bar controls. | Suppress future tips about CPU, memory, session, daemon, and workspace disk-scan controls after the user has found the manager. |
+| Workspace cleanup / disk space | `workspace-cleanup` | The Space page opens, a workspace disk scan starts/cancels, or cleanup removes scanned workspace rows. | Suppress future tips about scanning workspace disk usage and reclaiming old workspace storage. |
+| Ports | `ports` | The Ports popover opens, the Ports status-bar item is configured, external ports are expanded, or a port is opened/copied/stopped. | Suppress future tips about discovering and acting on workspace ports. |
+| SSH | `ssh` | SSH status opens, SSH status-bar visibility changes, a target is added/imported/tested, or an SSH target is connected/disconnected. | Suppress future SSH setup/status tips after the user has interacted with remote target controls. |
 | Provider usage tracking | `usage-tracking` | Stats & Usage is opened, Claude/Codex/OpenCode usage analytics are enabled, provider usage details are opened from the status bar, Gemini usage/OAuth is configured, or provider usage status-bar toggles are changed. | Suppress future tips about where to find token/rate-limit/usage tracking for Claude, Codex, Gemini, OpenCode, and related providers. |
+| Claude account switching | `claude-account-switching` | A Claude managed account is added, selected, reauthenticated, removed, or selected from the status bar. | Suppress future tips about using multiple Claude accounts once the user has started account management. |
+| Codex account switching | `codex-account-switching` | A Codex managed account is added, selected, reauthenticated, removed, or selected from the status bar. | Suppress future tips about Codex account switching and restart follow-up flows. |
+| Workspace tabs | `terminal-tabs` | A workspace tab is created, reordered, renamed, recolored, pinned/unpinned, moved, or closed. | Suppress future tips about tab-level workspace organization. |
+| Split panes | `terminal-panes` | A split group is created, a tab is moved into another pane, a split drop happens, a split is resized, or panes are merged. | Suppress future tips about split-pane workflows once the user has used them. |
 | Agent Browser Use setup | `agent-browser-use` | Browser Use is selected in onboarding, enabled in settings, its setup terminal opens, or cookies are imported. | Suppress future setup tips once the user has started Browser Use setup. |
 | Agent Orchestration setup | `agent-orchestration` | Orchestration is selected in onboarding, enabled in settings, or its setup terminal opens. | Suppress future setup tips once the user has started Orchestration setup. |
 | Notifications | `notifications` | Notifications are enabled in onboarding/settings or a test notification is sent. | Suppress future notification setup tips. |

@@ -771,6 +771,7 @@ describe('createUISlice feature interactions', () => {
       makePersistedUI({
         featureInteractions: {
           tasks: { firstInteractedAt: 100 },
+          automations: { firstInteractedAt: 150, interactionCount: 4 },
           browser: { firstInteractedAt: Number.NaN },
           unknown: { firstInteractedAt: 200 }
         } as unknown as FeatureInteractionState
@@ -778,11 +779,12 @@ describe('createUISlice feature interactions', () => {
     )
 
     expect(store.getState().featureInteractions).toEqual({
-      tasks: { firstInteractedAt: 100 }
+      tasks: { firstInteractedAt: 100, interactionCount: 1 },
+      automations: { firstInteractedAt: 150, interactionCount: 4 }
     })
   })
 
-  it('records a feature interaction once and persists it', () => {
+  it('records feature interaction counts and persists each interaction', () => {
     const setMock = vi.fn(() => Promise.resolve())
     vi.stubGlobal('window', {
       api: {
@@ -804,10 +806,10 @@ describe('createUISlice feature interactions', () => {
       store.getState().recordFeatureInteraction('tasks')
 
       const expected: FeatureInteractionState = {
-        tasks: { firstInteractedAt: now }
+        tasks: { firstInteractedAt: now, interactionCount: 2 }
       }
       expect(store.getState().featureInteractions).toEqual(expected)
-      expect(setMock).toHaveBeenCalledTimes(1)
+      expect(setMock).toHaveBeenCalledTimes(2)
       expect(setMock).toHaveBeenCalledWith({ featureInteractions: expected })
     } finally {
       vi.useRealTimers()

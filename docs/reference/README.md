@@ -1,7 +1,6 @@
 # Durable Docs
 
-Keep this folder for versioned reference docs that are meant to survive past a
-single design or implementation pass.
+Keep this folder for versioned reference docs that are meant to survive past a single design or implementation pass.
 
 ## What Goes Here
 
@@ -13,6 +12,4 @@ single design or implementation pass.
 
 ## What Stays Out
 
-Ephemeral design notes, implementation sketches, and planning docs should stay as
-local Markdown files under `docs/`. They are ignored by default so they do not get
-checked in accidentally.
+Ephemeral design notes, implementation sketches, and planning docs should stay as local Markdown files under `docs/`. They are ignored by default so they do not get checked in accidentally.

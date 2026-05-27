@@ -103,7 +103,7 @@ describe('feature tip startup gate', () => {
         activeModal: 'none',
         featureTipsSeenIds: [],
         featureInteractions: {
-          'voice-dictation': { firstInteractedAt: 100 }
+          'voice-dictation': { firstInteractedAt: 100, interactionCount: 1 }
         },
         onboarding: existingUserOnboarding,
         persistedUIReady: true,
