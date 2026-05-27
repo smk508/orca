@@ -196,6 +196,20 @@ export const TUI_AGENT_CONFIG: Record<TuiAgent, TuiAgentConfig> = {
     expectedProcess: 'codebuff',
     promptInjectionMode: 'stdin-after-start'
   },
+  'command-code': {
+    // Why: `npm i -g command-code` installs two binaries — `command-code` and
+    // the shorter alias `cmd`. Use the full `command-code` name so detection
+    // does not collide with Windows' built-in `cmd.exe` shell, which
+    // agent-process-recognition normalizes to `cmd` after stripping the .exe.
+    detectCmd: 'command-code',
+    // Why: Command Code's documented positional prompt starts the turn, while
+    // paste-after-start can leave the prompt sitting in the composer. `--trust`
+    // mirrors the preflight trust behavior Orca applies to other first-run
+    // TUIs so launch prompts do not consume the task text.
+    launchCmd: 'command-code --trust',
+    expectedProcess: 'command-code',
+    promptInjectionMode: 'argv'
+  },
   continue: {
     detectCmd: 'continue',
     launchCmd: 'continue',

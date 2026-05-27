@@ -119,7 +119,9 @@ const WELL_KNOWN_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   aider: 'Aider',
   pi: 'Pi',
+  omp: 'OMP',
   droid: 'Droid',
+  'command-code': 'Command Code',
   grok: 'Grok',
   hermes: 'Hermes'
 }
@@ -163,6 +165,7 @@ const ICONABLE_AGENT_TYPES: Record<TuiAgent, true> = {
   aug: true,
   cline: true,
   codebuff: true,
+  'command-code': true,
   continue: true,
   cursor: true,
   droid: true,

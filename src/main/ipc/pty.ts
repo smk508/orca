@@ -14,6 +14,7 @@ import { openCodeHookService } from '../opencode/hook-service'
 import { agentHookServer } from '../agent-hooks/server'
 import { isAgentStatusHooksEnabled } from '../agent-hooks/managed-agent-hook-controls'
 import { piTitlebarExtensionService } from '../pi/titlebar-extension-service'
+import { ORCA_PI_AGENT_STATUS_EXTENSION_FILE } from '../pi/agent-status-extension-source'
 import { detectPiAgentKindFromCommand, type PiAgentKind } from '../../shared/pi-agent-kind'
 import { isPwshAvailable } from '../pwsh'
 import { LocalPtyProvider } from '../providers/local-pty-provider'
@@ -323,6 +324,57 @@ function resolvePiAgentSourceDir(
   )
 }
 
+function resolveScopedPiAgentSourceDir(
+  baseEnv: Record<string, string>,
+  kind: PiAgentKind
+): string | undefined {
+  const sourceKey = kind === 'omp' ? 'ORCA_OMP_SOURCE_AGENT_DIR' : 'ORCA_PI_SOURCE_AGENT_DIR'
+  return readEnvWithProcessFallback(baseEnv, sourceKey)
+}
+
+function getPiAgentStatusExtensionPath(agentDir: string): string {
+  return join(agentDir, 'extensions', ORCA_PI_AGENT_STATUS_EXTENSION_FILE)
+}
+
+function clearPiAgentShadowEnv(baseEnv: Record<string, string>, kind: PiAgentKind): void {
+  if (kind === 'omp') {
+    delete baseEnv.ORCA_OMP_CODING_AGENT_DIR
+    delete baseEnv.ORCA_OMP_SOURCE_AGENT_DIR
+    delete baseEnv.ORCA_OMP_STATUS_EXTENSION
+    return
+  }
+  delete baseEnv.ORCA_PI_CODING_AGENT_DIR
+  delete baseEnv.ORCA_PI_SOURCE_AGENT_DIR
+}
+
+function exposePiAgentOverlayEnv(
+  baseEnv: Record<string, string>,
+  kind: PiAgentKind,
+  overlayDir: string,
+  sourceDir: string | undefined
+): void {
+  if (kind === 'omp') {
+    baseEnv.ORCA_OMP_CODING_AGENT_DIR = overlayDir
+    baseEnv.ORCA_OMP_STATUS_EXTENSION = getPiAgentStatusExtensionPath(overlayDir)
+    if (sourceDir) {
+      // Why: preserve the original OMP root across nested Orca terminals; the
+      // public env var is intentionally restored to the current PTY overlay.
+      baseEnv.ORCA_OMP_SOURCE_AGENT_DIR = sourceDir
+    } else {
+      delete baseEnv.ORCA_OMP_SOURCE_AGENT_DIR
+    }
+    return
+  }
+  baseEnv.ORCA_PI_CODING_AGENT_DIR = overlayDir
+  if (sourceDir) {
+    // Why: preserve the original Pi root across nested Orca terminals; the
+    // public env var is intentionally restored to the current PTY overlay.
+    baseEnv.ORCA_PI_SOURCE_AGENT_DIR = sourceDir
+  } else {
+    delete baseEnv.ORCA_PI_SOURCE_AGENT_DIR
+  }
+}
+
 function mergePtyEnvDeletions(
   existingKeys: string[] | undefined,
   additionalKeys: readonly string[]
@@ -401,9 +453,16 @@ export function buildPtyHostEnv(
       baseEnv.SHELL ?? process.env.SHELL
     )
   const piAgentKind = detectPiAgentKindFromCommand(opts.launchCommand)
+  const hasLaunchCommand =
+    typeof opts.launchCommand === 'string' && opts.launchCommand.trim().length > 0
+  const shouldPrepareOmpShadow = piAgentKind === 'omp' || !hasLaunchCommand
   // Why: source shadows are agent-scoped. Trusting the other kind's source
   // would reintroduce the exact Pi/OMP extension-state shadowing this PR fixes.
-  const preexistingPiAgentDir = resolvePiAgentSourceDir(baseEnv, piAgentKind)
+  const preexistingPiAgentDir = resolvePiAgentSourceDir(baseEnv, 'pi')
+  const preexistingOmpAgentDir =
+    piAgentKind === 'omp'
+      ? resolvePiAgentSourceDir(baseEnv, 'omp')
+      : resolveScopedPiAgentSourceDir(baseEnv, 'omp')
 
   if (opts.agentStatusHooksEnabled) {
     // Why: OPENCODE_CONFIG_DIR is a singular path, not a colon-list, so a user
@@ -456,35 +515,29 @@ export function buildPtyHostEnv(
   // should NOT "simplify" id allocation back to a fresh UUID per spawn; that
   // would discard user state on every daemon reconnect.
   if (opts.agentStatusHooksEnabled) {
-    Object.assign(
-      baseEnv,
-      piTitlebarExtensionService.buildPtyEnv(id, preexistingPiAgentDir, piAgentKind)
-    )
-    if (baseEnv.PI_CODING_AGENT_DIR) {
-      // Why: ~/.zshrc can re-export the user's default after spawn; shell-ready
-      // wrappers restore this PTY-scoped value after user startup files run. The
-      // shadow var name is agent-scoped (ORCA_PI_* for Pi, ORCA_OMP_* for OMP)
-      // so an OMP PTY never reads a stale Pi shadow (and vice versa). The
-      // restored target stays `PI_CODING_AGENT_DIR` because that's what the
-      // OMP/Pi binary itself reads.
-      if (piAgentKind === 'omp') {
-        delete baseEnv.ORCA_PI_CODING_AGENT_DIR
-        delete baseEnv.ORCA_PI_SOURCE_AGENT_DIR
-        baseEnv.ORCA_OMP_CODING_AGENT_DIR = baseEnv.PI_CODING_AGENT_DIR
-        if (preexistingPiAgentDir) {
-          // Why: preserve the original OMP root across nested Orca terminals; the
-          // public env var is intentionally restored to the current PTY overlay.
-          baseEnv.ORCA_OMP_SOURCE_AGENT_DIR = preexistingPiAgentDir
+    clearPiAgentShadowEnv(baseEnv, 'pi')
+    clearPiAgentShadowEnv(baseEnv, 'omp')
+    if (piAgentKind === 'pi') {
+      const piEnv = piTitlebarExtensionService.buildPtyEnv(id, preexistingPiAgentDir, 'pi')
+      Object.assign(baseEnv, piEnv)
+      if (piEnv.PI_CODING_AGENT_DIR) {
+        // Why: ~/.zshrc can re-export the user's default after spawn; shell-ready
+        // wrappers restore this PTY-scoped value after user startup files run.
+        baseEnv.PI_CODING_AGENT_DIR = piEnv.PI_CODING_AGENT_DIR
+        exposePiAgentOverlayEnv(baseEnv, 'pi', piEnv.PI_CODING_AGENT_DIR, preexistingPiAgentDir)
+      }
+    }
+
+    if (shouldPrepareOmpShadow) {
+      const ompEnv = piTitlebarExtensionService.buildPtyEnv(id, preexistingOmpAgentDir, 'omp')
+      if (ompEnv.PI_CODING_AGENT_DIR) {
+        if (piAgentKind === 'omp') {
+          // Why: an OMP-launched PTY should default the binary-facing env var to
+          // OMP. Bare shells keep the Pi primary and use the `omp` shell wrapper
+          // to switch only while OMP is running.
+          baseEnv.PI_CODING_AGENT_DIR = ompEnv.PI_CODING_AGENT_DIR
         }
-      } else {
-        delete baseEnv.ORCA_OMP_CODING_AGENT_DIR
-        delete baseEnv.ORCA_OMP_SOURCE_AGENT_DIR
-        baseEnv.ORCA_PI_CODING_AGENT_DIR = baseEnv.PI_CODING_AGENT_DIR
-        if (preexistingPiAgentDir) {
-          // Why: preserve the original Pi root across nested Orca terminals; the
-          // public env var is intentionally restored to the current PTY overlay.
-          baseEnv.ORCA_PI_SOURCE_AGENT_DIR = preexistingPiAgentDir
-        }
+        exposePiAgentOverlayEnv(baseEnv, 'omp', ompEnv.PI_CODING_AGENT_DIR, preexistingOmpAgentDir)
       }
     }
   } else {
@@ -500,6 +553,7 @@ export function buildPtyHostEnv(
       overlay: 'ORCA_OMP_CODING_AGENT_DIR',
       source: 'ORCA_OMP_SOURCE_AGENT_DIR'
     })
+    delete baseEnv.ORCA_OMP_STATUS_EXTENSION
   }
 
   // Why: Codex account switching now materializes auth into an Orca-scoped
@@ -757,6 +811,7 @@ export function registerPtyHandlers(
   ipcMain.removeHandler('pty:declarePendingPaneSerializer')
   ipcMain.removeHandler('pty:settlePaneSerializer')
   ipcMain.removeHandler('pty:clearPendingPaneSerializer')
+  ipcMain.removeHandler('pty:getMainBufferSnapshot')
   ipcMain.removeHandler('pty:writeAccepted')
   ipcMain.removeAllListeners('pty:write')
   ipcMain.removeAllListeners('pty:ackColdRestore')
@@ -818,7 +873,12 @@ export function registerPtyHandlers(
   // reduces IPC round-trips from hundreds/sec to ~120/sec under high
   // throughput. Keystroke echo/redraws bypass this below because agent TUIs
   // already spend tens of ms producing their redraw.
-  const pendingData = new Map<string, string>()
+  type PendingPtyData = {
+    data: string
+    startSeq?: number
+  }
+
+  const pendingData = new Map<string, PendingPtyData>()
   const trustedTerminalHandleEnv = new Set<string>()
   let flushTimer: ReturnType<typeof setTimeout> | null = null
   const PTY_BATCH_INTERVAL_MS = 8
@@ -829,6 +889,40 @@ export function registerPtyHandlers(
   // large output and non-interactive output must still use the batcher.
   const INTERACTIVE_OUTPUT_WINDOW_MS = 100
   const INTERACTIVE_OUTPUT_MAX_CHARS = 1024
+
+  function getChunkStartSeq(endSeq: number | undefined, data: string): number | undefined {
+    return typeof endSeq === 'number' ? Math.max(0, endSeq - data.length) : undefined
+  }
+
+  function makePtyDataPayload(
+    id: string,
+    data: string,
+    startSeq: number | undefined
+  ): { id: string; data: string; seq?: number; rawLength?: number } {
+    const payload: { id: string; data: string; seq?: number; rawLength?: number } = { id, data }
+    if (typeof startSeq === 'number') {
+      payload.seq = startSeq + data.length
+      payload.rawLength = data.length
+    }
+    return payload
+  }
+
+  function appendPendingPtyData(
+    existing: PendingPtyData | undefined,
+    data: string,
+    startSeq: number | undefined
+  ): PendingPtyData {
+    if (!existing) {
+      return typeof startSeq === 'number' ? { data, startSeq } : { data }
+    }
+    const next: PendingPtyData = { data: existing.data + data }
+    if (typeof existing.startSeq === 'number') {
+      next.startSeq = existing.startSeq
+    } else if (typeof startSeq === 'number') {
+      next.startSeq = startSeq
+    }
+    return next
+  }
 
   function schedulePendingDataFlush(delayMs: number): void {
     if (flushTimer) {
@@ -849,14 +943,19 @@ export function registerPtyHandlers(
       if (!next) {
         break
       }
-      const [id, data] = next
+      const [id, pending] = next
       pendingData.delete(id)
+      const { data } = pending
       const chunk = data.slice(0, PTY_BATCH_FLUSH_CHUNK_CHARS)
       const remaining = data.slice(PTY_BATCH_FLUSH_CHUNK_CHARS)
       if (remaining) {
-        pendingData.set(id, remaining)
+        const nextPending: PendingPtyData = { data: remaining }
+        if (typeof pending.startSeq === 'number') {
+          nextPending.startSeq = pending.startSeq + chunk.length
+        }
+        pendingData.set(id, nextPending)
       }
-      mainWindow.webContents.send('pty:data', { id, data: chunk })
+      mainWindow.webContents.send('pty:data', makePtyDataPayload(id, chunk, pending.startSeq))
       writes++
     }
     if (pendingData.size > 0) {
@@ -891,9 +990,10 @@ export function registerPtyHandlers(
     const isLocalProvider = localProvider instanceof LocalPtyProvider
 
     localDataUnsub = localProvider.onData((payload) => {
-      if (!isLocalProvider) {
-        runtime?.onPtyData(payload.id, payload.data, Date.now())
-      }
+      const outputSeq = isLocalProvider
+        ? runtime?.getPtyOutputSequence(payload.id)
+        : runtime?.onPtyData(payload.id, payload.data, Date.now())
+      const startSeq = getChunkStartSeq(outputSeq, payload.data)
       if (mainWindow.isDestroyed()) {
         // Why: clear the pending flush timer so it doesn't fire after the window
         // is gone. Without this, macOS app re-activation leaks orphaned timers
@@ -906,7 +1006,8 @@ export function registerPtyHandlers(
         return
       }
       const existing = pendingData.get(payload.id)
-      const nextData = existing ? existing + payload.data : payload.data
+      const pending = appendPendingPtyData(existing, payload.data, startSeq)
+      const nextData = pending.data
       const lastInputAt = lastInputAtByPty.get(payload.id)
       const isInteractiveOutput =
         nextData.length <= INTERACTIVE_OUTPUT_MAX_CHARS &&
@@ -919,11 +1020,14 @@ export function registerPtyHandlers(
         // Waiting for the throughput batch timer adds visible input latency.
         mainWindow.webContents.send('pty:data', {
           id: payload.id,
-          data: nextData
+          data: nextData,
+          ...(typeof pending.startSeq === 'number'
+            ? { seq: pending.startSeq + nextData.length, rawLength: nextData.length }
+            : {})
         })
         return
       }
-      pendingData.set(payload.id, nextData)
+      pendingData.set(payload.id, pending)
       if (!flushTimer) {
         schedulePendingDataFlush(PTY_BATCH_INTERVAL_MS)
       }
@@ -941,7 +1045,10 @@ export function registerPtyHandlers(
         // tears down the terminal on pty:exit before the batch timer fires.
         const remaining = pendingData.get(payload.id)
         if (remaining) {
-          mainWindow.webContents.send('pty:data', { id: payload.id, data: remaining })
+          mainWindow.webContents.send(
+            'pty:data',
+            makePtyDataPayload(payload.id, remaining.data, remaining.startSeq)
+          )
           pendingData.delete(payload.id)
         }
         lastInputAtByPty.delete(payload.id)
@@ -1113,7 +1220,8 @@ export function registerPtyHandlers(
         cols: args.cols,
         rows: args.rows,
         cwd: args.cwd,
-        env
+        env,
+        ...(isDaemonHostSpawn ? { isNewSession: true } : {})
       }
       spawnOptions.envToDelete = mergePtyEnvDeletions(
         claudeAuth?.stripAuthEnv
@@ -1300,6 +1408,31 @@ export function registerPtyHandlers(
   })
 
   // ─── IPC Handlers (thin dispatch layer) ─────────────────────────
+
+  function normalizeSnapshotScrollbackRows(value: unknown): number | undefined {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return undefined
+    }
+    return Math.max(0, Math.min(50_000, Math.floor(value)))
+  }
+
+  ipcMain.handle(
+    'pty:getMainBufferSnapshot',
+    async (
+      _event,
+      args: { id?: unknown; opts?: { scrollbackRows?: unknown } }
+    ): Promise<{ data: string; cols: number; rows: number; seq?: number } | null> => {
+      if (!runtime || typeof args?.id !== 'string' || args.id.length === 0) {
+        return null
+      }
+      const scrollbackRows = normalizeSnapshotScrollbackRows(args.opts?.scrollbackRows)
+      try {
+        return await runtime.serializeMainTerminalBuffer(args.id, { scrollbackRows })
+      } catch {
+        return null
+      }
+    }
+  )
 
   ipcMain.handle(
     'pty:spawn',
@@ -1532,7 +1665,8 @@ export function registerPtyHandlers(
         cols: args.cols,
         rows: args.rows,
         cwd: args.cwd,
-        env: spawnEnv
+        env: spawnEnv,
+        ...(isMintedSessionId ? { isNewSession: true } : {})
       }
       if (combinedEnvToDelete) {
         spawnOptions.envToDelete = combinedEnvToDelete
