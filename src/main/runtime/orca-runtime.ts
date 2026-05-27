@@ -8535,7 +8535,17 @@ export class OrcaRuntimeService {
       )
       if (!registeredWorktree) {
         let canCleanOrphanedDirectory = false
-        if (canCleanupUnregisteredOrcaWorktreeDirectory(removedMeta)) {
+        const knownOrcaLayouts = repo.connectionId
+          ? []
+          : buildKnownOrcaWorkspaceLayouts(store.getSettings(), repo)
+        if (
+          canCleanupUnregisteredOrcaWorktreeDirectory({
+            meta: removedMeta,
+            worktreePath: removalTarget.path,
+            repo,
+            knownOrcaLayouts
+          })
+        ) {
           if (repo.connectionId) {
             if (!fsProvider) {
               throw new Error('SSH filesystem provider unavailable')

@@ -8113,7 +8113,7 @@ describe('OrcaRuntimeService', () => {
     }
   })
 
-  it('force-removes an Orca-created runtime orphaned worktree directory after Git tracking is gone', async () => {
+  it('force-removes a legacy Orca-created runtime orphaned worktree directory after Git tracking is gone', async () => {
     const parentDir = await mkdtemp(join(tmpdir(), 'orca-runtime-orphan-'))
     const repoPath = join(parentDir, 'repo')
     const orphanPath = join(parentDir, 'orphan')
@@ -8124,8 +8124,7 @@ describe('OrcaRuntimeService', () => {
     await writeFile(join(orphanPath, '.git'), `gitdir: ${adminWorktreePath}\n`)
     await writeFile(join(adminWorktreePath, 'gitdir'), `${join(orphanPath, '.git')}\n`)
     const { runtimeStore, removeWorktreeMeta } = createStaleRuntimeWorktreeStore(worktreeId, {
-      orcaCreatedAt: Date.now(),
-      orcaCreationSource: 'runtime'
+      createdAt: Date.now()
     })
     const runtimeStoreWithRepoPath = {
       ...runtimeStore,

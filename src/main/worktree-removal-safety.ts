@@ -2,7 +2,8 @@ import { lstat, readFile } from 'fs/promises'
 import { homedir } from 'os'
 import { posix, win32 } from 'path'
 import { isWindowsAbsolutePathLike } from '../shared/cross-platform-path'
-import type { GitWorktreeInfo, WorktreeMeta } from '../shared/types'
+import type { GitWorktreeInfo, OrcaWorkspaceLayout, Repo, WorktreeMeta } from '../shared/types'
+import { matchesStrongOrcaCreatePath } from '../shared/worktree-ownership'
 import { areWorktreePathsEqual } from './ipc/worktree-logic'
 import {
   gitFileProvesOrphanedWorktreeDirectory,
@@ -23,6 +24,17 @@ const ORCA_OWNED_PROVENANCE_META_KEYS = [
   'orcaCreationSource',
   'orcaCreationWorkspaceLayout'
 ] as const
+type UnregisteredOrcaCleanupMeta = Pick<
+  WorktreeMeta,
+  | 'orcaCreatedAt'
+  | 'orcaCreationSource'
+  | 'createdAt'
+  | 'createdWithAgent'
+  | 'pushTarget'
+  | 'sparseBaseRef'
+  | 'sparsePresetId'
+  | 'preserveBranchOnDelete'
+>
 
 export const ORPHANED_WORKTREE_DIRECTORY_MESSAGE =
   'Worktree is no longer registered with Git but its directory remains.'
@@ -135,13 +147,45 @@ export async function canSafelyRemoveOrphanedWorktreeDirectory(
   })
 }
 
-export function canCleanupUnregisteredOrcaWorktreeDirectory(
+export function canCleanupUnregisteredOrcaWorktreeDirectory(args: {
+  meta: UnregisteredOrcaCleanupMeta | null | undefined
+  worktreePath: string
+  repo: Pick<Repo, 'path'>
+  knownOrcaLayouts: readonly OrcaWorkspaceLayout[]
+}): boolean {
+  if (hasCurrentOrcaCreationProvenance(args.meta)) {
+    return true
+  }
+
+  if (hasLegacyOrcaCreationEvidence(args.meta)) {
+    return true
+  }
+
+  // Why: profiles created before explicit provenance can still contain Orca
+  // workspaces at the repo-specific workspaceDir/<repo>/<name> path shape.
+  return matchesStrongOrcaCreatePath(args.worktreePath, args.knownOrcaLayouts, args.repo)
+}
+
+function hasCurrentOrcaCreationProvenance(
   meta: Pick<WorktreeMeta, 'orcaCreatedAt' | 'orcaCreationSource'> | null | undefined
 ): boolean {
   return (
     typeof meta?.orcaCreatedAt === 'number' &&
     !!meta.orcaCreationSource &&
     ORCA_CREATION_SOURCES.has(meta.orcaCreationSource)
+  )
+}
+
+function hasLegacyOrcaCreationEvidence(
+  meta: UnregisteredOrcaCleanupMeta | null | undefined
+): boolean {
+  return Boolean(
+    meta?.createdAt ||
+    meta?.createdWithAgent ||
+    meta?.pushTarget ||
+    meta?.sparseBaseRef ||
+    meta?.sparsePresetId ||
+    meta?.preserveBranchOnDelete
   )
 }
 

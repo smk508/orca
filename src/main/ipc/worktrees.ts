@@ -953,7 +953,17 @@ export function registerWorktreeHandlers(
         if (!registeredWorktree) {
           const fsProvider = repo.connectionId ? getSshFilesystemProvider(repo.connectionId) : null
           let canCleanOrphanedDirectory = false
-          if (canCleanupUnregisteredOrcaWorktreeDirectory(removedMeta)) {
+          const knownOrcaLayouts = repo.connectionId
+            ? []
+            : buildKnownOrcaWorkspaceLayouts(store.getSettings(), repo)
+          if (
+            canCleanupUnregisteredOrcaWorktreeDirectory({
+              meta: removedMeta,
+              worktreePath,
+              repo,
+              knownOrcaLayouts
+            })
+          ) {
             if (repo.connectionId) {
               if (!fsProvider) {
                 throw new Error('SSH filesystem provider unavailable')

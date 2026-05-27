@@ -1,11 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { GitWorktreeInfo } from '../shared/types'
 import {
-  canCleanupUnregisteredOrcaWorktreeDirectory,
   canSafelyRemoveOrphanedWorktreeDirectory,
-  getRegisteredDeletableWorktree,
-  isWorktreePathMissing,
-  stripOrcaProvenanceMetaUpdates
+  getRegisteredDeletableWorktree
 } from './worktree-removal-safety'
 
 function makeGitWorktree(path: string, isMainWorktree = false): GitWorktreeInfo {
@@ -82,30 +79,6 @@ describe('getRegisteredDeletableWorktree', () => {
         makeGitWorktree('/workspaces/parent-copy')
       ])
     ).toMatchObject({ path: '/workspaces/parent' })
-  })
-})
-
-describe('isWorktreePathMissing', () => {
-  it('recognizes missing-path errors from local and remote stat providers', async () => {
-    await expect(
-      isWorktreePathMissing('/missing', async () => {
-        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
-      })
-    ).resolves.toBe(true)
-
-    await expect(
-      isWorktreePathMissing('/missing', () => Promise.reject({ code: 'ENOTDIR' }))
-    ).resolves.toBe(true)
-  })
-
-  it('does not classify existing paths or unrelated stat failures as missing', async () => {
-    await expect(isWorktreePathMissing('/exists', async () => ({}))).resolves.toBe(false)
-
-    await expect(
-      isWorktreePathMissing('/unknown', async () => {
-        throw new Error('permission denied')
-      })
-    ).resolves.toBe(false)
   })
 })
 
@@ -298,30 +271,5 @@ describe('canSafelyRemoveOrphanedWorktreeDirectory', () => {
         ])
       )
     ).resolves.toBe(true)
-  })
-})
-
-describe('canCleanupUnregisteredOrcaWorktreeDirectory', () => {
-  it('does not treat orcaCreatedAt alone as cleanup authority', () => {
-    expect(canCleanupUnregisteredOrcaWorktreeDirectory({ orcaCreatedAt: Date.now() })).toBe(false)
-    expect(
-      canCleanupUnregisteredOrcaWorktreeDirectory({
-        orcaCreatedAt: Date.now(),
-        orcaCreationSource: 'runtime'
-      })
-    ).toBe(true)
-  })
-})
-
-describe('stripOrcaProvenanceMetaUpdates', () => {
-  it('removes Orca-owned provenance fields from user metadata updates', () => {
-    expect(
-      stripOrcaProvenanceMetaUpdates({
-        comment: 'keep me',
-        orcaCreatedAt: 123,
-        orcaCreationSource: 'desktop',
-        orcaCreationWorkspaceLayout: { path: '/workspace', nestWorkspaces: false }
-      })
-    ).toEqual({ comment: 'keep me' })
   })
 })

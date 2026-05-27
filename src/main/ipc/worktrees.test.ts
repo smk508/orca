@@ -3061,7 +3061,7 @@ describe('registerWorktreeHandlers', () => {
     })
   })
 
-  it('force-removes an Orca-created orphaned worktree directory after Git tracking is gone', async () => {
+  it('force-removes a legacy Orca-created orphaned worktree directory after Git tracking is gone', async () => {
     const parentDir = await mkdtemp(join(tmpdir(), 'orca-ipc-orphan-'))
     const repoPath = join(parentDir, 'repo')
     const orphanPath = join(parentDir, 'orphan')
@@ -3080,9 +3080,7 @@ describe('registerWorktreeHandlers', () => {
       worktreeBaseRef: null
     })
     mockKnownFeatureWorktree(join(parentDir, 'real-feature'), repoPath)
-    store.getWorktreeMeta.mockReturnValue(
-      makeWorktreeMeta({ orcaCreatedAt: Date.now(), orcaCreationSource: 'runtime' })
-    )
+    store.getWorktreeMeta.mockReturnValue(makeWorktreeMeta({ createdAt: Date.now() }))
 
     try {
       await handlers['worktrees:remove'](null, {
