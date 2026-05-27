@@ -33,7 +33,7 @@ export type SourceControlAiSettings = {
 
 export type RepoSourceControlAiOverrides = {
   modelOverridesByOperation?: Partial<Record<SourceControlAiOperation, SourceControlAiModelChoice>>
-  instructionsByOperation?: Partial<Record<SourceControlAiOperation, string>>
+  instructionsByOperation?: Partial<Record<SourceControlAiOperation, string | null>>
   prCreationDefaults?: {
     draft?: boolean | null
     useTemplate?: boolean | null

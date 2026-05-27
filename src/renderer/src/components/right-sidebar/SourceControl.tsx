@@ -166,7 +166,8 @@ import {
   DEFAULT_SOURCE_CONTROL_AI_PR_CREATION_DEFAULTS,
   hasConfiguredSourceControlAiInstructions,
   normalizeSourceControlAiSettings,
-  resolveSourceControlAiForOperation
+  resolveSourceControlAiForOperation,
+  resolveSourceControlAiPrCreationDefaults
 } from '../../../../shared/source-control-ai'
 import type { SourceControlAiOperation } from '../../../../shared/source-control-ai-types'
 import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../shared/commit-message-host-key'
@@ -1150,7 +1151,6 @@ function SourceControlInner(): React.JSX.Element {
   const createPrError = createPrErrors[activeWorktreeId ?? ''] ?? null
   const prGenerationRequestSeqRef = useRef(0)
   const prGenerationInFlightRef = useRef<Record<string, boolean>>({})
-  const prFieldsByGenerationKeyRef = useRef<Record<string, PullRequestGenerationFields>>({})
   const [prGenerationRecords, setPrGenerationRecords] = useState<PullRequestGenerationRecords>({})
   const sourceControlAi = useMemo(() => {
     const normalized = normalizeSourceControlAiSettings(
@@ -1200,7 +1200,11 @@ function SourceControlInner(): React.JSX.Element {
     })
     return resolved.ok
       ? resolved.value.prCreationDefaults
-      : DEFAULT_SOURCE_CONTROL_AI_PR_CREATION_DEFAULTS
+      : resolveSourceControlAiPrCreationDefaults({
+          settings,
+          repo: activeRepo ?? null,
+          prCreationProductDefaults: DEFAULT_SOURCE_CONTROL_AI_PR_CREATION_DEFAULTS
+        })
   }, [activeRepo, settings, sourceControlAiDiscoveryHostKey])
   const shouldShowCommitInstructionGuidance =
     Boolean(settings) &&
@@ -2171,7 +2175,6 @@ function SourceControlInner(): React.JSX.Element {
       }
       const seed = { ...fields }
       prGenerationInFlightRef.current[generationKey] = true
-      prFieldsByGenerationKeyRef.current[generationKey] = seed
       setPrGenerationRecords((prev) => ({
         ...prev,
         [generationKey]: createRunningPullRequestGenerationRecord(context, seed, fieldRevisions)
@@ -2356,31 +2359,6 @@ function SourceControlInner(): React.JSX.Element {
   })
 
   useEffect(() => {
-    if (!activePullRequestGenerationKey) {
-      return
-    }
-    if (
-      activePullRequestGenerationRecord?.status === 'succeeded' &&
-      !activePullRequestGenerationRecord.hydrated
-    ) {
-      return
-    }
-    prFieldsByGenerationKeyRef.current[activePullRequestGenerationKey] = {
-      base: prBase,
-      title: prTitle,
-      body: prBody,
-      draft: prDraft
-    }
-  }, [
-    activePullRequestGenerationKey,
-    activePullRequestGenerationRecord,
-    prBase,
-    prBody,
-    prDraft,
-    prTitle
-  ])
-
-  useEffect(() => {
     if (
       !activePullRequestGenerationKey ||
       !activePullRequestGenerationRecord ||
@@ -2398,11 +2376,7 @@ function SourceControlInner(): React.JSX.Element {
       return
     }
     const result = activePullRequestGenerationRecord.result
-    const nextFields = applyGeneratedPullRequestFields(
-      result,
-      activePullRequestGenerationRecord.seedFieldRevisions
-    )
-    prFieldsByGenerationKeyRef.current[activePullRequestGenerationKey] = nextFields
+    applyGeneratedPullRequestFields(result, activePullRequestGenerationRecord.seedFieldRevisions)
     setPrGenerationRecords((prev) => ({
       ...prev,
       [activePullRequestGenerationKey]: {

@@ -62,13 +62,165 @@ type ResolveSourceControlAiInput = {
   prCreationProductDefaults?: SourceControlAiPrCreationDefaults
 }
 
+export type ResolveSourceControlAiPrCreationDefaultsInput = {
+  settings: Pick<GlobalSettings, 'commitMessageAi' | 'sourceControlAi'>
+  repo?: Pick<Repo, 'sourceControlAi'> | null
+  prCreationProductDefaults?: SourceControlAiPrCreationDefaults
+}
+
 const OPERATION_LABEL: Record<SourceControlAiOperation, string> = {
   commitMessage: 'commit messages',
   pullRequest: 'pull request details'
 }
 
+const SOURCE_CONTROL_AI_OPERATIONS = ['commitMessage', 'pullRequest'] as const
+const PR_CREATION_DEFAULT_KEYS = [
+  'draft',
+  'useTemplate',
+  'generateDetailsOnOpen',
+  'openAfterCreate'
+] as const
+
 function copyRecord<T>(value: T | undefined): T | undefined {
   return value === undefined ? undefined : structuredClone(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasEntries(value: Record<string, unknown> | null | undefined): boolean {
+  return Object.keys(value ?? {}).length > 0
+}
+
+function isSafeRecordKey(key: string): boolean {
+  return key !== '' && key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const normalized: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (isSafeRecordKey(key) && typeof item === 'string') {
+      normalized[key] = item
+    }
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+function normalizeAgentModelRecord(value: unknown): Partial<Record<TuiAgent, string>> | undefined {
+  return normalizeStringRecord(value) as Partial<Record<TuiAgent, string>> | undefined
+}
+
+function normalizeHostAgentModelRecord(
+  value: unknown
+): Partial<Record<string, Partial<Record<TuiAgent, string>>>> | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const normalized: Partial<Record<string, Partial<Record<TuiAgent, string>>>> = {}
+  for (const [hostKey, hostModels] of Object.entries(value)) {
+    if (!isSafeRecordKey(hostKey)) {
+      continue
+    }
+    const normalizedHostModels = normalizeAgentModelRecord(hostModels)
+    if (normalizedHostModels) {
+      normalized[hostKey] = normalizedHostModels
+    }
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+function normalizeSourceControlAiModelChoice(
+  value: unknown
+): SourceControlAiModelChoice | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const choice: SourceControlAiModelChoice = {}
+  const selectedModelByAgent = normalizeAgentModelRecord(value.selectedModelByAgent)
+  if (selectedModelByAgent) {
+    choice.selectedModelByAgent = selectedModelByAgent
+  }
+  const selectedModelByAgentByHost = normalizeHostAgentModelRecord(value.selectedModelByAgentByHost)
+  if (selectedModelByAgentByHost) {
+    choice.selectedModelByAgentByHost = selectedModelByAgentByHost
+  }
+  const selectedThinkingByModel = normalizeStringRecord(value.selectedThinkingByModel)
+  if (selectedThinkingByModel) {
+    choice.selectedThinkingByModel = selectedThinkingByModel
+  }
+  return Object.keys(choice).length > 0 ? choice : undefined
+}
+
+function normalizeOperationRecord<T>(
+  value: unknown,
+  normalizeValue: (value: unknown) => T | undefined
+): Partial<Record<SourceControlAiOperation, T>> | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const normalized: Partial<Record<SourceControlAiOperation, T>> = {}
+  for (const operation of SOURCE_CONTROL_AI_OPERATIONS) {
+    if (!Object.prototype.hasOwnProperty.call(value, operation)) {
+      continue
+    }
+    const normalizedValue = normalizeValue(value[operation])
+    if (normalizedValue !== undefined) {
+      normalized[operation] = normalizedValue
+    }
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+function normalizeRepoInstruction(value: unknown): string | null | undefined {
+  return typeof value === 'string' || value === null ? value : undefined
+}
+
+function normalizeRepoPrCreationDefaults(
+  value: unknown
+): RepoSourceControlAiOverrides['prCreationDefaults'] {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const normalized: NonNullable<RepoSourceControlAiOverrides['prCreationDefaults']> = {}
+  for (const key of PR_CREATION_DEFAULT_KEYS) {
+    const item = value[key]
+    if (typeof item === 'boolean' || item === null) {
+      normalized[key] = item
+    }
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+export function normalizeRepoSourceControlAiOverrides(
+  value: unknown
+): RepoSourceControlAiOverrides | undefined {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const normalized: RepoSourceControlAiOverrides = {}
+  const modelOverridesByOperation = normalizeOperationRecord(
+    value.modelOverridesByOperation,
+    normalizeSourceControlAiModelChoice
+  )
+  if (modelOverridesByOperation) {
+    normalized.modelOverridesByOperation = modelOverridesByOperation
+  }
+  const instructionsByOperation = normalizeOperationRecord(
+    value.instructionsByOperation,
+    normalizeRepoInstruction
+  )
+  if (instructionsByOperation) {
+    normalized.instructionsByOperation = instructionsByOperation
+  }
+  const prCreationDefaults = normalizeRepoPrCreationDefaults(value.prCreationDefaults)
+  if (prCreationDefaults) {
+    normalized.prCreationDefaults = prCreationDefaults
+  }
+  return normalized
 }
 
 export function getDefaultSourceControlAiSettings(): SourceControlAiSettings {
@@ -113,6 +265,70 @@ export function sourceControlAiSettingsFromLegacy(
   }
 }
 
+function mergeSelectedModelByAgentByHost(
+  base: Partial<Record<string, Partial<Record<TuiAgent, string>>>> | undefined,
+  override: Partial<Record<string, Partial<Record<TuiAgent, string>>>> | undefined
+): Partial<Record<string, Partial<Record<TuiAgent, string>>>> {
+  const merged = copyRecord(base) ?? {}
+  for (const [hostKey, hostModels] of Object.entries(override ?? {})) {
+    merged[hostKey] = {
+      ...merged[hostKey],
+      ...hostModels
+    }
+  }
+  return merged
+}
+
+function mergeLegacyModelSelectionDelta<T>(
+  existing: Record<string, T> | null | undefined,
+  legacy: Record<string, T> | null | undefined,
+  projected: Record<string, T> | null | undefined
+): Record<string, T> | undefined {
+  const merged: Record<string, T> = { ...existing }
+  let changed = false
+  const keys = new Set([...Object.keys(legacy ?? {}), ...Object.keys(projected ?? {})])
+  for (const key of keys) {
+    const legacyHasKey = Object.prototype.hasOwnProperty.call(legacy ?? {}, key)
+    const legacyValue = legacy?.[key]
+    if (JSON.stringify(projected?.[key]) === JSON.stringify(legacyValue)) {
+      continue
+    }
+    changed = true
+    if (legacyHasKey && legacyValue !== undefined) {
+      merged[key] = legacyValue
+    } else {
+      delete merged[key]
+    }
+  }
+  return changed ? merged : (existing ?? undefined)
+}
+
+function mergeLegacyHostModelSelectionDelta(
+  existing: Partial<Record<string, Partial<Record<TuiAgent, string>>>> | null | undefined,
+  legacy: Partial<Record<string, Partial<Record<TuiAgent, string>>>> | null | undefined,
+  projected: Partial<Record<string, Partial<Record<TuiAgent, string>>>> | null | undefined
+): Partial<Record<string, Partial<Record<TuiAgent, string>>>> | undefined {
+  const merged = copyRecord(existing) ?? {}
+  let changed = false
+  const hostKeys = new Set([...Object.keys(legacy ?? {}), ...Object.keys(projected ?? {})])
+  for (const hostKey of hostKeys) {
+    const nextHostModels = mergeLegacyModelSelectionDelta(
+      merged[hostKey],
+      legacy?.[hostKey],
+      projected?.[hostKey]
+    )
+    if (nextHostModels !== merged[hostKey]) {
+      changed = true
+    }
+    if (nextHostModels && Object.keys(nextHostModels).length > 0) {
+      merged[hostKey] = nextHostModels
+    } else {
+      delete merged[hostKey]
+    }
+  }
+  return changed ? merged : (existing ?? undefined)
+}
+
 export function mergeLegacyCommitMessageAiIntoSourceControlAi(
   sourceControlAi: SourceControlAiSettings | null | undefined,
   legacy: CommitMessageAiSettings | null | undefined,
@@ -123,6 +339,69 @@ export function mergeLegacyCommitMessageAiIntoSourceControlAi(
   const base = normalizeSourceControlAiSettings(sourceControlAi, legacy)
   if (!legacy) {
     return base
+  }
+  if (sourceControlAi) {
+    const existingCommitChoice = base.modelOverridesByOperation?.commitMessage
+    const projectedLegacy = projectSourceControlAiToLegacyCommitMessageAi(base)
+    const selectedModelByAgent = mergeLegacyModelSelectionDelta(
+      existingCommitChoice?.selectedModelByAgent,
+      legacy.selectedModelByAgent,
+      projectedLegacy.selectedModelByAgent
+    )
+    const selectedModelByAgentByHost = mergeLegacyHostModelSelectionDelta(
+      existingCommitChoice?.selectedModelByAgentByHost,
+      legacy.selectedModelByAgentByHost,
+      projectedLegacy.selectedModelByAgentByHost
+    )
+    const selectedThinkingByModel = mergeLegacyModelSelectionDelta(
+      existingCommitChoice?.selectedThinkingByModel,
+      legacy.selectedThinkingByModel,
+      projectedLegacy.selectedThinkingByModel
+    )
+    const shouldMergeLegacyModels =
+      selectedModelByAgent !== existingCommitChoice?.selectedModelByAgent ||
+      selectedModelByAgentByHost !== existingCommitChoice?.selectedModelByAgentByHost ||
+      selectedThinkingByModel !== existingCommitChoice?.selectedThinkingByModel
+    const nextModelOverridesByOperation = { ...base.modelOverridesByOperation }
+    if (shouldMergeLegacyModels) {
+      const nextCommitChoice: SourceControlAiModelChoice = {}
+      if (hasEntries(selectedModelByAgent)) {
+        nextCommitChoice.selectedModelByAgent = selectedModelByAgent
+      }
+      if (hasEntries(selectedModelByAgentByHost)) {
+        nextCommitChoice.selectedModelByAgentByHost = selectedModelByAgentByHost
+      }
+      if (hasEntries(selectedThinkingByModel)) {
+        nextCommitChoice.selectedThinkingByModel = selectedThinkingByModel
+      }
+      if (Object.keys(nextCommitChoice).length > 0) {
+        nextModelOverridesByOperation.commitMessage = nextCommitChoice
+      } else {
+        delete nextModelOverridesByOperation.commitMessage
+      }
+    }
+    // Why: rollback builds write commitMessageAi, while new builds project
+    // commit-message overrides there. Keep those model choices scoped to
+    // commit-message generation so PR defaults cannot drift on reload.
+    return normalizeSourceControlAiSettings(
+      {
+        ...base,
+        enabled: legacy.enabled,
+        agentId: legacy.agentId,
+        discoveredModelsByAgent: copyRecord(legacy.discoveredModelsByAgent) ?? {},
+        discoveredModelsByAgentByHost: copyRecord(legacy.discoveredModelsByAgentByHost) ?? {},
+        customAgentCommand: legacy.customAgentCommand,
+        instructionsByOperation: {
+          ...base.instructionsByOperation,
+          commitMessage: legacy.customPrompt ?? '',
+          ...(options.pullRequestInstructionsFromLegacy
+            ? { pullRequest: legacy.customPrompt ?? '' }
+            : {})
+        },
+        modelOverridesByOperation: nextModelOverridesByOperation
+      },
+      legacy
+    )
   }
   return normalizeSourceControlAiSettings(
     {
@@ -179,6 +458,45 @@ export function normalizeSourceControlAiSettings(
   }
 }
 
+export function readSourceControlAiModelChoiceForHost(
+  choice: SourceControlAiModelChoice | null | undefined,
+  hostKey: string,
+  agentId: TuiAgent
+): string | undefined {
+  return (
+    choice?.selectedModelByAgentByHost?.[hostKey]?.[agentId] ??
+    (hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
+      ? choice?.selectedModelByAgent?.[agentId]
+      : undefined)
+  )
+}
+
+export function selectSourceControlAiModelChoiceForHost(
+  choice: SourceControlAiModelChoice | undefined,
+  hostKey: string,
+  agentId: TuiAgent,
+  modelId: string
+): SourceControlAiModelChoice {
+  const hostSelectedModels = choice?.selectedModelByAgentByHost?.[hostKey] ?? {}
+  return {
+    ...choice,
+    selectedModelByAgent:
+      hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
+        ? {
+            ...choice?.selectedModelByAgent,
+            [agentId]: modelId
+          }
+        : choice?.selectedModelByAgent,
+    selectedModelByAgentByHost: {
+      ...choice?.selectedModelByAgentByHost,
+      [hostKey]: {
+        ...hostSelectedModels,
+        [agentId]: modelId
+      }
+    }
+  }
+}
+
 export function clearSourceControlAiModelChoiceForHost(
   choice: SourceControlAiModelChoice | undefined,
   hostKey: string,
@@ -223,31 +541,28 @@ export function projectSourceControlAiToLegacyCommitMessageAi(
   sourceControlAi: SourceControlAiSettings,
   previousLegacy?: CommitMessageAiSettings | null
 ): CommitMessageAiSettings {
+  const commitMessageChoice = sourceControlAi.modelOverridesByOperation?.commitMessage
   return {
     enabled: sourceControlAi.enabled,
     agentId: sourceControlAi.agentId,
-    selectedModelByAgent: { ...sourceControlAi.selectedModelByAgent },
-    selectedModelByAgentByHost: copyRecord(sourceControlAi.selectedModelByAgentByHost) ?? {},
+    selectedModelByAgent: {
+      ...sourceControlAi.selectedModelByAgent,
+      ...commitMessageChoice?.selectedModelByAgent
+    },
+    selectedModelByAgentByHost: mergeSelectedModelByAgentByHost(
+      sourceControlAi.selectedModelByAgentByHost,
+      commitMessageChoice?.selectedModelByAgentByHost
+    ),
     discoveredModelsByAgent: copyRecord(sourceControlAi.discoveredModelsByAgent) ?? {},
     discoveredModelsByAgentByHost: copyRecord(sourceControlAi.discoveredModelsByAgentByHost) ?? {},
-    selectedThinkingByModel: { ...sourceControlAi.selectedThinkingByModel },
+    selectedThinkingByModel: {
+      ...sourceControlAi.selectedThinkingByModel,
+      ...commitMessageChoice?.selectedThinkingByModel
+    },
     customPrompt:
       sourceControlAi.instructionsByOperation.commitMessage ?? previousLegacy?.customPrompt ?? '',
     customAgentCommand: sourceControlAi.customAgentCommand
   }
-}
-
-function readSelectedModelId(
-  choice: SourceControlAiModelChoice | null | undefined,
-  hostKey: string,
-  agentId: TuiAgent
-): string | undefined {
-  return (
-    choice?.selectedModelByAgentByHost?.[hostKey]?.[agentId] ??
-    (hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
-      ? choice?.selectedModelByAgent?.[agentId]
-      : undefined)
-  )
 }
 
 function readDefaultSelectedModelId(
@@ -255,7 +570,7 @@ function readDefaultSelectedModelId(
   hostKey: string,
   agentId: TuiAgent
 ): string | undefined {
-  return readSelectedModelId(
+  return readSourceControlAiModelChoiceForHost(
     {
       selectedModelByAgent: settings.selectedModelByAgent,
       selectedModelByAgentByHost: settings.selectedModelByAgentByHost
@@ -293,8 +608,16 @@ function selectPersistedModelId(args: {
 }): string {
   const { source, legacy, repoOverrides, operation, hostKey, agentId, defaultModelId } = args
   return (
-    readSelectedModelId(repoOverrides?.modelOverridesByOperation?.[operation], hostKey, agentId) ??
-    readSelectedModelId(source.modelOverridesByOperation?.[operation], hostKey, agentId) ??
+    readSourceControlAiModelChoiceForHost(
+      repoOverrides?.modelOverridesByOperation?.[operation],
+      hostKey,
+      agentId
+    ) ??
+    readSourceControlAiModelChoiceForHost(
+      source.modelOverridesByOperation?.[operation],
+      hostKey,
+      agentId
+    ) ??
     readDefaultSelectedModelId(source, hostKey, agentId) ??
     legacy?.selectedModelByAgentByHost?.[hostKey]?.[agentId] ??
     (hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
@@ -326,10 +649,21 @@ function resolveThinkingLevel(args: {
 }
 
 function hasOwnInstruction(
-  instructions: Partial<Record<SourceControlAiOperation, string>> | null | undefined,
+  instructions: Partial<Record<SourceControlAiOperation, string | null>> | null | undefined,
   operation: SourceControlAiOperation
 ): boolean {
   return Object.prototype.hasOwnProperty.call(instructions ?? {}, operation)
+}
+
+function readRepoInstructionOverride(
+  instructions: RepoSourceControlAiOverrides['instructionsByOperation'],
+  operation: SourceControlAiOperation
+): string | undefined {
+  if (!hasOwnInstruction(instructions, operation)) {
+    return undefined
+  }
+  const instruction = instructions?.[operation]
+  return typeof instruction === 'string' ? instruction : undefined
 }
 
 export function resolveSourceControlAiInstructions(args: {
@@ -341,9 +675,13 @@ export function resolveSourceControlAiInstructions(args: {
     args.settings.sourceControlAi,
     args.settings.commitMessageAi
   )
-  const repoInstructions = args.repo?.sourceControlAi?.instructionsByOperation
-  if (hasOwnInstruction(repoInstructions, args.operation)) {
-    return (repoInstructions?.[args.operation] ?? '').trim()
+  const repoOverrides = normalizeRepoSourceControlAiOverrides(args.repo?.sourceControlAi)
+  const repoInstruction = readRepoInstructionOverride(
+    repoOverrides?.instructionsByOperation,
+    args.operation
+  )
+  if (repoInstruction !== undefined) {
+    return repoInstruction.trim()
   }
   const globalInstruction = source.instructionsByOperation[args.operation]
   if (typeof globalInstruction === 'string') {
@@ -359,8 +697,12 @@ export function hasConfiguredSourceControlAiInstructions(args: {
   repo?: Pick<Repo, 'sourceControlAi'> | null
   operation: SourceControlAiOperation
 }): boolean {
-  const repoInstructions = args.repo?.sourceControlAi?.instructionsByOperation
-  if (hasOwnInstruction(repoInstructions, args.operation)) {
+  const repoOverrides = normalizeRepoSourceControlAiOverrides(args.repo?.sourceControlAi)
+  const repoInstruction = readRepoInstructionOverride(
+    repoOverrides?.instructionsByOperation,
+    args.operation
+  )
+  if (repoInstruction !== undefined) {
     return true
   }
   return resolveSourceControlAiInstructions(args).length > 0
@@ -388,6 +730,20 @@ function resolvePrCreationDefaults(
   }
 }
 
+export function resolveSourceControlAiPrCreationDefaults(
+  input: ResolveSourceControlAiPrCreationDefaultsInput
+): Required<SourceControlAiPrCreationDefaults> {
+  const source = normalizeSourceControlAiSettings(
+    input.settings.sourceControlAi,
+    input.settings.commitMessageAi
+  )
+  return resolvePrCreationDefaults(
+    source,
+    normalizeRepoSourceControlAiOverrides(input.repo?.sourceControlAi),
+    input.prCreationProductDefaults
+  )
+}
+
 export function resolveSourceControlAiForOperation(
   input: ResolveSourceControlAiInput
 ): ResolveSourceControlAiResult {
@@ -400,8 +756,10 @@ export function resolveSourceControlAiForOperation(
     }
   }
 
+  // Why: a normalized null means "use the current default agent"; stale legacy
+  // commitMessageAi should not make that choice sticky again.
   const agentChoice = resolveCommitMessageAgentChoice(
-    source.agentId ?? legacy?.agentId,
+    source.agentId,
     input.settings.defaultTuiAgent
   )
   if (!agentChoice) {
@@ -413,7 +771,7 @@ export function resolveSourceControlAiForOperation(
     }
   }
 
-  const repoOverrides = input.repo?.sourceControlAi
+  const repoOverrides = normalizeRepoSourceControlAiOverrides(input.repo?.sourceControlAi)
   const prCreationDefaults = resolvePrCreationDefaults(
     source,
     repoOverrides,

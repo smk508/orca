@@ -6,13 +6,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, Terminal } from 'lucide-react'
 import type { GlobalSettings, TuiAgent } from '../../../../shared/types'
 import type {
-  SourceControlAiModelChoice,
   SourceControlAiOperation,
   SourceControlAiSettings
 } from '../../../../shared/source-control-ai-types'
 import {
   clearSourceControlAiModelChoiceForHost,
-  normalizeSourceControlAiSettings
+  normalizeSourceControlAiSettings,
+  readSourceControlAiModelChoiceForHost,
+  selectSourceControlAiModelChoiceForHost
 } from '../../../../shared/source-control-ai'
 import {
   CUSTOM_AGENT_ID,
@@ -49,6 +50,10 @@ type CommitMessageAiPaneProps = {
   customPromptDiscardSignal?: number
 }
 
+type SourceControlAiConfigPatch =
+  | Partial<SourceControlAiSettings>
+  | ((current: SourceControlAiSettings) => Partial<SourceControlAiSettings>)
+
 type ModelDiscoveryState = {
   status: 'idle' | 'loading' | 'ready' | 'error'
   hostKey: string
@@ -76,9 +81,13 @@ function readSelectedModelId(
   hostKey: string,
   agentId: TuiAgent
 ): string | undefined {
-  return (
-    config.selectedModelByAgentByHost?.[hostKey]?.[agentId] ??
-    (hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY ? config.selectedModelByAgent[agentId] : undefined)
+  return readSourceControlAiModelChoiceForHost(
+    {
+      selectedModelByAgent: config.selectedModelByAgent,
+      selectedModelByAgentByHost: config.selectedModelByAgentByHost
+    },
+    hostKey,
+    agentId
   )
 }
 
@@ -119,16 +128,23 @@ export function mergeDiscoveredModelsIntoCommitMessageConfig(
   defaultModelId: string,
   hostKey = LOCAL_COMMIT_MESSAGE_HOST_KEY
 ): SourceControlAiSettings {
-  const hostSelectedModels = config.selectedModelByAgentByHost?.[hostKey] ?? {}
   const persisted = readSelectedModelId(config, hostKey, agentId)
   const nextModelId = models.some((model) => model.id === persisted) ? persisted : defaultModelId
-  const nextHostSelectedModels =
+  const selectedModelChoice =
     nextModelId && nextModelId !== persisted
-      ? {
-          ...hostSelectedModels,
-          [agentId]: nextModelId
+      ? selectSourceControlAiModelChoiceForHost(
+          {
+            selectedModelByAgent: config.selectedModelByAgent,
+            selectedModelByAgentByHost: config.selectedModelByAgentByHost
+          },
+          hostKey,
+          agentId,
+          nextModelId
+        )
+      : {
+          selectedModelByAgent: config.selectedModelByAgent,
+          selectedModelByAgentByHost: config.selectedModelByAgentByHost
         }
-      : hostSelectedModels
   const nextHostDiscoveredModels = {
     ...config.discoveredModelsByAgentByHost?.[hostKey],
     [agentId]: models
@@ -142,22 +158,14 @@ export function mergeDiscoveredModelsIntoCommitMessageConfig(
             [agentId]: models
           },
           selectedModelByAgent:
-            nextModelId && nextModelId !== persisted
-              ? {
-                  ...config.selectedModelByAgent,
-                  [agentId]: nextModelId
-                }
-              : config.selectedModelByAgent
+            selectedModelChoice.selectedModelByAgent ?? config.selectedModelByAgent
         }
       : {}),
     discoveredModelsByAgentByHost: {
       ...config.discoveredModelsByAgentByHost,
       [hostKey]: nextHostDiscoveredModels
     },
-    selectedModelByAgentByHost: {
-      ...config.selectedModelByAgentByHost,
-      [hostKey]: nextHostSelectedModels
-    }
+    selectedModelByAgentByHost: selectedModelChoice.selectedModelByAgentByHost
   }
 }
 
@@ -167,48 +175,18 @@ function selectModelForHost(
   agentId: TuiAgent,
   modelId: string
 ): Pick<SourceControlAiSettings, 'selectedModelByAgent' | 'selectedModelByAgentByHost'> {
-  const hostSelectedModels = config.selectedModelByAgentByHost?.[hostKey] ?? {}
+  const choice = selectSourceControlAiModelChoiceForHost(
+    {
+      selectedModelByAgent: config.selectedModelByAgent,
+      selectedModelByAgentByHost: config.selectedModelByAgentByHost
+    },
+    hostKey,
+    agentId,
+    modelId
+  )
   return {
-    selectedModelByAgent:
-      hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
-        ? {
-            ...config.selectedModelByAgent,
-            [agentId]: modelId
-          }
-        : config.selectedModelByAgent,
-    selectedModelByAgentByHost: {
-      ...config.selectedModelByAgentByHost,
-      [hostKey]: {
-        ...hostSelectedModels,
-        [agentId]: modelId
-      }
-    }
-  }
-}
-
-function selectOperationModelForHost(
-  choice: SourceControlAiModelChoice | undefined,
-  hostKey: string,
-  agentId: TuiAgent,
-  modelId: string
-): SourceControlAiModelChoice {
-  const hostSelectedModels = choice?.selectedModelByAgentByHost?.[hostKey] ?? {}
-  return {
-    ...choice,
-    selectedModelByAgent:
-      hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
-        ? {
-            ...choice?.selectedModelByAgent,
-            [agentId]: modelId
-          }
-        : choice?.selectedModelByAgent,
-    selectedModelByAgentByHost: {
-      ...choice?.selectedModelByAgentByHost,
-      [hostKey]: {
-        ...hostSelectedModels,
-        [agentId]: modelId
-      }
-    }
+    selectedModelByAgent: choice.selectedModelByAgent ?? config.selectedModelByAgent,
+    selectedModelByAgentByHost: choice.selectedModelByAgentByHost
   }
 }
 
@@ -240,6 +218,7 @@ export function CommitMessageAiPane({
   const config = readSettings(settings)
   const latestConfigRef = useRef(config)
   latestConfigRef.current = config
+  const settingsWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [modelDiscoveryByAgent, setModelDiscoveryByAgent] = useState<
     Partial<Record<TuiAgent, ModelDiscoveryState>>
   >({})
@@ -361,8 +340,17 @@ export function CommitMessageAiPane({
   const activeDiscovery =
     rawActiveDiscovery?.hostKey === discoveryHostKey ? rawActiveDiscovery : undefined
 
-  const writeConfig = (patch: Partial<SourceControlAiSettings>): void => {
-    updateSettings({ sourceControlAi: { ...config, ...patch } })
+  const writeConfig = (patch: SourceControlAiConfigPatch): Promise<void> => {
+    const next = settingsWriteQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const latestSettings = useAppStore.getState().settings
+        const latestConfig = latestSettings ? readSettings(latestSettings) : latestConfigRef.current
+        const resolvedPatch = typeof patch === 'function' ? patch(latestConfig) : patch
+        await updateSettings({ sourceControlAi: { ...latestConfig, ...resolvedPatch } })
+      })
+    settingsWriteQueueRef.current = next
+    return next
   }
 
   const refreshModels = async (agentId: TuiAgent): Promise<void> => {
@@ -417,16 +405,15 @@ export function CommitMessageAiPane({
           defaultModelId: result.defaultModelId
         }
       }))
-      const latestConfig = latestConfigRef.current
-      updateSettings({
-        sourceControlAi: mergeDiscoveredModelsIntoCommitMessageConfig(
-          latestConfig,
+      writeConfig((current) =>
+        mergeDiscoveredModelsIntoCommitMessageConfig(
+          current,
           agentId,
           result.models,
           result.defaultModelId,
           discoveryHostKey
         )
-      })
+      )
     } catch (error) {
       setModelDiscoveryByAgent((prev) => ({
         ...prev,
@@ -483,40 +470,44 @@ export function CommitMessageAiPane({
     // so Generate works without maintaining a second agent preference. If the
     // user previously persisted 'custom', keep it and let them re-edit the
     // command — no implicit reset to a preset.
-    const seedAgentId = resolveCommitMessageAgentChoice(config.agentId, settings.defaultTuiAgent)
+    const defaultTuiAgent = settings.defaultTuiAgent
+    const seedAgentId = resolveCommitMessageAgentChoice(config.agentId, defaultTuiAgent)
     if (!seedAgentId) {
       writeConfig({ enabled: true, agentId: null })
       return
     }
-    const seedCapability = isCustomAgentId(seedAgentId)
-      ? undefined
-      : getCommitMessageAgentCapability(seedAgentId)
-    const seedModel = seedCapability
-      ? resolveSelectedModel(config, seedCapability, discoveryHostKey)
-      : null
-    const seedThinking = seedModel ? resolveSelectedThinking(config, seedModel) : undefined
-
-    const selectedModelPatch = seedCapability
-      ? selectModelForHost(
-          config,
-          discoveryHostKey,
-          seedCapability.id,
-          readSelectedModelId(config, discoveryHostKey, seedCapability.id) ??
-            seedCapability.defaultModelId
-        )
-      : {
-          selectedModelByAgent: config.selectedModelByAgent,
-          selectedModelByAgentByHost: config.selectedModelByAgentByHost
-        }
-    const nextSelectedThinkingByModel = { ...config.selectedThinkingByModel }
-    if (seedModel && seedThinking && !nextSelectedThinkingByModel[seedModel.id]) {
-      nextSelectedThinkingByModel[seedModel.id] = seedThinking
-    }
-    writeConfig({
-      enabled: true,
-      agentId: seedAgentId,
-      ...selectedModelPatch,
-      selectedThinkingByModel: nextSelectedThinkingByModel
+    writeConfig((current) => {
+      const currentSeedAgentId = resolveCommitMessageAgentChoice(current.agentId, defaultTuiAgent)
+      const agentId = currentSeedAgentId ?? seedAgentId
+      const currentCapability = isCustomAgentId(agentId)
+        ? undefined
+        : getCommitMessageAgentCapability(agentId)
+      const seedModel = currentCapability
+        ? resolveSelectedModel(current, currentCapability, discoveryHostKey)
+        : null
+      const seedThinking = seedModel ? resolveSelectedThinking(current, seedModel) : undefined
+      const selectedModelPatch = currentCapability
+        ? selectModelForHost(
+            current,
+            discoveryHostKey,
+            currentCapability.id,
+            readSelectedModelId(current, discoveryHostKey, currentCapability.id) ??
+              currentCapability.defaultModelId
+          )
+        : {
+            selectedModelByAgent: current.selectedModelByAgent,
+            selectedModelByAgentByHost: current.selectedModelByAgentByHost
+          }
+      const nextSelectedThinkingByModel = { ...current.selectedThinkingByModel }
+      if (seedModel && seedThinking && !nextSelectedThinkingByModel[seedModel.id]) {
+        nextSelectedThinkingByModel[seedModel.id] = seedThinking
+      }
+      return {
+        enabled: true,
+        agentId,
+        ...selectedModelPatch,
+        selectedThinkingByModel: nextSelectedThinkingByModel
+      }
     })
   }
 
@@ -532,29 +523,31 @@ export function CommitMessageAiPane({
     if (!capability) {
       return
     }
-    const selectedModelPatch = selectModelForHost(
-      config,
-      discoveryHostKey,
-      capability.id,
-      readSelectedModelId(config, discoveryHostKey, capability.id) ?? capability.defaultModelId
-    )
-    const newModel = resolveSelectedModel(
-      { ...config, ...selectedModelPatch, agentId: capability.id },
-      capability,
-      discoveryHostKey
-    )
-    const nextSelectedThinkingByModel = { ...config.selectedThinkingByModel }
-    if (
-      newModel.thinkingLevels &&
-      newModel.defaultThinkingLevel &&
-      !nextSelectedThinkingByModel[newModel.id]
-    ) {
-      nextSelectedThinkingByModel[newModel.id] = newModel.defaultThinkingLevel
-    }
-    writeConfig({
-      agentId: capability.id,
-      ...selectedModelPatch,
-      selectedThinkingByModel: nextSelectedThinkingByModel
+    writeConfig((current) => {
+      const selectedModelPatch = selectModelForHost(
+        current,
+        discoveryHostKey,
+        capability.id,
+        readSelectedModelId(current, discoveryHostKey, capability.id) ?? capability.defaultModelId
+      )
+      const newModel = resolveSelectedModel(
+        { ...current, ...selectedModelPatch, agentId: capability.id },
+        capability,
+        discoveryHostKey
+      )
+      const nextSelectedThinkingByModel = { ...current.selectedThinkingByModel }
+      if (
+        newModel.thinkingLevels &&
+        newModel.defaultThinkingLevel &&
+        !nextSelectedThinkingByModel[newModel.id]
+      ) {
+        nextSelectedThinkingByModel[newModel.id] = newModel.defaultThinkingLevel
+      }
+      return {
+        agentId: capability.id,
+        ...selectedModelPatch,
+        selectedThinkingByModel: nextSelectedThinkingByModel
+      }
     })
   }
 
@@ -570,23 +563,25 @@ export function CommitMessageAiPane({
     if (!model) {
       return
     }
-    const selectedModelPatch = selectModelForHost(
-      config,
-      discoveryHostKey,
-      activeCapability.id,
-      model.id
-    )
-    const nextSelectedThinkingByModel = { ...config.selectedThinkingByModel }
-    if (
-      model.thinkingLevels &&
-      model.defaultThinkingLevel &&
-      !nextSelectedThinkingByModel[model.id]
-    ) {
-      nextSelectedThinkingByModel[model.id] = model.defaultThinkingLevel
-    }
-    writeConfig({
-      ...selectedModelPatch,
-      selectedThinkingByModel: nextSelectedThinkingByModel
+    writeConfig((current) => {
+      const selectedModelPatch = selectModelForHost(
+        current,
+        discoveryHostKey,
+        activeCapability.id,
+        model.id
+      )
+      const nextSelectedThinkingByModel = { ...current.selectedThinkingByModel }
+      if (
+        model.thinkingLevels &&
+        model.defaultThinkingLevel &&
+        !nextSelectedThinkingByModel[model.id]
+      ) {
+        nextSelectedThinkingByModel[model.id] = model.defaultThinkingLevel
+      }
+      return {
+        ...selectedModelPatch,
+        selectedThinkingByModel: nextSelectedThinkingByModel
+      }
     })
   }
 
@@ -594,12 +589,12 @@ export function CommitMessageAiPane({
     if (!activeModel) {
       return
     }
-    writeConfig({
+    writeConfig((current) => ({
       selectedThinkingByModel: {
-        ...config.selectedThinkingByModel,
+        ...current.selectedThinkingByModel,
         [activeModel.id]: newLevelId
       }
-    })
+    }))
   }
 
   const readOperationOverrideModelId = (
@@ -609,12 +604,7 @@ export function CommitMessageAiPane({
       return undefined
     }
     const choice = config.modelOverridesByOperation?.[operation]
-    return (
-      choice?.selectedModelByAgentByHost?.[discoveryHostKey]?.[activeCapability.id] ??
-      (discoveryHostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
-        ? choice?.selectedModelByAgent?.[activeCapability.id]
-        : undefined)
-    )
+    return readSourceControlAiModelChoiceForHost(choice, discoveryHostKey, activeCapability.id)
   }
 
   const onOperationModelChange = (
@@ -624,46 +614,50 @@ export function CommitMessageAiPane({
     if (!activeCapability) {
       return
     }
-    const nextOverrides = { ...config.modelOverridesByOperation }
     if (newModelId === INHERIT_MODEL_SELECT_VALUE) {
-      const nextChoice = clearSourceControlAiModelChoiceForHost(
-        nextOverrides[operation],
-        discoveryHostKey,
-        activeCapability.id
-      )
-      if (nextChoice) {
-        nextOverrides[operation] = nextChoice
-      } else {
-        delete nextOverrides[operation]
-      }
-      writeConfig({ modelOverridesByOperation: nextOverrides })
+      writeConfig((current) => {
+        const latestOverrides = { ...current.modelOverridesByOperation }
+        const nextChoice = clearSourceControlAiModelChoiceForHost(
+          latestOverrides[operation],
+          discoveryHostKey,
+          activeCapability.id
+        )
+        if (nextChoice) {
+          latestOverrides[operation] = nextChoice
+        } else {
+          delete latestOverrides[operation]
+        }
+        return { modelOverridesByOperation: latestOverrides }
+      })
       return
     }
     const model = activeCapability.models.find((candidate) => candidate.id === newModelId)
     if (!model) {
       return
     }
-    const currentChoice = config.modelOverridesByOperation?.[operation]
-    const nextChoice = selectOperationModelForHost(
-      currentChoice,
-      discoveryHostKey,
-      activeCapability.id,
-      model.id
-    )
-    if (
-      model.thinkingLevels &&
-      model.defaultThinkingLevel &&
-      !nextChoice.selectedThinkingByModel?.[model.id]
-    ) {
-      nextChoice.selectedThinkingByModel = {
-        ...nextChoice.selectedThinkingByModel,
-        [model.id]: model.defaultThinkingLevel
+    writeConfig((current) => {
+      const currentChoice = current.modelOverridesByOperation?.[operation]
+      const nextChoice = selectSourceControlAiModelChoiceForHost(
+        currentChoice,
+        discoveryHostKey,
+        activeCapability.id,
+        model.id
+      )
+      if (
+        model.thinkingLevels &&
+        model.defaultThinkingLevel &&
+        !nextChoice.selectedThinkingByModel?.[model.id]
+      ) {
+        nextChoice.selectedThinkingByModel = {
+          ...nextChoice.selectedThinkingByModel,
+          [model.id]: model.defaultThinkingLevel
+        }
       }
-    }
-    writeConfig({
-      modelOverridesByOperation: {
-        ...nextOverrides,
-        [operation]: nextChoice
+      return {
+        modelOverridesByOperation: {
+          ...current.modelOverridesByOperation,
+          [operation]: nextChoice
+        }
       }
     })
   }
@@ -673,22 +667,18 @@ export function CommitMessageAiPane({
     modelId: string,
     newLevelId: string
   ): void => {
-    const currentChoice = config.modelOverridesByOperation?.[operation]
-    if (!currentChoice) {
-      return
-    }
-    writeConfig({
+    writeConfig((current) => ({
       modelOverridesByOperation: {
-        ...config.modelOverridesByOperation,
+        ...current.modelOverridesByOperation,
         [operation]: {
-          ...currentChoice,
+          ...current.modelOverridesByOperation?.[operation],
           selectedThinkingByModel: {
-            ...currentChoice.selectedThinkingByModel,
+            ...current.modelOverridesByOperation?.[operation]?.selectedThinkingByModel,
             [modelId]: newLevelId
           }
         }
       }
-    })
+    }))
   }
 
   const onSaveInstructions = async (operation: SourceControlAiOperation): Promise<void> => {
@@ -701,15 +691,12 @@ export function CommitMessageAiPane({
     }
     setIsSavingInstructions(true)
     try {
-      await updateSettings({
-        sourceControlAi: {
-          ...config,
-          instructionsByOperation: {
-            ...config.instructionsByOperation,
-            [operation]: draft
-          }
+      await writeConfig((current) => ({
+        instructionsByOperation: {
+          ...current.instructionsByOperation,
+          [operation]: draft
         }
-      })
+      }))
     } finally {
       setIsSavingInstructions(false)
     }
@@ -727,12 +714,12 @@ export function CommitMessageAiPane({
     key: keyof NonNullable<SourceControlAiSettings['prCreationDefaults']>,
     value: boolean
   ): void => {
-    writeConfig({
+    writeConfig((current) => ({
       prCreationDefaults: {
-        ...config.prCreationDefaults,
+        ...current.prCreationDefaults,
         [key]: value
       }
-    })
+    }))
   }
 
   const sections: React.ReactNode[] = []

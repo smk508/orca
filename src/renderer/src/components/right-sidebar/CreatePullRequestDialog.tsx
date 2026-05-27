@@ -23,7 +23,8 @@ import { normalizeHostedReviewHeadRef } from '../../../../shared/hosted-review-r
 import { stripBaseRef, useCreatePullRequestDialogFields } from './useCreatePullRequestDialogFields'
 import {
   DEFAULT_SOURCE_CONTROL_AI_PR_CREATION_DEFAULTS,
-  resolveSourceControlAiForOperation
+  resolveSourceControlAiForOperation,
+  resolveSourceControlAiPrCreationDefaults
 } from '../../../../shared/source-control-ai'
 import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../shared/commit-message-host-key'
 import { getRuntimeGitScope } from '@/runtime/runtime-git-client'
@@ -89,7 +90,11 @@ export function CreatePullRequestDialog({
     })
     return resolved.ok
       ? resolved.value.prCreationDefaults
-      : DEFAULT_SOURCE_CONTROL_AI_PR_CREATION_DEFAULTS
+      : resolveSourceControlAiPrCreationDefaults({
+          settings,
+          repo,
+          prCreationProductDefaults: DEFAULT_SOURCE_CONTROL_AI_PR_CREATION_DEFAULTS
+        })
   }, [repo, settings])
   const {
     aiGenerationEnabled,

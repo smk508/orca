@@ -806,6 +806,90 @@ describe('Store', () => {
     expect(store.getSettings().commitMessageAi?.customPrompt).toBe('Use Conventional Commits.')
   })
 
+  it('merges rollback commit-message AI writes into existing source-control AI on load', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {
+        sourceControlAi: {
+          enabled: true,
+          agentId: 'codex',
+          selectedModelByAgent: { codex: 'source-model' },
+          selectedModelByAgentByHost: {},
+          discoveredModelsByAgent: {},
+          discoveredModelsByAgentByHost: {},
+          selectedThinkingByModel: { 'source-model': 'medium' },
+          customAgentCommand: 'codex',
+          instructionsByOperation: {
+            commitMessage: 'Source commit prompt',
+            pullRequest: 'Preserve PR prompt'
+          },
+          modelOverridesByOperation: {
+            pullRequest: {
+              selectedModelByAgent: { claude: 'pr-model' },
+              selectedThinkingByModel: { 'pr-model': 'high' }
+            }
+          },
+          prCreationDefaults: {
+            draft: true,
+            openAfterCreate: true
+          }
+        },
+        commitMessageAi: {
+          enabled: false,
+          agentId: 'claude',
+          selectedModelByAgent: { claude: 'legacy-model' },
+          selectedModelByAgentByHost: { 'ssh:conn-1': { claude: 'remote-legacy-model' } },
+          discoveredModelsByAgent: {},
+          discoveredModelsByAgentByHost: {},
+          selectedThinkingByModel: { 'legacy-model': 'high' },
+          customPrompt: 'Rollback commit prompt',
+          customAgentCommand: 'claude'
+        }
+      },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
+    const sourceControlAi = store.getSettings().sourceControlAi
+
+    expect(sourceControlAi).toMatchObject({
+      enabled: false,
+      agentId: 'claude',
+      selectedModelByAgent: { codex: 'source-model' },
+      selectedThinkingByModel: { 'source-model': 'medium' },
+      customAgentCommand: 'claude',
+      instructionsByOperation: {
+        commitMessage: 'Rollback commit prompt',
+        pullRequest: 'Preserve PR prompt'
+      },
+      prCreationDefaults: {
+        draft: true,
+        openAfterCreate: true
+      }
+    })
+    expect(sourceControlAi?.selectedModelByAgentByHost?.['ssh:conn-1']).toBeUndefined()
+    expect(sourceControlAi?.modelOverridesByOperation?.commitMessage).toEqual({
+      selectedModelByAgent: { claude: 'legacy-model' },
+      selectedModelByAgentByHost: { 'ssh:conn-1': { claude: 'remote-legacy-model' } },
+      selectedThinkingByModel: { 'legacy-model': 'high' }
+    })
+    expect(sourceControlAi?.modelOverridesByOperation?.pullRequest).toEqual({
+      selectedModelByAgent: { claude: 'pr-model' },
+      selectedThinkingByModel: { 'pr-model': 'high' }
+    })
+    expect(store.getSettings().commitMessageAi).toMatchObject({
+      enabled: false,
+      agentId: 'claude',
+      selectedModelByAgent: { claude: 'legacy-model' },
+      customPrompt: 'Rollback commit prompt',
+      customAgentCommand: 'claude'
+    })
+  })
+
   it('normalizes malformed visible task providers on load', async () => {
     writeDataFile({
       schemaVersion: 1,
@@ -1539,6 +1623,68 @@ describe('Store', () => {
     expect(reloaded.getRepo('r1')!.sourceControlAi).toBeUndefined()
   })
 
+  it('updateRepo normalizes source-control AI overrides before storing', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+
+    const updated = store.updateRepo('r1', {
+      sourceControlAi: {
+        instructionsByOperation: {
+          commitMessage: 'Repo style',
+          pullRequest: 42,
+          unknown: 'ignored'
+        },
+        prCreationDefaults: {
+          draft: true,
+          useTemplate: null,
+          openAfterCreate: 'yes'
+        },
+        modelOverridesByOperation: {
+          commitMessage: {
+            selectedModelByAgent: { codex: 'gpt-5.4', claude: false },
+            selectedThinkingByModel: { 'gpt-5.4': 'high', bad: true }
+          },
+          unknown: {
+            selectedModelByAgent: { codex: 'ignored' }
+          }
+        }
+      } as never
+    })
+
+    expect(updated!.sourceControlAi).toEqual({
+      instructionsByOperation: {
+        commitMessage: 'Repo style'
+      },
+      prCreationDefaults: {
+        draft: true,
+        useTemplate: null
+      },
+      modelOverridesByOperation: {
+        commitMessage: {
+          selectedModelByAgent: { codex: 'gpt-5.4' },
+          selectedThinkingByModel: { 'gpt-5.4': 'high' }
+        }
+      }
+    })
+  })
+
+  it('updateRepo ignores malformed source-control AI overrides without clearing existing overrides', async () => {
+    const store = await createStore()
+    store.addRepo(
+      makeRepo({
+        sourceControlAi: {
+          instructionsByOperation: { commitMessage: 'Keep me' }
+        }
+      })
+    )
+
+    const updated = store.updateRepo('r1', { sourceControlAi: 'bad' as never })
+
+    expect(updated!.sourceControlAi).toEqual({
+      instructionsByOperation: { commitMessage: 'Keep me' }
+    })
+  })
+
   // ── 8. setWorktreeMeta and getWorktreeMeta ─────────────────────────
 
   it('setWorktreeMeta creates meta with defaults for missing fields', async () => {
@@ -1634,12 +1780,16 @@ describe('Store', () => {
     expect(updated.sourceControlAi).toMatchObject({
       enabled: false,
       agentId: 'claude',
-      selectedModelByAgent: { claude: 'sonnet' },
-      selectedThinkingByModel: { sonnet: 'medium' },
+      selectedModelByAgent: {},
+      selectedThinkingByModel: {},
       customAgentCommand: 'claude',
       instructionsByOperation: {
         commitMessage: 'Legacy settings update'
       }
+    })
+    expect(updated.sourceControlAi?.modelOverridesByOperation?.commitMessage).toEqual({
+      selectedModelByAgent: { claude: 'sonnet' },
+      selectedThinkingByModel: { sonnet: 'medium' }
     })
   })
 

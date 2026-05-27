@@ -1,29 +1,37 @@
+/* eslint-disable max-lines -- Why: repo Source Control AI settings keep one
+   draft/save flow across model, instruction, and PR-default override groups. */
+import { useEffect, useMemo, useState } from 'react'
 import type { Repo } from '../../../../shared/types'
 import type {
   RepoSourceControlAiOverrides,
-  SourceControlAiModelChoice,
   SourceControlAiOperation
 } from '../../../../shared/source-control-ai-types'
 import {
   clearSourceControlAiModelChoiceForHost,
-  normalizeSourceControlAiSettings
+  normalizeRepoSourceControlAiOverrides,
+  normalizeSourceControlAiSettings,
+  readSourceControlAiModelChoiceForHost,
+  selectSourceControlAiModelChoiceForHost
 } from '../../../../shared/source-control-ai'
 import {
   getCommitMessageAgentCapability,
   isCustomAgentId,
   resolveCommitMessageAgentChoice
 } from '../../../../shared/commit-message-agent-spec'
-import { LOCAL_COMMIT_MESSAGE_HOST_KEY } from '../../../../shared/commit-message-host-key'
+import {
+  getCommitMessageModelDiscoveryHostKeyForScope,
+  LOCAL_COMMIT_MESSAGE_HOST_KEY
+} from '../../../../shared/commit-message-host-key'
 import { Label } from '../ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
 import { useAppStore } from '../../store'
 import { getRuntimeGitScope } from '../../runtime/runtime-git-client'
-import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../shared/commit-message-host-key'
 import { getRepositorySourceControlAiSectionId } from './repository-settings-targets'
+import { Button } from '../ui/button'
 
 type RepositorySourceControlAiSectionProps = {
   repo: Repo
-  updateRepo: (repoId: string, updates: Partial<Repo>) => void
+  updateRepo: (repoId: string, updates: Partial<Repo>) => void | Promise<boolean>
 }
 
 const INHERIT_MODEL_VALUE = '__inherit__'
@@ -51,51 +59,17 @@ const OPERATIONS: {
 ]
 
 type PrDefaultKey = keyof NonNullable<RepoSourceControlAiOverrides['prCreationDefaults']>
+type RepoAiDraftState = {
+  repoId: string
+  value: RepoSourceControlAiOverrides
+  baseSerialized: string
+}
 
 function hasOwnInstruction(
   instructions: RepoSourceControlAiOverrides['instructionsByOperation'],
   operation: SourceControlAiOperation
 ): boolean {
-  return Object.prototype.hasOwnProperty.call(instructions ?? {}, operation)
-}
-
-function readChoiceModel(
-  choice: SourceControlAiModelChoice | undefined,
-  hostKey: string,
-  agentId: string
-): string | undefined {
-  return (
-    choice?.selectedModelByAgentByHost?.[hostKey]?.[agentId] ??
-    (hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
-      ? choice?.selectedModelByAgent?.[agentId]
-      : undefined)
-  )
-}
-
-function selectModelForHost(
-  choice: SourceControlAiModelChoice | undefined,
-  hostKey: string,
-  agentId: string,
-  modelId: string
-): SourceControlAiModelChoice {
-  const hostSelectedModels = choice?.selectedModelByAgentByHost?.[hostKey] ?? {}
-  return {
-    ...choice,
-    selectedModelByAgent:
-      hostKey === LOCAL_COMMIT_MESSAGE_HOST_KEY
-        ? {
-            ...choice?.selectedModelByAgent,
-            [agentId]: modelId
-          }
-        : choice?.selectedModelByAgent,
-    selectedModelByAgentByHost: {
-      ...choice?.selectedModelByAgentByHost,
-      [hostKey]: {
-        ...hostSelectedModels,
-        [agentId]: modelId
-      }
-    }
-  }
+  return typeof instructions?.[operation] === 'string'
 }
 
 function triStateValue(value: boolean | null | undefined): 'inherit' | 'on' | 'off' {
@@ -106,6 +80,16 @@ function triStateValue(value: boolean | null | undefined): 'inherit' | 'on' | 'o
     return 'off'
   }
   return 'inherit'
+}
+
+function normalizeRepoAiDraft(
+  value: RepoSourceControlAiOverrides | null | undefined
+): RepoSourceControlAiOverrides {
+  return normalizeRepoSourceControlAiOverrides(value) ?? {}
+}
+
+function serializeRepoAiDraft(value: RepoSourceControlAiOverrides): string {
+  return JSON.stringify(normalizeRepoAiDraft(value))
 }
 
 export function RepositorySourceControlAiSection({
@@ -133,52 +117,139 @@ export function RepositorySourceControlAiSection({
     baseCapability && discoveredModels?.length
       ? { ...baseCapability, models: discoveredModels }
       : baseCapability
-  const repoAi = repo.sourceControlAi ?? {}
+  const persistedRepoAi = useMemo(
+    () => normalizeRepoAiDraft(repo.sourceControlAi),
+    [repo.sourceControlAi]
+  )
+  const persistedSerialized = useMemo(
+    () => serializeRepoAiDraft(persistedRepoAi),
+    [persistedRepoAi]
+  )
+  // Why: repo.sourceControlAi is saved as one nested value; a local draft keeps
+  // textarea keystrokes and sibling controls from racing over IPC/RPC.
+  const [draftState, setDraftState] = useState<RepoAiDraftState>(() => ({
+    repoId: repo.id,
+    value: persistedRepoAi,
+    baseSerialized: persistedSerialized
+  }))
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
-  const writeRepoAi = (next: RepoSourceControlAiOverrides): void => {
-    updateRepo(repo.id, { sourceControlAi: next })
+  useEffect(() => {
+    setDraftState((current) => {
+      const currentSerialized = serializeRepoAiDraft(current.value)
+      if (
+        current.repoId !== repo.id ||
+        currentSerialized === current.baseSerialized ||
+        currentSerialized === persistedSerialized
+      ) {
+        return {
+          repoId: repo.id,
+          value: persistedRepoAi,
+          baseSerialized: persistedSerialized
+        }
+      }
+      return current
+    })
+    setSaveError(null)
+  }, [persistedRepoAi, persistedSerialized, repo.id])
+
+  const repoAi = draftState.value
+  const draftSerialized = useMemo(() => serializeRepoAiDraft(repoAi), [repoAi])
+  const isDirty = draftState.repoId !== repo.id || draftSerialized !== draftState.baseSerialized
+
+  const updateDraftRepoAi = (
+    update: (current: RepoSourceControlAiOverrides) => RepoSourceControlAiOverrides
+  ): void => {
+    setDraftState((current) => ({
+      ...current,
+      value: normalizeRepoAiDraft(update(current.value))
+    }))
+    setSaveError(null)
+  }
+
+  const saveDraft = async (): Promise<void> => {
+    if (!isDirty || isSaving) {
+      return
+    }
+    const next = normalizeRepoAiDraft(draftState.value)
+    const nextSerialized = serializeRepoAiDraft(next)
+    setIsSaving(true)
+    setSaveError(null)
+    try {
+      const result = await updateRepo(repo.id, { sourceControlAi: next })
+      if (result === false) {
+        setSaveError('Failed to save Source Control AI settings.')
+        return
+      }
+      setDraftState((current) => {
+        if (current.repoId !== repo.id) {
+          return current
+        }
+        const currentSerialized = serializeRepoAiDraft(current.value)
+        return {
+          repoId: repo.id,
+          value: currentSerialized === nextSerialized ? next : current.value,
+          baseSerialized: nextSerialized
+        }
+      })
+    } catch {
+      setSaveError('Failed to save Source Control AI settings.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const discardDraft = (): void => {
+    setDraftState({
+      repoId: repo.id,
+      value: persistedRepoAi,
+      baseSerialized: persistedSerialized
+    })
+    setSaveError(null)
   }
 
   const updateModelOverride = (operation: SourceControlAiOperation, modelId: string): void => {
     if (!capability) {
       return
     }
-    const nextModelOverrides = { ...repoAi.modelOverridesByOperation }
-    if (modelId === INHERIT_MODEL_VALUE) {
-      const nextChoice = clearSourceControlAiModelChoiceForHost(
-        nextModelOverrides[operation],
+    updateDraftRepoAi((current) => {
+      const nextModelOverrides = { ...current.modelOverridesByOperation }
+      if (modelId === INHERIT_MODEL_VALUE) {
+        const nextChoice = clearSourceControlAiModelChoiceForHost(
+          nextModelOverrides[operation],
+          hostKey,
+          capability.id
+        )
+        if (nextChoice) {
+          nextModelOverrides[operation] = nextChoice
+        } else {
+          delete nextModelOverrides[operation]
+        }
+        return { ...current, modelOverridesByOperation: nextModelOverrides }
+      }
+      const model = capability.models.find((candidate) => candidate.id === modelId)
+      if (!model) {
+        return current
+      }
+      const nextChoice = selectSourceControlAiModelChoiceForHost(
+        current.modelOverridesByOperation?.[operation],
         hostKey,
-        capability.id
+        capability.id,
+        model.id
       )
-      if (nextChoice) {
-        nextModelOverrides[operation] = nextChoice
-      } else {
-        delete nextModelOverrides[operation]
+      if (model.thinkingLevels && model.defaultThinkingLevel) {
+        nextChoice.selectedThinkingByModel = {
+          ...nextChoice.selectedThinkingByModel,
+          [model.id]: nextChoice.selectedThinkingByModel?.[model.id] ?? model.defaultThinkingLevel
+        }
       }
-      writeRepoAi({ ...repoAi, modelOverridesByOperation: nextModelOverrides })
-      return
-    }
-    const model = capability.models.find((candidate) => candidate.id === modelId)
-    if (!model) {
-      return
-    }
-    const nextChoice = selectModelForHost(
-      repoAi.modelOverridesByOperation?.[operation],
-      hostKey,
-      capability.id,
-      model.id
-    )
-    if (model.thinkingLevels && model.defaultThinkingLevel) {
-      nextChoice.selectedThinkingByModel = {
-        ...nextChoice.selectedThinkingByModel,
-        [model.id]: nextChoice.selectedThinkingByModel?.[model.id] ?? model.defaultThinkingLevel
-      }
-    }
-    writeRepoAi({
-      ...repoAi,
-      modelOverridesByOperation: {
-        ...nextModelOverrides,
-        [operation]: nextChoice
+      return {
+        ...current,
+        modelOverridesByOperation: {
+          ...nextModelOverrides,
+          [operation]: nextChoice
+        }
       }
     })
   }
@@ -188,33 +259,60 @@ export function RepositorySourceControlAiSection({
     mode: string,
     inheritedValue: string
   ): void => {
-    const nextInstructions = { ...repoAi.instructionsByOperation }
-    if (mode === PROMPT_MODE_INHERIT) {
-      delete nextInstructions[operation]
-    } else if (!hasOwnInstruction(nextInstructions, operation)) {
-      nextInstructions[operation] = inheritedValue
-    }
-    writeRepoAi({ ...repoAi, instructionsByOperation: nextInstructions })
+    updateDraftRepoAi((current) => {
+      const nextInstructions = { ...current.instructionsByOperation }
+      if (mode === PROMPT_MODE_INHERIT) {
+        delete nextInstructions[operation]
+      } else if (!hasOwnInstruction(nextInstructions, operation)) {
+        nextInstructions[operation] = inheritedValue
+      }
+      return { ...current, instructionsByOperation: nextInstructions }
+    })
   }
 
   const updatePromptOverride = (operation: SourceControlAiOperation, value: string): void => {
-    writeRepoAi({
-      ...repoAi,
+    updateDraftRepoAi((current) => ({
+      ...current,
       instructionsByOperation: {
-        ...repoAi.instructionsByOperation,
+        ...current.instructionsByOperation,
         [operation]: value
+      }
+    }))
+  }
+
+  const updateOperationThinking = (
+    operation: SourceControlAiOperation,
+    modelId: string,
+    value: string
+  ): void => {
+    updateDraftRepoAi((current) => {
+      const choice = current.modelOverridesByOperation?.[operation]
+      return {
+        ...current,
+        modelOverridesByOperation: {
+          ...current.modelOverridesByOperation,
+          [operation]: {
+            ...choice,
+            selectedThinkingByModel: {
+              ...choice?.selectedThinkingByModel,
+              [modelId]: value
+            }
+          }
+        }
       }
     })
   }
 
   const updatePrDefault = (key: PrDefaultKey, value: string): void => {
-    const nextDefaults = { ...repoAi.prCreationDefaults }
-    if (value === 'inherit') {
-      delete nextDefaults[key]
-    } else {
-      nextDefaults[key] = value === 'on'
-    }
-    writeRepoAi({ ...repoAi, prCreationDefaults: nextDefaults })
+    updateDraftRepoAi((current) => {
+      const nextDefaults = { ...current.prCreationDefaults }
+      if (value === 'inherit') {
+        delete nextDefaults[key]
+      } else {
+        nextDefaults[key] = value === 'on'
+      }
+      return { ...current, prCreationDefaults: nextDefaults }
+    })
   }
 
   const prDefaultRows: { key: PrDefaultKey; label: string }[] = [
@@ -230,18 +328,50 @@ export function RepositorySourceControlAiSection({
       data-settings-section={getRepositorySourceControlAiSectionId(repo.id)}
       className="space-y-4"
     >
-      <div className="space-y-1">
-        <h3 className="text-sm font-semibold">Source Control AI</h3>
-        <p className="text-xs text-muted-foreground">
-          Repo-specific overrides. Each field uses global settings until you set it here.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 space-y-1">
+          <h3 className="text-sm font-semibold">Source Control AI</h3>
+          <p className="text-xs text-muted-foreground">
+            Repo-specific overrides. Each field uses global settings until you set it here.
+          </p>
+          {saveError ? <p className="text-xs text-destructive">{saveError}</p> : null}
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <span className="text-[11px] text-muted-foreground">
+            {isDirty ? 'Unsaved changes' : 'Saved'}
+          </span>
+          {isDirty ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={discardDraft}
+              disabled={isSaving}
+            >
+              Discard
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="secondary"
+            size="xs"
+            onClick={() => void saveDraft()}
+            disabled={!isDirty || isSaving}
+          >
+            {isSaving ? 'Saving...' : 'Save'}
+          </Button>
+        </div>
       </div>
 
       {capability ? (
         <div className="space-y-3">
           {OPERATIONS.map((row) => {
             const choice = repoAi.modelOverridesByOperation?.[row.operation]
-            const selectedModelId = readChoiceModel(choice, hostKey, capability.id)
+            const selectedModelId = readSourceControlAiModelChoiceForHost(
+              choice,
+              hostKey,
+              capability.id
+            )
             const selectedModel = selectedModelId
               ? capability.models.find((model) => model.id === selectedModelId)
               : null
@@ -279,21 +409,9 @@ export function RepositorySourceControlAiSection({
                     <span className="text-[11px] text-muted-foreground">Thinking</span>
                     <Select
                       value={selectedThinking}
-                      onValueChange={(value) => {
-                        writeRepoAi({
-                          ...repoAi,
-                          modelOverridesByOperation: {
-                            ...repoAi.modelOverridesByOperation,
-                            [row.operation]: {
-                              ...choice,
-                              selectedThinkingByModel: {
-                                ...choice?.selectedThinkingByModel,
-                                [selectedModel.id]: value
-                              }
-                            }
-                          }
-                        })
-                      }}
+                      onValueChange={(value) =>
+                        updateOperationThinking(row.operation, selectedModel.id, value)
+                      }
                     >
                       <SelectTrigger size="sm" className="h-7 w-[150px] text-xs">
                         <SelectValue />
