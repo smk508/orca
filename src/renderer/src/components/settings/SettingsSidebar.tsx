@@ -1,7 +1,9 @@
 import type { RefObject } from 'react'
 import { ArrowLeft, Search, Server, type LucideIcon, type LucideProps } from 'lucide-react'
+import type { RepoIcon } from '../../../../shared/repo-icon'
 import { useShortcutLabel } from '@/hooks/useShortcutLabel'
 import { cn } from '@/lib/utils'
+import { RepoIconGlyph } from '../repo/repo-icon'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
@@ -21,6 +23,7 @@ type NavGroup = {
 type RepoNavSection = NavSection & {
   badgeColor?: string
   isRemote?: boolean
+  repoIcon?: RepoIcon | null
 }
 
 type SettingsSidebarProps = {
@@ -161,14 +164,11 @@ export function SettingsSidebar({
                       }
                       className={navItemClassName(isActive)}
                     >
-                      <span
-                        className={cn(
-                          'size-2.5 shrink-0 rounded-full',
-                          section.badgeColor ? null : 'bg-muted-foreground'
-                        )}
-                        style={
-                          section.badgeColor ? { backgroundColor: section.badgeColor } : undefined
-                        }
+                      <RepoIconGlyph
+                        repoIcon={section.repoIcon}
+                        color={section.badgeColor}
+                        className="size-4 shrink-0 text-muted-foreground"
+                        iconClassName="size-3.5"
                       />
                       <span className="truncate">{section.title}</span>
                       {section.isRemote && (

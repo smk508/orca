@@ -11,11 +11,14 @@ import { RepositoryHooksSection } from './RepositoryHooksSection'
 import { McpConfigSection } from './McpConfigSection'
 import { WorktreeSymlinksSection } from './WorktreeSymlinksSection'
 import { SparsePresetSettingsSection } from './SparsePresetSettingsSection'
+import { RepositorySourceControlAiSection } from './RepositorySourceControlAiSection'
 import { SearchableSetting } from './SearchableSetting'
-import { matchesSettingsSearch, type SettingsSearchEntry } from './settings-search'
+import { matchesSettingsSearch, normalizeSettingsSearchQuery } from './settings-search'
 import { useAppStore } from '../../store'
 import { getRepositoryIconSectionId } from './repository-settings-targets'
 import { RepositoryIconPicker } from './RepositoryIconPicker'
+import { getRepositoryPaneSearchEntries } from './repository-search'
+export { getRepositoryPaneSearchEntries }
 
 type RepositoryPaneProps = {
   repo: Repo
@@ -24,158 +27,17 @@ type RepositoryPaneProps = {
   hooksInspectionReady: boolean
   mayNeedUpdate: boolean
   updateRepo: (repoId: string, updates: Partial<Repo>) => void
-  removeRepo: (repoId: string) => void
+  removeProject: (repoId: string) => void
 }
 
-export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[] {
-  const isFolder = isFolderRepo(repo)
-  return [
-    {
-      title: 'Display Name',
-      description: 'Project-specific display details for the sidebar and tabs.',
-      keywords: [repo.displayName, repo.path, 'project name', 'repository name']
-    },
-    {
-      title: 'Project Icon',
-      description: 'Project icon and color used in the sidebar and tabs.',
-      keywords: [
-        repo.displayName,
-        'project icon',
-        'repository icon',
-        'color',
-        'badge',
-        'emoji',
-        'favicon'
-      ]
-    },
-    ...(isFolder
-      ? []
-      : [
-          {
-            title: 'Default Worktree Base',
-            description: 'Default base branch or ref when creating worktrees.',
-            keywords: [repo.displayName, 'base ref', 'branch']
-          },
-          {
-            title: 'Sparse Checkout Presets',
-            description: 'Saved directory sets for sparse worktree creation.',
-            keywords: [
-              repo.displayName,
-              'sparse',
-              'checkout',
-              'preset',
-              'presets',
-              'directory',
-              'directories',
-              'monorepo'
-            ]
-          }
-        ]),
-    {
-      title: 'Remove Project',
-      description: 'Remove this project from Orca.',
-      keywords: [repo.displayName, 'delete', 'project', 'repository']
-    },
-    ...(isFolder
-      ? []
-      : [
-          {
-            title: 'Worktree Symlinks',
-            description: 'Paths to symlink from the primary checkout into newly created worktrees.',
-            keywords: [
-              repo.displayName,
-              'symlink',
-              'symlinks',
-              'worktree',
-              'link',
-              'shared',
-              'env',
-              'node_modules'
-            ]
-          },
-          {
-            title: 'MCP Configs',
-            description: 'Inspect project-level MCP server config files.',
-            keywords: [
-              repo.displayName,
-              'mcp',
-              'model context protocol',
-              '.mcp.json',
-              '.cursor/mcp.json',
-              '.claude.json',
-              '.claude/mcp.json'
-            ]
-          },
-          {
-            title: 'Setup Script',
-            description: 'Local and shared scripts that run after a new worktree is created.',
-            keywords: [
-              repo.displayName,
-              'hooks',
-              'setup',
-              'setup script',
-              'setup command',
-              'local settings scripts',
-              'orca.yaml hooks',
-              'yaml'
-            ]
-          },
-          {
-            title: 'Archive Script',
-            description: 'Local and shared scripts that run before a worktree is archived.',
-            keywords: [
-              repo.displayName,
-              'hooks',
-              'archive',
-              'archive script',
-              'archive command',
-              'local settings scripts',
-              'orca.yaml hooks',
-              'yaml'
-            ]
-          },
-          {
-            title: 'Advanced',
-            description: 'Command source and orca.yaml details.',
-            keywords: [
-              repo.displayName,
-              'advanced',
-              'command source',
-              'local',
-              'orca.yaml',
-              'shared',
-              'both',
-              'source',
-              'authoritative'
-            ]
-          },
-          {
-            title: 'When to Run Setup',
-            description: 'Choose the default behavior when a setup script is available.',
-            keywords: [
-              repo.displayName,
-              'setup run policy',
-              'ask',
-              'run by default',
-              'skip by default'
-            ]
-          },
-          {
-            title: 'Custom GitHub Issue Command',
-            description:
-              'File-based linked-issue command configured via orca.yaml and optional local override.',
-            keywords: [
-              repo.displayName,
-              'github issue command',
-              'issue command',
-              'workflow',
-              'github',
-              'orca.yaml',
-              '.orca/issue-command'
-            ]
-          }
-        ])
-  ]
+export function matchesRepositoryIdentitySearch(query: string, repo: Repo): boolean {
+  const normalizedQuery = normalizeSettingsSearchQuery(query)
+  if (!normalizedQuery) {
+    return false
+  }
+  return [repo.displayName, repo.path].some((value) =>
+    value.toLowerCase().includes(normalizedQuery)
+  )
 }
 
 export function RepositoryPane({
@@ -185,17 +47,20 @@ export function RepositoryPane({
   hooksInspectionReady,
   mayNeedUpdate,
   updateRepo,
-  removeRepo
+  removeProject
 }: RepositoryPaneProps): React.JSX.Element {
   const isFolder = isFolderRepo(repo)
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
   const symlinksEnabled = useAppStore((state) => state.settings?.experimentalWorktreeSymlinks)
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null)
   const [copiedTemplate, setCopiedTemplate] = useState(false)
+  // Why: searching a project name is navigation to that project, not a
+  // request to hide every child row that does not repeat the project name.
+  const forceFullPaneForRepoMatch = matchesRepositoryIdentitySearch(searchQuery, repo)
 
-  const handleRemoveRepo = (repoId: string) => {
+  const handleRemoveProject = (repoId: string) => {
     if (confirmingRemove === repoId) {
-      removeRepo(repoId)
+      removeProject(repoId)
       setConfirmingRemove(null)
       return
     }
@@ -241,9 +106,10 @@ export function RepositoryPane({
   )
   const mcpEntries = allEntries.filter((entry) => entry.title === 'MCP Configs')
   const symlinkEntries = allEntries.filter((entry) => entry.title === 'Worktree Symlinks')
+  const sourceControlAiEntries = allEntries.filter((entry) => entry.title === 'Source Control AI')
 
   const hooksSection =
-    !isFolder && matchesSettingsSearch(searchQuery, hooksEntries) ? (
+    !isFolder && (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, hooksEntries)) ? (
       <RepositoryHooksSection
         key="hooks"
         repo={repo}
@@ -252,6 +118,7 @@ export function RepositoryPane({
         hooksInspectionReady={hooksInspectionReady}
         mayNeedUpdate={mayNeedUpdate}
         copiedTemplate={copiedTemplate}
+        forceVisible={forceFullPaneForRepoMatch}
         onCopyTemplate={() => void handleCopyTemplate()}
         onUpdateHookSettings={updateSelectedRepoHookSettings}
       />
@@ -261,7 +128,7 @@ export function RepositoryPane({
   // thing a user sees. Setup commands follow immediately because they're the
   // most-edited surface and should beat MCP/symlinks/sparse-presets.
   const visibleSections = [
-    matchesSettingsSearch(searchQuery, identityEntries) ? (
+    forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, identityEntries) ? (
       <section key="identity" className="space-y-8">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -282,11 +149,12 @@ export function RepositoryPane({
             title="Remove Project"
             description="Remove this project from Orca."
             keywords={[repo.displayName, 'delete', 'project', 'repository']}
+            forceVisible={forceFullPaneForRepoMatch}
           >
             <Button
               variant={confirmingRemove === repo.id ? 'destructive' : 'outline'}
               size="sm"
-              onClick={() => handleRemoveRepo(repo.id)}
+              onClick={() => handleRemoveProject(repo.id)}
               onBlur={() => setConfirmingRemove(null)}
               className="gap-2"
             >
@@ -301,6 +169,7 @@ export function RepositoryPane({
           description="Project-specific display details for the sidebar and tabs."
           keywords={[repo.displayName, repo.path, 'project name', 'repository name']}
           className="space-y-2"
+          forceVisible={forceFullPaneForRepoMatch}
         >
           <Label className="text-sm font-semibold">Display Name</Label>
           <Input
@@ -329,6 +198,7 @@ export function RepositoryPane({
           ]}
           className="space-y-2"
           id={getRepositoryIconSectionId(repo.id)}
+          forceVisible={forceFullPaneForRepoMatch}
         >
           <RepositoryIconPicker repo={repo} updateRepo={updateRepo} />
         </SearchableSetting>
@@ -339,6 +209,7 @@ export function RepositoryPane({
             description="Default base branch or ref when creating worktrees."
             keywords={[repo.displayName, 'base ref', 'branch']}
             className="space-y-3"
+            forceVisible={forceFullPaneForRepoMatch}
           >
             <Label className="text-sm font-semibold">Default Worktree Base</Label>
             <BaseRefPicker
@@ -353,15 +224,24 @@ export function RepositoryPane({
     ) : null,
     hooksSection,
     !isFolder &&
+    (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, sourceControlAiEntries)) ? (
+      <RepositorySourceControlAiSection
+        key="source-control-ai"
+        repo={repo}
+        updateRepo={updateRepo}
+      />
+    ) : null,
+    !isFolder &&
     !repo.connectionId &&
     symlinksEnabled &&
-    matchesSettingsSearch(searchQuery, symlinkEntries) ? (
+    (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, symlinkEntries)) ? (
       <WorktreeSymlinksSection key="symlinks" repo={repo} updateRepo={updateRepo} />
     ) : null,
-    !isFolder && matchesSettingsSearch(searchQuery, sparsePresetEntries) ? (
+    !isFolder &&
+    (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, sparsePresetEntries)) ? (
       <SparsePresetSettingsSection key="sparse-presets" repoId={repo.id} />
     ) : null,
-    !isFolder && matchesSettingsSearch(searchQuery, mcpEntries) ? (
+    !isFolder && (forceFullPaneForRepoMatch || matchesSettingsSearch(searchQuery, mcpEntries)) ? (
       <McpConfigSection key="mcp-configs" repo={repo} />
     ) : null
   ].filter(Boolean)

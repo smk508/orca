@@ -1,6 +1,6 @@
 # Feature Discovery Interaction Tracking
 
-This document defines local feature-interaction state used to decide whether Orca should still teach a feature with a contextual tour or feature tip.
+This document defines local feature-interaction state used to decide whether Orca should still teach a feature with an education surface such as a tour or feature tip.
 
 ## Decision
 
@@ -53,9 +53,9 @@ Do not upload this state as broad analytics. Product analytics should continue t
 | Agent Orchestration | `agent-orchestration` | A successful `orchestration.*` runtime method is handled. | Suppress future usage tips once an agent/runtime has actually used orchestration. |
 | Notifications | `notifications` | Notifications are enabled in onboarding/settings or a test notification is sent. | Suppress future notification setup tips. |
 
-## Existing Contextual Tour Features
+## Surface-Level Features
 
-The branch already records surface-level interactions for the current contextual tours:
+Orca also records surface-level interactions for feature areas where opening the surface is itself a meaningful discovery signal:
 
 - `workspace-board`: workspace board opened
 - `browser`: non-blank browser page viewed

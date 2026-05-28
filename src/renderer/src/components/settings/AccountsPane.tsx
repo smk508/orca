@@ -212,6 +212,7 @@ export function AccountsPane({ settings, updateSettings }: AccountsPaneProps): R
     try {
       const next = await operation()
       await syncCodexAccounts(next)
+      recordFeatureInteraction('codex-account-switching')
       const shouldPromptRestart =
         action === 'adding' ||
         (action.startsWith('select:') && previousActiveAccountId !== next.activeAccountId) ||
@@ -244,6 +245,7 @@ export function AccountsPane({ settings, updateSettings }: AccountsPaneProps): R
     try {
       const next = await operation()
       await syncClaudeAccounts(next)
+      recordFeatureInteraction('claude-account-switching')
       if (previousActiveAccountId !== next.activeAccountId || action === 'adding') {
         toast.info('Claude account updated.', {
           description: `${getClaudeAccountLabel(claudeAccounts, previousActiveAccountId)} → ${getClaudeAccountLabel(next, next.activeAccountId)}. Restart live Claude terminals before continuing old sessions.`

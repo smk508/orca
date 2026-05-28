@@ -432,6 +432,12 @@ export default function WorkspaceKanbanDrawer({
   useContextualTour('workspace-board', open, 'workspace_board_visible')
 
   useEffect(() => {
+    if (open) {
+      useAppStore.getState().recordFeatureInteraction('workspace-board')
+    }
+  }, [open])
+
+  useEffect(() => {
     if (!open || selectedWorktreeIds.size === 0) {
       return
     }

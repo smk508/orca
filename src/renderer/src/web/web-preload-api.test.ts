@@ -181,6 +181,23 @@ describe('web UI preload API', () => {
     vi.doUnmock('./web-runtime-client')
   })
 
+  it('migrates missing right sidebar visibility from the effective web legacy default', async () => {
+    const { api } = await installApi('Linux')
+
+    const ui = await api.ui.get()
+
+    expect(ui.rightSidebarOpen).toBe(false)
+  })
+
+  it('keeps explicit local right sidebar visibility over the legacy default', async () => {
+    const { api, storage } = await installApi('Linux')
+    storage.setItem('orca.web.ui.v1', JSON.stringify({ rightSidebarOpen: true }))
+
+    const ui = await api.ui.get()
+
+    expect(ui.rightSidebarOpen).toBe(true)
+  })
+
   it('keeps newer feature interaction counts when runtime responses resolve out of order', async () => {
     const pending: ((response: RuntimeRpcResponse<unknown>) => void)[] = []
     vi.doMock('./web-runtime-client', () => ({

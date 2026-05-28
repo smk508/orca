@@ -46,6 +46,7 @@ export type TabsSlice = {
         'id' | 'entityId' | 'label' | 'customLabel' | 'color' | 'isPreview' | 'isPinned'
       > & {
         targetGroupId: string
+        activate: boolean
         recordInteraction: boolean
       }
     >
@@ -446,14 +447,14 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
       }
 
       nextOrder = dedupeTabOrder([...nextOrder, created.id])
-      // Why: creating a tab implicitly activates it, so extend the group's MRU
-      // stack with the new id. Keeping MRU updates colocated with activation
-      // writes preserves the invariant that `activeTabId` equals the tail of
-      // `recentTabIds` for any tab we've actually seen.
-      const nextRecent = pushRecentTabId(
-        sanitizeRecentTabIds(group.recentTabIds, nextOrder),
-        created.id
-      )
+      const shouldActivate = init?.activate ?? true
+      const nextActiveTabId = shouldActivate ? created.id : (group.activeTabId ?? created.id)
+      const sanitizedRecent = sanitizeRecentTabIds(group.recentTabIds, nextOrder)
+      // Why: automation-created browser tabs need to exist and paint without
+      // stealing the visible group selection from the user's current tab.
+      const nextRecent = shouldActivate
+        ? pushRecentTabId(sanitizedRecent, created.id)
+        : sanitizedRecent
       return {
         unifiedTabsByWorktree: {
           ...state.unifiedTabsByWorktree,
@@ -463,7 +464,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
           ...groupsByWorktree,
           [worktreeId]: updateGroup(groupsByWorktree[worktreeId] ?? [], {
             ...group,
-            activeTabId: created.id,
+            activeTabId: nextActiveTabId,
             tabOrder: nextOrder,
             recentTabIds: nextRecent
           })
@@ -476,7 +477,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
       }
     })
     if (init?.recordInteraction !== false) {
-      get().recordFeatureInteraction('terminal-tabs')
+      get().recordFeatureInteraction?.('terminal-tabs')
     }
     return created
   },
@@ -708,7 +709,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
     })
 
     if (opts?.recordInteraction !== false) {
-      get().recordFeatureInteraction('terminal-tabs')
+      get().recordFeatureInteraction?.('terminal-tabs')
     }
     return { closedTabId: tabId, wasLastTab, worktreeId }
   },
@@ -744,7 +745,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
       return {}
     })
     if (reordered && opts?.recordInteraction !== false) {
-      get().recordFeatureInteraction('terminal-tabs')
+      get().recordFeatureInteraction?.('terminal-tabs')
     }
   },
 
@@ -756,7 +757,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
     const exists = get().getTab(tabId) !== null
     set((state) => patchTab(state.unifiedTabsByWorktree, tabId, { customLabel: label }) ?? {})
     if (exists && opts?.recordInteraction !== false) {
-      get().recordFeatureInteraction('terminal-tabs')
+      get().recordFeatureInteraction?.('terminal-tabs')
     }
   },
 
@@ -764,7 +765,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
     const exists = get().getTab(tabId) !== null
     set((state) => patchTab(state.unifiedTabsByWorktree, tabId, { color }) ?? {})
     if (exists) {
-      get().recordFeatureInteraction('terminal-tabs')
+      get().recordFeatureInteraction?.('terminal-tabs')
     }
   },
 
@@ -775,7 +776,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
         patchTab(state.unifiedTabsByWorktree, tabId, { isPinned: true, isPreview: false }) ?? {}
     )
     if (exists) {
-      get().recordFeatureInteraction('terminal-tabs')
+      get().recordFeatureInteraction?.('terminal-tabs')
     }
   },
 
@@ -783,7 +784,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
     const exists = get().getTab(tabId) !== null
     set((state) => patchTab(state.unifiedTabsByWorktree, tabId, { isPinned: false }) ?? {})
     if (exists) {
-      get().recordFeatureInteraction('terminal-tabs')
+      get().recordFeatureInteraction?.('terminal-tabs')
     }
   },
 
@@ -1002,7 +1003,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
         activeGroupIdByWorktree: { ...state.activeGroupIdByWorktree, [worktreeId]: newGroupId }
       }
     })
-    get().recordFeatureInteraction('terminal-panes')
+    get().recordFeatureInteraction?.('terminal-panes')
     return newGroupId
   },
 
@@ -1087,7 +1088,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
       }
     })
     if (moved && opts?.recordInteraction !== false) {
-      get().recordFeatureInteraction('tab-splits')
+      get().recordFeatureInteraction?.('tab-splits')
     }
     return moved
   },
@@ -1257,8 +1258,8 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
       }
     })
     if (moved) {
-      get().recordFeatureInteraction('terminal-tabs')
-      get().recordFeatureInteraction('tab-splits')
+      get().recordFeatureInteraction?.('terminal-tabs')
+      get().recordFeatureInteraction?.('tab-splits')
     }
     return moved
   },
@@ -1305,7 +1306,7 @@ export const createTabsSlice: StateCreator<AppState, [], [], TabsSlice> = (set, 
       get().moveUnifiedTabToGroup(item.id, targetGroupId, { recordInteraction: false })
     }
     get().closeEmptyGroup(worktreeId, groupId)
-    get().recordFeatureInteraction('terminal-panes')
+    get().recordFeatureInteraction?.('terminal-panes')
     return targetGroupId
   },
 

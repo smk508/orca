@@ -3,12 +3,14 @@ import {
   isFeatureInteractionId,
   type FeatureInteractionId
 } from '../../../../shared/feature-interactions'
+import { isFeatureTipId } from '../../../../shared/feature-tips'
 import { isTuiAgent } from '../../../../shared/tui-agent-config'
 import type { PersistedUIState } from '../../../../shared/types'
 import { defineMethod, type RpcMethod } from '../core'
 
 const NullableString = z.string().nullable()
 const StringArray = z.array(z.string())
+const FeatureTipIds = z.array(z.custom(isFeatureTipId, { message: 'Unknown feature tip id' }))
 const UnknownRecord = z.record(z.string(), z.unknown())
 const UnknownRecordArray = z.array(UnknownRecord)
 const WorktreeCardProperty = z.enum([
@@ -106,6 +108,7 @@ const SettingsUpdate = z
     defaultTaskViewPreset: z
       .enum(['issues', 'my-issues', 'prs', 'my-prs', 'review', 'all'])
       .optional(),
+    agentStatusHooksEnabled: z.boolean().optional(),
     defaultRepoSelection: z.array(z.string()).nullable().optional(),
     defaultLinearTeamSelection: z.array(z.string()).nullable().optional(),
     githubProjects: GitHubProjectSettings.optional()
@@ -118,6 +121,8 @@ const UiUpdate = z
     lastActiveRepoId: NullableString.optional(),
     lastActiveWorktreeId: NullableString.optional(),
     sidebarWidth: z.number().finite().optional(),
+    rightSidebarOpen: z.boolean().optional(),
+    rightSidebarTab: z.enum(['explorer', 'search', 'source-control', 'checks', 'ports']).optional(),
     rightSidebarWidth: z.number().finite().optional(),
     groupBy: z.enum(['none', 'workspace-status', 'repo', 'pr-status']).optional(),
     showWorkspaceLineage: z.boolean().optional(),
@@ -183,7 +188,7 @@ const UiUpdate = z
     sidekickSize: z.number().finite().optional(),
     taskResumeState: TaskResumeState.optional(),
     workspaceCleanup: WorkspaceCleanup.optional(),
-    featureTipsSeenIds: StringArray.optional(),
+    featureTipsSeenIds: FeatureTipIds.optional(),
     featureInteractions: FeatureInteractions.optional(),
     contextualToursSeenIds: StringArray.optional(),
     contextualToursAutoEligible: z.boolean().optional()

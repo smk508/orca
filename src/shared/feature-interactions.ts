@@ -52,8 +52,8 @@ export type FeatureInteractionState = Partial<
   Record<FeatureInteractionId, FeatureInteractionRecord>
 >
 
-// Why: education state has three separate meanings; see
-// docs/reference/feature-education-state.md before adding or reusing ids here.
+// Why: these ids become persisted product state; see
+// docs/reference/feature-discovery-interaction-tracking.md before changing them.
 export const FEATURE_INTERACTIONS = [
   {
     id: 'workspace-board',

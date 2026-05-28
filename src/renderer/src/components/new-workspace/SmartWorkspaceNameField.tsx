@@ -38,6 +38,7 @@ import {
   parseGitHubIssueOrPRLink,
   type RepoSlug
 } from '@/lib/github-links'
+import { lookupSmartGitHubSubmitItem } from '@/lib/smart-github-submit'
 import { parseGitLabIssueOrMRLink } from '@/lib/gitlab-links'
 import { cn } from '@/lib/utils'
 import { LinearIcon } from '@/components/icons/LinearIcon'
@@ -198,6 +199,7 @@ export default function SmartWorkspaceNameField({
   const [linearLoading, setLinearLoading] = useState(false)
   const [commandValue, setCommandValue] = useState('')
   const localInputRef = useRef<HTMLInputElement | null>(null)
+  const selectedSourceRef = useRef<HTMLDivElement | null>(null)
   const tabsListRef = useRef<HTMLDivElement | null>(null)
   const repoSlugCacheRef = useRef<Map<string, RepoSlug | null>>(new Map())
   const handledCrossRepoUrlRef = useRef<string | null>(null)
@@ -308,6 +310,9 @@ export default function SmartWorkspaceNameField({
   useEffect(() => {
     if (selectedSource) {
       setOpen(false)
+      // Why: after Enter accepts a PR/issue row, the input unmounts. Keep the
+      // keyboard flow on the source field so the next Enter advances to Agent.
+      requestAnimationFrame(() => selectedSourceRef.current?.focus({ preventScroll: true }))
     }
   }, [selectedSource])
 
@@ -338,16 +343,22 @@ export default function SmartWorkspaceNameField({
           }
           if (!selectedSlug || sameSlug(selectedSlug, directLink.slug)) {
             handledCrossRepoUrlRef.current = debouncedQuery.trim()
-            const item = await window.api.gh.workItemByOwnerRepo({
+            const item = await lookupSmartGitHubSubmitItem({
               repoPath: selectedRepo.path,
               repoId: selectedRepo.id,
-              owner: directLink.slug.owner,
-              repo: directLink.slug.repo,
-              number: directLink.number,
-              type: directLink.type
+              intent: {
+                kind: 'link',
+                owner: directLink.slug.owner,
+                repo: directLink.slug.repo,
+                number: directLink.number,
+                type: directLink.type
+              },
+              workItem: (args) => window.api.gh.workItem(args) as Promise<GitHubWorkItem | null>,
+              workItemByOwnerRepo: (args) =>
+                window.api.gh.workItemByOwnerRepo(args) as Promise<GitHubWorkItem | null>
             })
             if (!stale) {
-              setGithubItems(item ? [{ ...item, repoId: selectedRepo.id } as GitHubWorkItem] : [])
+              setGithubItems(item ? [item] : [])
             }
             return
           }
@@ -373,25 +384,28 @@ export default function SmartWorkspaceNameField({
     }
     if (directNumber !== null) {
       setGithubLoading(true)
-      const request =
+      const intent =
         directLink !== null
-          ? window.api.gh.workItemByOwnerRepo({
-              repoPath: selectedRepo.path,
-              repoId: selectedRepo.id,
+          ? {
+              kind: 'link' as const,
               owner: directLink.slug.owner,
               repo: directLink.slug.repo,
               number: directLink.number,
               type: directLink.type
-            })
-          : window.api.gh.workItem({
-              repoPath: selectedRepo.path,
-              repoId: selectedRepo.id,
-              number: directNumber
-            })
+            }
+          : { kind: 'hash-number' as const, number: directNumber }
+      const request = lookupSmartGitHubSubmitItem({
+        repoPath: selectedRepo.path,
+        repoId: selectedRepo.id,
+        intent,
+        workItem: (args) => window.api.gh.workItem(args) as Promise<GitHubWorkItem | null>,
+        workItemByOwnerRepo: (args) =>
+          window.api.gh.workItemByOwnerRepo(args) as Promise<GitHubWorkItem | null>
+      })
       void request
         .then((item) => {
           if (!stale) {
-            setGithubItems(item ? [{ ...item, repoId: selectedRepo.id } as GitHubWorkItem] : [])
+            setGithubItems(item ? [item] : [])
           }
         })
         .catch(() => {
@@ -964,7 +978,25 @@ export default function SmartWorkspaceNameField({
                 // parent; without them the inner truncate's intrinsic
                 // min-content (long PR title) propagates up and pushes the
                 // dialog wider than its max-w.
-                <div className="flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-input bg-transparent px-2.5 text-sm shadow-xs focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
+                <div
+                  ref={selectedSourceRef}
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (
+                      event.currentTarget !== event.target ||
+                      event.key !== 'Enter' ||
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.altKey
+                    ) {
+                      return
+                    }
+                    event.preventDefault()
+                    onPlainEnter?.()
+                  }}
+                  className="flex h-9 w-full min-w-0 items-center gap-2 rounded-md border border-input bg-transparent px-2.5 text-sm shadow-xs outline-none focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50"
+                >
                   <SelectionIcon kind={selectedSource.kind} />
                   <span className="min-w-0 flex-1 truncate font-medium leading-none text-foreground">
                     {selectedSource.label}

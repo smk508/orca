@@ -75,6 +75,7 @@ import {
 export type PendingSidebarWorktreeReveal = {
   worktreeId: string
   behavior: 'auto' | 'smooth'
+  highlight?: boolean
 }
 
 function mergeFeatureInteractionState(
@@ -145,6 +146,21 @@ function migrateStatusBarItems(items: readonly string[] | undefined): StatusBarI
     }
   }
   return out as StatusBarItem[]
+}
+
+function normalizePersistedRightSidebarTab(
+  tab: PersistedUIState['rightSidebarTab'] | unknown
+): PersistedUIState['rightSidebarTab'] {
+  if (
+    tab === 'explorer' ||
+    tab === 'search' ||
+    tab === 'source-control' ||
+    tab === 'checks' ||
+    tab === 'ports'
+  ) {
+    return tab
+  }
+  return 'explorer'
 }
 
 const MIN_SIDEBAR_WIDTH = 220
@@ -443,26 +459,32 @@ export type UISlice = {
     pane:
       | 'general'
       | 'integrations'
+      | 'accounts'
       | 'browser'
+      | 'git'
       | 'appearance'
       | 'input'
       | 'tasks'
+      | 'floating-workspace'
       | 'terminal'
+      | 'quick-commands'
       | 'notifications'
       | 'computer-use'
       | 'developer-permissions'
+      | 'privacy'
       | 'shortcuts'
+      | 'stats'
       | 'repo'
       | 'agents'
-      | 'accounts'
       | 'voice'
       | 'experimental'
+      | 'orchestration'
       | 'servers'
       | 'mobile'
-      | 'notifications'
       | 'ssh'
     repoId: string | null
     sectionId?: string
+    intent?: 'add-quick-command'
   } | null
   openSettingsTarget: (target: NonNullable<UISlice['settingsNavigationTarget']>) => void
   clearSettingsTarget: () => void
@@ -579,7 +601,10 @@ export type UISlice = {
   pendingRevealWorktree: PendingSidebarWorktreeReveal | null
   revealWorktreeInSidebar: (
     worktreeId: string,
-    options?: { behavior?: PendingSidebarWorktreeReveal['behavior'] }
+    options?: {
+      behavior?: PendingSidebarWorktreeReveal['behavior']
+      highlight?: boolean
+    }
   ) => void
   clearPendingRevealWorktreeId: () => void
   // Why: lets the SourceControl sidebar request that the diff editor scroll
@@ -684,6 +709,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
   githubTaskDrawerWorkItem: null,
   newWorkspaceDraft: null,
   openTaskPage: (data = {}) => {
+    get().recordFeatureInteraction?.('tasks')
     // Why: record a Tasks visit in the shared back/forward history so the
     // titlebar Back/Forward buttons can return to Tasks. All task-source
     // variants (github/linear presets) collapse to a single 'tasks' entry;
@@ -844,6 +870,7 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
   selectedAutomationId: null,
   setSelectedAutomationId: (id) => set({ selectedAutomationId: id }),
   openAutomationsPage: () => {
+    get().recordFeatureInteraction?.('automations')
     get().recordViewVisit('automations')
     set((state) => ({
       activeView: 'automations',
@@ -924,6 +951,9 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
   activeModal: 'none',
   modalData: {},
   openModal: (modal, data = {}) => {
+    if (modal === 'new-workspace-composer' || modal === 'add-repo' || modal === 'create-worktree') {
+      get().recordFeatureInteraction?.('workspace-creation')
+    }
     set({
       activeModal: modal,
       modalData: data
@@ -1380,7 +1410,8 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
     set({
       pendingRevealWorktree: {
         worktreeId,
-        behavior: options?.behavior ?? 'smooth'
+        behavior: options?.behavior ?? 'smooth',
+        ...(options?.highlight ? { highlight: true } : {})
       }
     }),
   clearPendingRevealWorktreeId: () => set({ pendingRevealWorktree: null }),
@@ -1438,6 +1469,8 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
           s.rightSidebarWidth,
           MAX_RIGHT_SIDEBAR_WIDTH
         ),
+        rightSidebarOpen: typeof ui.rightSidebarOpen === 'boolean' ? ui.rightSidebarOpen : true,
+        rightSidebarTab: normalizePersistedRightSidebarTab(ui.rightSidebarTab),
         groupBy: (ui.groupBy as UISlice['groupBy'] | 'parent') === 'parent' ? 'repo' : ui.groupBy,
         sortBy,
         // Why: Active-only was retired. Force the old persisted flag off so an

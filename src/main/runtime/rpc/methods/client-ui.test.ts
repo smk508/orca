@@ -108,6 +108,8 @@ describe('client UI RPC methods', () => {
   it('persists UI updates on the runtime host and returns the updated state', async () => {
     const updated: PersistedUIState = {
       ...getDefaultUIState(),
+      rightSidebarOpen: false,
+      rightSidebarTab: 'checks',
       showActiveOnly: true,
       filterRepoIds: ['repo-1']
     }
@@ -119,6 +121,8 @@ describe('client UI RPC methods', () => {
 
     const response = await dispatcher.dispatch(
       makeRequest('ui.set', {
+        rightSidebarOpen: false,
+        rightSidebarTab: 'checks',
         showActiveOnly: true,
         hideSleepingWorkspaces: true,
         filterRepoIds: ['repo-1']
@@ -126,6 +130,8 @@ describe('client UI RPC methods', () => {
     )
 
     expect(runtime.updateUIState).toHaveBeenCalledWith({
+      rightSidebarOpen: false,
+      rightSidebarTab: 'checks',
       showActiveOnly: true,
       hideSleepingWorkspaces: true,
       filterRepoIds: ['repo-1']
@@ -248,6 +254,21 @@ describe('client UI RPC methods', () => {
           unknown: { firstInteractedAt: 100 }
         }
       })
+    )
+
+    expect(response).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(runtime.updateUIState).not.toHaveBeenCalled()
+  })
+
+  it('rejects unknown feature tip ids', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      updateUIState: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: CLIENT_UI_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('ui.set', { featureTipsSeenIds: ['voice-dictation', 'unknown-tip'] })
     )
 
     expect(response).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
