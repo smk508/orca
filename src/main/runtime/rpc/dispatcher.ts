@@ -15,6 +15,7 @@ import {
 } from './core'
 import type { TerminalStreamFrame } from '../../../shared/terminal-stream-protocol'
 import type { FeatureInteractionId } from '../../../shared/feature-interactions'
+import { isBrowserPaneUiRuntimeRpcParams } from '../../../shared/runtime-rpc-feature-interaction-source'
 import { errorResponse, mapBrowserError, mapRuntimeError, successResponse } from './errors'
 import { ALL_RPC_METHODS } from './methods'
 import type { OrcaRuntimeService } from '../orca-runtime'
@@ -67,7 +68,7 @@ export class RpcDispatcher {
         runtime: this.runtime,
         signal: options?.signal
       })
-      this.recordRuntimeFeatureInteraction(request.method, result)
+      this.recordRuntimeFeatureInteraction(request.method, result, undefined, request.params)
       return successResponse(request.id, meta, result)
     } catch (error) {
       return this.mapError(request, meta, error)
@@ -118,7 +119,7 @@ export class RpcDispatcher {
           sendBinary: options?.sendBinary,
           registerBinaryStreamHandler: options?.registerBinaryStreamHandler
         })
-        this.recordRuntimeFeatureInteraction(request.method, result)
+        this.recordRuntimeFeatureInteraction(request.method, result, undefined, request.params)
         reply(JSON.stringify(successResponse(request.id, meta, result)))
       } catch (error) {
         reply(JSON.stringify(this.mapError(request, meta, error)))
@@ -131,7 +132,8 @@ export class RpcDispatcher {
       this.recordRuntimeFeatureInteraction(
         request.method,
         result,
-        recordedStreamingFeatureInteractions
+        recordedStreamingFeatureInteractions,
+        request.params
       )
       const response = successResponse(request.id, meta, result)
       response.streaming = true
@@ -154,7 +156,8 @@ export class RpcDispatcher {
       this.recordRuntimeFeatureInteraction(
         request.method,
         result,
-        recordedStreamingFeatureInteractions
+        recordedStreamingFeatureInteractions,
+        request.params
       )
     } catch (error) {
       reply(JSON.stringify(this.mapError(request, meta, error)))
@@ -200,9 +203,10 @@ export class RpcDispatcher {
   private recordRuntimeFeatureInteraction(
     method: string,
     result: unknown,
-    alreadyRecorded?: Set<FeatureInteractionId>
+    alreadyRecorded?: Set<FeatureInteractionId>,
+    rawParams?: unknown
   ): void {
-    const id = getRuntimeFeatureInteractionId(method, result)
+    const id = getRuntimeFeatureInteractionId(method, result, rawParams)
     if (!id) {
       return
     }
@@ -220,7 +224,8 @@ export class RpcDispatcher {
 
 function getRuntimeFeatureInteractionId(
   method: string,
-  result: unknown
+  result: unknown,
+  rawParams?: unknown
 ): FeatureInteractionId | null {
   if (method === 'browser.profileImportFromBrowser') {
     return hasBooleanResult(result, 'ok') ? 'cookie-import' : null
@@ -229,6 +234,9 @@ function getRuntimeFeatureInteractionId(
     return hasBooleanResult(result, 'cleared') ? 'cookie-import' : null
   }
   if (method === 'browser.screencast.unsubscribe') {
+    return null
+  }
+  if (method.startsWith('browser.') && isBrowserPaneUiRuntimeRpcParams(rawParams)) {
     return null
   }
   if (method.startsWith('browser.') && !method.startsWith('browser.profile')) {

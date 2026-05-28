@@ -256,6 +256,21 @@ describe('client UI RPC methods', () => {
     expect(runtime.updateUIState).not.toHaveBeenCalled()
   })
 
+  it('rejects unknown feature tip ids', async () => {
+    const runtime = {
+      getRuntimeId: () => 'test-runtime',
+      updateUIState: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const dispatcher = new RpcDispatcher({ runtime, methods: CLIENT_UI_METHODS })
+
+    const response = await dispatcher.dispatch(
+      makeRequest('ui.set', { featureTipsSeenIds: ['voice-dictation', 'unknown-tip'] })
+    )
+
+    expect(response).toMatchObject({ ok: false, error: { code: 'invalid_argument' } })
+    expect(runtime.updateUIState).not.toHaveBeenCalled()
+  })
+
   it('rejects unknown feature interaction ids for increment RPC', async () => {
     const runtime = {
       getRuntimeId: () => 'test-runtime',

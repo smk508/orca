@@ -341,7 +341,6 @@ export const createDiffCommentsSlice: StateCreator<AppState, [], [], DiffComment
     }
     try {
       await enqueuePersist(worktreeId, get)
-      get().recordFeatureInteraction?.('review-notes')
       return true
     } catch (err) {
       console.error('Failed to persist diff comments:', err)
@@ -370,6 +369,7 @@ export const createDiffCommentsSlice: StateCreator<AppState, [], [], DiffComment
     }
     try {
       await enqueuePersist(worktreeId, get)
+      get().recordFeatureInteraction?.('review-notes')
       return true
     } catch (err) {
       console.error('Failed to persist diff comments:', err)
@@ -399,6 +399,7 @@ export const createDiffCommentsSlice: StateCreator<AppState, [], [], DiffComment
     }
     try {
       await enqueuePersist(worktreeId, get)
+      get().recordFeatureInteraction?.('review-notes')
       return true
     } catch (err) {
       console.error('Failed to persist diff comments:', err)

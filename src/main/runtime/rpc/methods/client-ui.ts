@@ -3,12 +3,14 @@ import {
   isFeatureInteractionId,
   type FeatureInteractionId
 } from '../../../../shared/feature-interactions'
+import { isFeatureTipId } from '../../../../shared/feature-tips'
 import { isTuiAgent } from '../../../../shared/tui-agent-config'
 import type { PersistedUIState } from '../../../../shared/types'
 import { defineMethod, type RpcMethod } from '../core'
 
 const NullableString = z.string().nullable()
 const StringArray = z.array(z.string())
+const FeatureTipIds = z.array(z.custom(isFeatureTipId, { message: 'Unknown feature tip id' }))
 const UnknownRecord = z.record(z.string(), z.unknown())
 const UnknownRecordArray = z.array(UnknownRecord)
 const WorktreeCardProperty = z.enum([
@@ -186,7 +188,7 @@ const UiUpdate = z
     sidekickSize: z.number().finite().optional(),
     taskResumeState: TaskResumeState.optional(),
     workspaceCleanup: WorkspaceCleanup.optional(),
-    featureTipsSeenIds: StringArray.optional(),
+    featureTipsSeenIds: FeatureTipIds.optional(),
     featureInteractions: FeatureInteractions.optional()
   })
   .strict()

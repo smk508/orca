@@ -89,6 +89,7 @@ import {
   normalizeFeatureInteractions,
   type FeatureInteractionId
 } from '../shared/feature-interactions'
+import { normalizeFeatureTipIds } from '../shared/feature-tips'
 import {
   DEFAULT_WORKSPACE_STATUS_ID,
   clampWorkspaceBoardColumnWidth,
@@ -2414,6 +2415,7 @@ export class Store {
       updatedAt: now
     }
     this.state.automations = [...(this.state.automations ?? []), automation]
+    this.recordFeatureInteraction('automation-created')
     this.flush()
     return automation
   }
@@ -2512,6 +2514,9 @@ export class Store {
       createdAt: now
     }
     this.state.automationRuns = [...(this.state.automationRuns ?? []), run]
+    if (trigger === 'manual') {
+      this.recordFeatureInteraction('automation-run')
+    }
     this.flush()
     return run
   }
@@ -2746,7 +2751,9 @@ export class Store {
       workspaceBoardCompact: normalizeWorkspaceBoardCompact(this.state.ui?.workspaceBoardCompact),
       workspaceBoardColumnWidth: clampWorkspaceBoardColumnWidth(
         this.state.ui?.workspaceBoardColumnWidth
-      )
+      ),
+      featureTipsSeenIds: normalizeFeatureTipIds(this.state.ui?.featureTipsSeenIds),
+      featureInteractions: normalizeFeatureInteractions(this.state.ui?.featureInteractions)
     }
   }
 
@@ -2781,6 +2788,10 @@ export class Store {
       workspaceBoardColumnWidth: clampWorkspaceBoardColumnWidth(
         updates.workspaceBoardColumnWidth ?? this.state.ui?.workspaceBoardColumnWidth
       ),
+      featureTipsSeenIds:
+        updates.featureTipsSeenIds !== undefined
+          ? normalizeFeatureTipIds(updates.featureTipsSeenIds)
+          : normalizeFeatureTipIds(this.state.ui?.featureTipsSeenIds),
       // Why: runtime RPCs and the renderer can both record education state.
       // Merge instead of replacing so a stale renderer snapshot cannot erase
       // runtime-only feature interactions.

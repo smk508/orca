@@ -206,12 +206,12 @@ export function AccountsPane({ settings, updateSettings }: AccountsPaneProps): R
     action: typeof codexAction,
     operation: () => Promise<CodexRateLimitAccountsState>
   ): Promise<void> => {
-    recordFeatureInteraction('codex-account-switching')
     const previousActiveAccountId = codexAccounts.activeAccountId
     setCodexAction(action)
     try {
       const next = await operation()
       await syncCodexAccounts(next)
+      recordFeatureInteraction('codex-account-switching')
       const shouldPromptRestart =
         action === 'adding' ||
         (action.startsWith('select:') && previousActiveAccountId !== next.activeAccountId) ||
@@ -238,12 +238,12 @@ export function AccountsPane({ settings, updateSettings }: AccountsPaneProps): R
     action: typeof claudeAction,
     operation: () => Promise<ClaudeRateLimitAccountsState>
   ): Promise<void> => {
-    recordFeatureInteraction('claude-account-switching')
     const previousActiveAccountId = claudeAccounts.activeAccountId
     setClaudeAction(action)
     try {
       const next = await operation()
       await syncClaudeAccounts(next)
+      recordFeatureInteraction('claude-account-switching')
       if (previousActiveAccountId !== next.activeAccountId || action === 'adding') {
         toast.info('Claude account updated.', {
           description: `${getClaudeAccountLabel(claudeAccounts, previousActiveAccountId)} → ${getClaudeAccountLabel(next, next.activeAccountId)}. Restart live Claude terminals before continuing old sessions.`
