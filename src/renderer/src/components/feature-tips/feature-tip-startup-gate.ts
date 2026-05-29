@@ -13,6 +13,7 @@ export type FeatureTipsAppOpenDecision =
 
 export function getFeatureTipsAppOpenDecision(args: {
   activeModal: string
+  cliInstalled: boolean | null
   featureTipsSeenIds: readonly FeatureTipId[]
   onboarding: OnboardingState | null
   persistedUIReady: boolean
@@ -39,6 +40,9 @@ export function getFeatureTipsAppOpenDecision(args: {
   const unseenTips = getOrderedUnseenFeatureTips({
     seenTipIds: new Set<FeatureTipId>(args.featureTipsSeenIds),
     completedTipIds: getCompletedFeatureTipIds({
+      // Why: CLI status arrives asynchronously. Treat unknown as completed so
+      // the CLI tip never flashes before the install probe finishes.
+      cliInstalled: args.cliInstalled !== false,
       voiceDictationEnabled: args.settings.voice?.enabled === true
     })
   })

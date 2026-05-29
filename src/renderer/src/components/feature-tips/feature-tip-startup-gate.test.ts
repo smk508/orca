@@ -22,10 +22,11 @@ function makeSettings(voiceEnabled = false): Pick<GlobalSettings, 'voice'> {
 }
 
 describe('feature tip startup gate', () => {
-  it('opens the feature tip for an existing user on app open', () => {
+  it('opens the CLI feature tip first for an existing user on app open', () => {
     expect(
       getFeatureTipsAppOpenDecision({
         activeModal: 'none',
+        cliInstalled: false,
         featureTipsSeenIds: [],
         onboarding: existingUserOnboarding,
         persistedUIReady: true,
@@ -33,13 +34,14 @@ describe('feature tip startup gate', () => {
         settings: makeSettings(),
         suppressedByOnboardingThisSession: false
       })
-    ).toEqual({ kind: 'open', tipId: 'voice-dictation' })
+    ).toEqual({ kind: 'open', tipId: 'orca-cli' })
   })
 
   it('suppresses feature tips for first-time users while onboarding is showing', () => {
     expect(
       getFeatureTipsAppOpenDecision({
         activeModal: 'none',
+        cliInstalled: false,
         featureTipsSeenIds: [],
         onboarding: firstTimeOnboarding,
         persistedUIReady: true,
@@ -54,6 +56,7 @@ describe('feature tip startup gate', () => {
     expect(
       getFeatureTipsAppOpenDecision({
         activeModal: 'none',
+        cliInstalled: false,
         featureTipsSeenIds: [],
         onboarding: existingUserOnboarding,
         persistedUIReady: true,
@@ -64,10 +67,56 @@ describe('feature tip startup gate', () => {
     ).toEqual({ kind: 'skip' })
   })
 
-  it('does not reopen after the tip was marked seen', () => {
+  it('opens the CLI tip after the voice tip was marked seen', () => {
     expect(
       getFeatureTipsAppOpenDecision({
         activeModal: 'none',
+        cliInstalled: false,
+        featureTipsSeenIds: ['voice-dictation'],
+        onboarding: existingUserOnboarding,
+        persistedUIReady: true,
+        promptedThisSession: false,
+        settings: makeSettings(),
+        suppressedByOnboardingThisSession: false
+      })
+    ).toEqual({ kind: 'open', tipId: 'orca-cli' })
+  })
+
+  it('opens the CLI tip after voice dictation is already enabled', () => {
+    expect(
+      getFeatureTipsAppOpenDecision({
+        activeModal: 'none',
+        cliInstalled: false,
+        featureTipsSeenIds: [],
+        onboarding: existingUserOnboarding,
+        persistedUIReady: true,
+        promptedThisSession: false,
+        settings: makeSettings(true),
+        suppressedByOnboardingThisSession: false
+      })
+    ).toEqual({ kind: 'open', tipId: 'orca-cli' })
+  })
+
+  it('does not open after every tip was marked seen', () => {
+    expect(
+      getFeatureTipsAppOpenDecision({
+        activeModal: 'none',
+        cliInstalled: false,
+        featureTipsSeenIds: ['voice-dictation', 'orca-cli'],
+        onboarding: existingUserOnboarding,
+        persistedUIReady: true,
+        promptedThisSession: false,
+        settings: makeSettings(),
+        suppressedByOnboardingThisSession: false
+      })
+    ).toEqual({ kind: 'skip' })
+  })
+
+  it('does not open the CLI tip after the CLI is installed', () => {
+    expect(
+      getFeatureTipsAppOpenDecision({
+        activeModal: 'none',
+        cliInstalled: true,
         featureTipsSeenIds: ['voice-dictation'],
         onboarding: existingUserOnboarding,
         persistedUIReady: true,
@@ -78,15 +127,16 @@ describe('feature tip startup gate', () => {
     ).toEqual({ kind: 'skip' })
   })
 
-  it('does not open after voice dictation is already enabled', () => {
+  it('waits for CLI install status before opening the CLI tip', () => {
     expect(
       getFeatureTipsAppOpenDecision({
         activeModal: 'none',
-        featureTipsSeenIds: [],
+        cliInstalled: null,
+        featureTipsSeenIds: ['voice-dictation'],
         onboarding: existingUserOnboarding,
         persistedUIReady: true,
         promptedThisSession: false,
-        settings: makeSettings(true),
+        settings: makeSettings(),
         suppressedByOnboardingThisSession: false
       })
     ).toEqual({ kind: 'skip' })

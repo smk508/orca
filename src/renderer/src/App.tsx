@@ -419,6 +419,7 @@ function App(): React.JSX.Element {
   const [onboarding, setOnboarding] = useState<OnboardingState | null>(null)
   const featureTipsPromptedThisSessionRef = useRef(false)
   const featureTipsSuppressedByOnboardingThisSessionRef = useRef(false)
+  const [featureTipCliInstalled, setFeatureTipCliInstalled] = useState<boolean | null>(null)
   const [onboardingSettingsDetour, setOnboardingSettingsDetour] = useState(false)
 
   // Subscribe to IPC push events
@@ -452,8 +453,36 @@ function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    if (!persistedUIReady) {
+      return
+    }
+
+    let cancelled = false
+    void window.api.cli
+      .getInstallStatus()
+      .then((status) => {
+        if (cancelled) {
+          return
+        }
+        // Why: unsupported launch modes cannot complete the setup action, so
+        // they should not be interrupted by a CLI setup tip.
+        setFeatureTipCliInstalled(!status.supported || status.state === 'installed')
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFeatureTipCliInstalled(true)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [persistedUIReady])
+
+  useEffect(() => {
     const featureTipsDecision = getFeatureTipsAppOpenDecision({
       activeModal,
+      cliInstalled: featureTipCliInstalled,
       featureTipsSeenIds,
       onboarding,
       persistedUIReady,
@@ -478,7 +507,15 @@ function App(): React.JSX.Element {
     // on the next launch just because the user never clicked a dismiss button.
     actions.markFeatureTipsSeen([featureTipsDecision.tipId])
     actions.openModal('feature-tips', { source: 'app_open', tipId: featureTipsDecision.tipId })
-  }, [activeModal, actions, featureTipsSeenIds, onboarding, persistedUIReady, settings])
+  }, [
+    activeModal,
+    actions,
+    featureTipCliInstalled,
+    featureTipsSeenIds,
+    onboarding,
+    persistedUIReady,
+    settings
+  ])
 
   useEffect(() => {
     if (activeView !== 'settings' || !shouldShowOnboarding(onboarding)) {
