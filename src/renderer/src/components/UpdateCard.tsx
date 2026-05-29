@@ -239,6 +239,30 @@ export function UpdateCard() {
     return null
   }
 
+  const isNudgeDriven = 'activeNudgeId' in status && Boolean(status.activeNudgeId)
+  // Why: ordinary background checks now pre-download updates; keep that path
+  // quiet until the user explicitly checks, while explicit/nudge cycles stay visible.
+  if (status.state === 'available' && !userInitiatedCycleRef.current && !isNudgeDriven) {
+    return null
+  }
+  if (
+    status.state === 'downloading' &&
+    !userInitiatedCycleRef.current &&
+    !hasStartedDownload.current &&
+    !isNudgeDriven
+  ) {
+    return null
+  }
+  if (
+    status.state === 'downloaded' &&
+    !userInitiatedCycleRef.current &&
+    !hasStartedDownload.current &&
+    !isNudgeDriven &&
+    !isUserInitiated
+  ) {
+    return null
+  }
+
   // Error: show card for user-initiated check failures or for failures tied to
   // a concrete cached update version (card-initiated and Settings-initiated
   // download/install flows). Background check failures stay silent.

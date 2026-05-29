@@ -293,14 +293,22 @@ type VisibilityInput = {
   dismissedVersion: string | null
   cachedVersion: string | null
   hasStartedDownload: boolean
+  userInitiatedCycle?: boolean
 }
 
 type VisibilityResult = 'hidden' | 'visible'
 
 /** Mirrors the visibility gates in UpdateCard's render path. */
 function computeVisibility(input: VisibilityInput): VisibilityResult {
-  const { status, dismissedVersion, cachedVersion, hasStartedDownload } = input
+  const {
+    status,
+    dismissedVersion,
+    cachedVersion,
+    hasStartedDownload,
+    userInitiatedCycle = false
+  } = input
   const isUserInitiated = 'userInitiated' in status && status.userInitiated
+  const isNudgeDriven = 'activeNudgeId' in status && Boolean(status.activeNudgeId)
   const shouldShowDetailedErrorCard =
     status.state === 'error' && (hasStartedDownload || cachedVersion !== null)
 
@@ -311,6 +319,26 @@ function computeVisibility(input: VisibilityInput): VisibilityResult {
     return 'hidden'
   }
   if (status.state === 'idle') {
+    return 'hidden'
+  }
+  if (status.state === 'available' && !userInitiatedCycle && !isNudgeDriven) {
+    return 'hidden'
+  }
+  if (
+    status.state === 'downloading' &&
+    !userInitiatedCycle &&
+    !hasStartedDownload &&
+    !isNudgeDriven
+  ) {
+    return 'hidden'
+  }
+  if (
+    status.state === 'downloaded' &&
+    !userInitiatedCycle &&
+    !hasStartedDownload &&
+    !isNudgeDriven &&
+    !isUserInitiated
+  ) {
     return 'hidden'
   }
   if (status.state === 'error' && !shouldShowDetailedErrorCard && !isUserInitiated) {
@@ -383,7 +411,7 @@ describe('UpdateCard visibility gates', () => {
     ).toBe('visible')
   })
 
-  it('shows available update (simple mode)', () => {
+  it('hides background available while the update pre-download starts', () => {
     expect(
       computeVisibility({
         status: { state: 'available', version: '1.2.0', changelog: null },
@@ -391,13 +419,42 @@ describe('UpdateCard visibility gates', () => {
         cachedVersion: null,
         hasStartedDownload: false
       })
+    ).toBe('hidden')
+  })
+
+  it('shows user-initiated available update (simple mode)', () => {
+    expect(
+      computeVisibility({
+        status: { state: 'available', version: '1.2.0', changelog: null },
+        dismissedVersion: null,
+        cachedVersion: null,
+        hasStartedDownload: false,
+        userInitiatedCycle: true
+      })
     ).toBe('visible')
   })
 
-  it('shows available update (rich mode)', () => {
+  it('shows user-initiated available update (rich mode)', () => {
     expect(
       computeVisibility({
         status: { state: 'available', version: '1.2.0', changelog: RICH_CHANGELOG },
+        dismissedVersion: null,
+        cachedVersion: null,
+        hasStartedDownload: false,
+        userInitiatedCycle: true
+      })
+    ).toBe('visible')
+  })
+
+  it('shows nudge-driven available update', () => {
+    expect(
+      computeVisibility({
+        status: {
+          state: 'available',
+          version: '1.2.0',
+          changelog: null,
+          activeNudgeId: 'campaign-1'
+        },
         dismissedVersion: null,
         cachedVersion: null,
         hasStartedDownload: false
@@ -427,6 +484,33 @@ describe('UpdateCard visibility gates', () => {
     ).toBe('visible')
   })
 
+  it('hides ordinary background download progress before the update is ready', () => {
+    expect(
+      computeVisibility({
+        status: { state: 'downloading', percent: 42, version: '1.2.0' },
+        dismissedVersion: null,
+        cachedVersion: '1.2.0',
+        hasStartedDownload: false
+      })
+    ).toBe('hidden')
+  })
+
+  it('shows nudge-driven background download progress', () => {
+    expect(
+      computeVisibility({
+        status: {
+          state: 'downloading',
+          percent: 42,
+          version: '1.2.0',
+          activeNudgeId: 'campaign-1'
+        },
+        dismissedVersion: null,
+        cachedVersion: '1.2.0',
+        hasStartedDownload: false
+      })
+    ).toBe('visible')
+  })
+
   it('hides downloaded when version is dismissed (Settings-initiated, not card)', () => {
     expect(
       computeVisibility({
@@ -436,6 +520,28 @@ describe('UpdateCard visibility gates', () => {
         hasStartedDownload: false
       })
     ).toBe('hidden')
+  })
+
+  it('hides ordinary background downloaded updates until the user checks', () => {
+    expect(
+      computeVisibility({
+        status: { state: 'downloaded', version: '1.2.0' },
+        dismissedVersion: null,
+        cachedVersion: '1.2.0',
+        hasStartedDownload: false
+      })
+    ).toBe('hidden')
+  })
+
+  it('shows downloaded updates after a user-initiated check', () => {
+    expect(
+      computeVisibility({
+        status: { state: 'downloaded', version: '1.2.0', userInitiated: true },
+        dismissedVersion: null,
+        cachedVersion: '1.2.0',
+        hasStartedDownload: false
+      })
+    ).toBe('visible')
   })
 
   it('hides background errors silently', () => {
@@ -499,7 +605,8 @@ describe('UpdateCard visibility gates', () => {
         status: { state: 'available', version: '1.3.0', changelog: null },
         dismissedVersion: '1.2.0',
         cachedVersion: '1.3.0',
-        hasStartedDownload: false
+        hasStartedDownload: false,
+        userInitiatedCycle: true
       })
     ).toBe('visible')
   })
@@ -589,7 +696,8 @@ describe('full update lifecycle through setUpdateStatus', () => {
         status: store.getState().updateStatus,
         dismissedVersion: store.getState().dismissedUpdateVersion,
         cachedVersion: '1.3.0',
-        hasStartedDownload: false
+        hasStartedDownload: false,
+        userInitiatedCycle: true
       })
     ).toBe('visible')
   })

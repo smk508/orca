@@ -47,6 +47,8 @@ let autoUpdaterInitialized = false
 let includePrereleaseActive = false
 let availableVersion: string | null = null
 let availableReleaseUrl: string | null = null
+let stagedUpdateVersion: string | null = null
+let stagedUpdateReleaseUrl: string | null = null
 let pendingCheckFailureKey: string | null = null
 let pendingCheckFailurePromise: Promise<void> | null = null
 let autoUpdateCheckTimer: ReturnType<typeof setTimeout> | null = null
@@ -103,6 +105,20 @@ function clearAvailableUpdateContext(): void {
   availableReleaseUrl = null
 }
 
+function clearStagedUpdateContext(): void {
+  stagedUpdateVersion = null
+  stagedUpdateReleaseUrl = null
+}
+
+function getStagedUpdateVersion(): string | null {
+  return stagedUpdateVersion
+}
+
+function markStagedUpdate(version: string, releaseUrl?: string): void {
+  stagedUpdateVersion = version
+  stagedUpdateReleaseUrl = releaseUrl ?? null
+}
+
 function clearPrereleaseFallbackContext(): void {
   pendingPrereleaseFallback = null
 }
@@ -151,9 +167,9 @@ function sendStatus(status: UpdateStatus): void {
       status.state === 'available' ||
       status.state === 'error')
   if (awaitingNudgeCheckOutcome) {
-    if (status.state === 'available') {
+    if (status.state === 'available' || status.state === 'downloaded') {
       if (shouldPreserveNudgeForPublishingWindow) {
-        // Why: a last-good available update is only a temporary fallback; don't
+        // Why: a last-good ready update is only a temporary fallback; don't
         // let dismissing that card consume the newest-release nudge campaign.
         deferPendingUpdateNudgeUntilRetry()
       } else {
@@ -189,6 +205,7 @@ function sendStatus(status: UpdateStatus): void {
     status.state === 'idle' ||
     status.state === 'not-available' ||
     status.state === 'available' ||
+    status.state === 'downloaded' ||
     status.state === 'error'
   ) {
     clearPublishingWindowLastGoodCheck()
@@ -198,6 +215,7 @@ function sendStatus(status: UpdateStatus): void {
   // window where duplicate download() calls are possible.
   if (
     decoratedStatus.state === 'downloading' ||
+    decoratedStatus.state === 'downloaded' ||
     decoratedStatus.state === 'error' ||
     decoratedStatus.state === 'idle'
   ) {
@@ -226,16 +244,20 @@ function sendErrorStatus(message: string, userInitiated?: boolean): void {
 }
 
 function getKnownReleaseUrl(): string | undefined {
-  return availableReleaseUrl ?? undefined
+  return availableReleaseUrl ?? stagedUpdateReleaseUrl ?? undefined
 }
 
 function hasNewerDownloadedVersion(): boolean {
-  return availableVersion !== null && compareVersions(availableVersion, app.getVersion()) > 0
+  const version = stagedUpdateVersion ?? availableVersion
+  return version !== null && compareVersions(version, app.getVersion()) > 0
 }
 
 function getPendingInstallVersion(): string {
   if (availableVersion) {
     return availableVersion
+  }
+  if (stagedUpdateVersion) {
+    return stagedUpdateVersion
   }
   if (currentStatus.state === 'downloading' || currentStatus.state === 'downloaded') {
     return currentStatus.version
@@ -831,6 +853,8 @@ export function setupAutoUpdater(
   }
 
   const autoUpdater = getAutoUpdater()
+  // Why: Orca fetches changelog and pins release context before downloading;
+  // letting electron-updater auto-start can race progress events ahead of that.
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
 
@@ -886,23 +910,27 @@ export function setupAutoUpdater(
   registerAutoUpdaterHandlers({
     autoUpdater,
     clearAvailableUpdateContext,
+    clearStagedUpdateContext,
     consumeMissingManifestPrereleaseFallbackResult,
     getMissingManifestPrereleaseFallbackUserInitiated,
     getPublishingWindowLastGoodCheck,
     getCurrentStatus: () => currentStatus,
     getKnownReleaseUrl,
     getPendingInstallVersion,
+    getStagedUpdateVersion,
     getUserInitiatedCheck: () => userInitiatedCheck,
     hasNewerDownloadedVersion,
     performQuitAndInstall,
     sendCheckFailureStatus,
     sendErrorStatus,
     markMissingManifestPrereleaseFallbackChecking,
+    markStagedUpdate,
     shouldSuppressMissingManifestPrereleaseFallbackEvent,
     suppressMissingManifestPrereleaseFallbackPromiseFailure,
     recordCompletedUpdateCheck,
     sendStatus,
     scheduleAutomaticUpdateCheck,
+    startAvailableUpdateDownload,
     clearBackgroundCheckLaunchPending,
     setAvailableReleaseUrl: (releaseUrl) => {
       availableReleaseUrl = releaseUrl
@@ -950,7 +978,7 @@ export function setupAutoUpdater(
   }
 }
 
-export function downloadUpdate(): void {
+function startAvailableUpdateDownload(): void {
   if (downloadInFlight) {
     return
   }
@@ -972,4 +1000,8 @@ export function downloadUpdate(): void {
       downloadInFlight = false
       sendErrorStatus(String(err?.message ?? err))
     })
+}
+
+export function downloadUpdate(): void {
+  startAvailableUpdateDownload()
 }

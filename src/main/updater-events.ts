@@ -19,15 +19,18 @@ type UpdaterHandlerContext = {
   autoUpdater: ElectronAutoUpdater
   clearBackgroundCheckLaunchPending: () => void
   clearAvailableUpdateContext: () => void
+  clearStagedUpdateContext: () => void
   consumeMissingManifestPrereleaseFallbackResult: () => { userInitiated: boolean } | null
   getPublishingWindowLastGoodCheck: () => { lastGoodTag: string } | null
   getMissingManifestPrereleaseFallbackUserInitiated: () => boolean | null
   getCurrentStatus: () => UpdateStatus
   getKnownReleaseUrl: () => string | undefined
   getPendingInstallVersion: () => string
+  getStagedUpdateVersion: () => string | null
   getUserInitiatedCheck: () => boolean
   hasNewerDownloadedVersion: () => boolean
   markMissingManifestPrereleaseFallbackChecking: () => void
+  markStagedUpdate: (version: string, releaseUrl?: string) => void
   performQuitAndInstall: () => void
   recordCompletedUpdateCheck: () => void
   sendCheckFailureStatus: (
@@ -39,6 +42,7 @@ type UpdaterHandlerContext = {
   sendErrorStatus: (message: string, userInitiated?: boolean) => void
   sendStatus: (status: UpdateStatus) => void
   scheduleAutomaticUpdateCheck: (delayMs: number) => void
+  startAvailableUpdateDownload: () => void
   shouldSuppressMissingManifestPrereleaseFallbackEvent: (message: string, error: unknown) => boolean
   suppressMissingManifestPrereleaseFallbackPromiseFailure: (message: string) => void
   setAvailableReleaseUrl: (releaseUrl: string | null) => void
@@ -50,21 +54,25 @@ export function registerAutoUpdaterHandlers({
   autoUpdater,
   clearBackgroundCheckLaunchPending,
   clearAvailableUpdateContext,
+  clearStagedUpdateContext,
   consumeMissingManifestPrereleaseFallbackResult,
   getPublishingWindowLastGoodCheck,
   getMissingManifestPrereleaseFallbackUserInitiated,
   getCurrentStatus,
   getKnownReleaseUrl,
   getPendingInstallVersion,
+  getStagedUpdateVersion,
   getUserInitiatedCheck,
   hasNewerDownloadedVersion,
   markMissingManifestPrereleaseFallbackChecking,
+  markStagedUpdate,
   performQuitAndInstall,
   recordCompletedUpdateCheck,
   sendCheckFailureStatus,
   sendErrorStatus,
   sendStatus,
   scheduleAutomaticUpdateCheck,
+  startAvailableUpdateDownload,
   shouldSuppressMissingManifestPrereleaseFallbackEvent,
   suppressMissingManifestPrereleaseFallbackPromiseFailure,
   setAvailableReleaseUrl,
@@ -146,6 +154,32 @@ export function registerAutoUpdaterHandlers({
       return
     }
 
+    const stagedVersion = getStagedUpdateVersion()
+    if (stagedVersion && compareVersions(info.version, stagedVersion) <= 0) {
+      // Why: a freshness check should offer an already-staged update only when
+      // the feed does not point at a newer version.
+      clearAvailableUpdateContext()
+      if (missingManifestFallback || publishingWindowLastGoodCheck) {
+        scheduleAutomaticUpdateCheck(AUTO_UPDATE_RETRY_INTERVAL_MS)
+      } else {
+        recordCompletedUpdateCheck()
+        if (!wasUserInitiated) {
+          scheduleAutomaticUpdateCheck(AUTO_UPDATE_CHECK_INTERVAL_MS)
+        }
+      }
+      sendStatus({
+        state: 'downloaded',
+        version: stagedVersion,
+        releaseUrl: getKnownReleaseUrl(),
+        userInitiated: wasUserInitiated || undefined
+      })
+      return
+    }
+
+    // A newer feed result supersedes the staged installer; don't keep offering
+    // restart for an update we now know is stale.
+    clearStagedUpdateContext()
+
     // Why: fetching changelog in the main process avoids CORS issues that
     // would block a renderer-side fetch to onorca.dev, and ensures the
     // card can render immediately without an async loading gap.
@@ -182,6 +216,7 @@ export function registerAutoUpdaterHandlers({
       }
 
       sendStatus({ state: 'available', version: info.version, changelog })
+      startAvailableUpdateDownload()
     })()
   })
 
@@ -204,6 +239,18 @@ export function registerAutoUpdaterHandlers({
         scheduleAutomaticUpdateCheck(AUTO_UPDATE_CHECK_INTERVAL_MS)
       }
     }
+    const stagedVersion = getStagedUpdateVersion()
+    if (stagedVersion && compareVersions(stagedVersion, app.getVersion()) > 0) {
+      // Why: "not available" means no newer feed result, not that a previously
+      // staged update disappeared. Keep the restart action available.
+      sendStatus({
+        state: 'downloaded',
+        version: stagedVersion,
+        releaseUrl: getKnownReleaseUrl(),
+        userInitiated: wasUserInitiated || undefined
+      })
+      return
+    }
     sendStatus({ state: 'not-available', userInitiated: wasUserInitiated || undefined })
   })
 
@@ -223,9 +270,11 @@ export function registerAutoUpdaterHandlers({
     // as stale cached updates from an older release.
     if (compareVersions(info.version, app.getVersion()) <= 0) {
       clearAvailableUpdateContext()
+      clearStagedUpdateContext()
       sendStatus({ state: 'not-available' })
       return
     }
+    markStagedUpdate(info.version, getKnownReleaseUrl())
     // On macOS, defer the 'downloaded' status until Squirrel.Mac has finished
     // processing the update via the localhost proxy. On other platforms,
     // the update is ready immediately after electron-updater downloads it.
