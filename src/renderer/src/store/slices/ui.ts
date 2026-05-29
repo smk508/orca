@@ -1337,7 +1337,9 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
 
   updateStatus: { state: 'idle' },
   setUpdateStatus: (status) => {
-    const prevState = get().updateStatus.state
+    const state = get()
+    const prevState = state.updateStatus.state
+    const intentVersion = state.updateDownloadIntentVersion
     const update: Partial<
       Pick<
         UISlice,
@@ -1361,11 +1363,10 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
       // previous update cycle cannot resurface.
       update.updateChangelog = null
       update.updateDownloadIntentVersion = null
-    } else if (
-      'version' in status &&
-      get().updateDownloadIntentVersion !== null &&
-      get().updateDownloadIntentVersion !== status.version
-    ) {
+    }
+    // Why: explicit download intent is version-scoped; keeping it after a new
+    // version appears makes passive failures look user-initiated.
+    if ('version' in status && intentVersion !== null && intentVersion !== status.version) {
       update.updateDownloadIntentVersion = null
     }
     // For 'downloading', 'downloaded', 'error': leave updateChangelog untouched

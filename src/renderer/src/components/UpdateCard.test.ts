@@ -260,6 +260,15 @@ describe('updateDownloadIntentVersion', () => {
 
     expect(store.getState().updateDownloadIntentVersion).toBeNull()
   })
+
+  it('clears explicit download intent when a different available version becomes current', () => {
+    const store = createTestStore()
+    store.getState().markUpdateDownloadIntent('1.2.0')
+
+    setState(store, { state: 'available', version: '1.3.0', changelog: null })
+
+    expect(store.getState().updateDownloadIntentVersion).toBeNull()
+  })
 })
 
 // ── markUpdateReassuranceSeen ────────────────────────────────────────
@@ -326,6 +335,7 @@ type VisibilityInput = {
   hasStartedDownload: boolean
   userInitiatedCycle?: boolean
   downloadIntentVersion?: string | null
+  locallyDismissedVersion?: string | null
 }
 
 type VisibilityResult = 'hidden' | 'visible'
@@ -338,7 +348,8 @@ function computeVisibility(input: VisibilityInput): VisibilityResult {
     cachedVersion,
     hasStartedDownload,
     userInitiatedCycle = false,
-    downloadIntentVersion = null
+    downloadIntentVersion = null,
+    locallyDismissedVersion = null
   } = input
   const isUserInitiated = 'userInitiated' in status && status.userInitiated
   const isNudgeDriven = 'activeNudgeId' in status && Boolean(status.activeNudgeId)
@@ -375,13 +386,13 @@ function computeVisibility(input: VisibilityInput): VisibilityResult {
   }
 
   const effectiveVersion = 'version' in status ? status.version : cachedVersion
+  const isLocallyDismissedVersion =
+    effectiveVersion !== null && locallyDismissedVersion === effectiveVersion
   if (
     effectiveVersion &&
-    dismissedVersion === effectiveVersion &&
-    !userInitiatedCycle &&
-    !isUserInitiated &&
-    !hasExplicitDownloadIntent &&
-    !isNudgeDriven
+    (dismissedVersion === effectiveVersion || isLocallyDismissedVersion) &&
+    (isLocallyDismissedVersion ||
+      (!userInitiatedCycle && !isUserInitiated && !hasExplicitDownloadIntent && !isNudgeDriven))
   ) {
     if (
       status.state !== 'downloading' &&
@@ -534,6 +545,18 @@ describe('UpdateCard visibility gates', () => {
         hasStartedDownload: false
       })
     ).toBe('visible')
+  })
+
+  it('hides hydrated user-initiated available after the visible card is explicitly dismissed', () => {
+    expect(
+      computeVisibility({
+        status: { state: 'available', version: '1.2.0', changelog: null, userInitiated: true },
+        dismissedVersion: '1.2.0',
+        cachedVersion: '1.2.0',
+        hasStartedDownload: false,
+        locallyDismissedVersion: '1.2.0'
+      })
+    ).toBe('hidden')
   })
 
   it('shows downloading even when version is dismissed (user clicked Update after dismiss)', () => {

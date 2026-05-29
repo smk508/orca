@@ -88,6 +88,7 @@ let _setDismissedUpdateNudgeId: ((id: string | null) => void) | null = null
 // background download is still active, so the duplicate-download guard must be
 // version-scoped instead of tied to the visible status.
 let activeDownloadVersion: string | null = null
+let pendingReplacementDownloadVersion: string | null = null
 /** Guards against the macOS `activate` handler re-opening the old version
  *  while Squirrel's ShipIt is replacing the .app bundle. */
 let quittingForUpdate = false
@@ -103,6 +104,7 @@ function getAutoUpdater(): ElectronAutoUpdater {
 function clearAvailableUpdateContext(): void {
   availableVersion = null
   availableReleaseUrl = null
+  pendingReplacementDownloadVersion = null
 }
 
 function clearStagedUpdateContext(): void {
@@ -127,6 +129,20 @@ function clearActiveUpdateDownload(version?: string): void {
   if (!version || !activeDownloadVersion || compareVersions(version, activeDownloadVersion) >= 0) {
     activeDownloadVersion = null
   }
+}
+
+function startPendingReplacementDownload(): boolean {
+  const pendingVersion = pendingReplacementDownloadVersion
+  if (!pendingVersion) {
+    return false
+  }
+  const targetVersion = getPendingDownloadVersion()
+  if (!targetVersion || compareVersions(targetVersion, pendingVersion) < 0) {
+    pendingReplacementDownloadVersion = null
+    return false
+  }
+  startAvailableUpdateDownload()
+  return activeDownloadVersion === targetVersion
 }
 
 function clearPrereleaseFallbackContext(): void {
@@ -261,6 +277,12 @@ function hasNewerDownloadedVersion(): boolean {
   if (activeDownloadVersion && compareVersions(activeDownloadVersion, stagedUpdateVersion) > 0) {
     return false
   }
+  if (
+    pendingReplacementDownloadVersion &&
+    compareVersions(pendingReplacementDownloadVersion, stagedUpdateVersion) > 0
+  ) {
+    return false
+  }
   return true
 }
 
@@ -293,6 +315,12 @@ function hasNewerAvailableVersion(): boolean {
 
 function shouldAcceptDownloadedUpdate(version: string): boolean {
   if (activeDownloadVersion && compareVersions(version, activeDownloadVersion) < 0) {
+    return false
+  }
+  if (
+    pendingReplacementDownloadVersion &&
+    compareVersions(version, pendingReplacementDownloadVersion) < 0
+  ) {
     return false
   }
   if (availableVersion && compareVersions(version, availableVersion) < 0) {
@@ -983,6 +1011,7 @@ export function setupAutoUpdater(
     recordCompletedUpdateCheck,
     sendStatus,
     scheduleAutomaticUpdateCheck,
+    startPendingReplacementDownload,
     startAvailableUpdateDownload,
     shouldAcceptDownloadedUpdate,
     clearBackgroundCheckLaunchPending,
@@ -1040,16 +1069,24 @@ function startAvailableUpdateDownload(): void {
   if (activeDownloadVersion === targetVersion) {
     return
   }
+  if (activeDownloadVersion) {
+    if (compareVersions(targetVersion, activeDownloadVersion) > 0) {
+      pendingReplacementDownloadVersion = targetVersion
+    }
+    return
+  }
   // Why: permit retry from 'error' when we still have a cached availableVersion —
   // a failed download leaves the status at 'error' but availableVersion intact,
   // and the error card's "Retry Download" button must be able to restart the
   // download. Without this, the button would appear to do nothing.
   const canStart =
     currentStatus.state === 'available' ||
-    (currentStatus.state === 'error' && hasNewerAvailableVersion())
+    (currentStatus.state === 'error' && hasNewerAvailableVersion()) ||
+    pendingReplacementDownloadVersion === targetVersion
   if (!canStart) {
     return
   }
+  pendingReplacementDownloadVersion = null
   activeDownloadVersion = targetVersion
   // Why: electron-updater can emit 'error' before downloadUpdate() rejects;
   // capture launch intent, then merge any manual promotion observed by catch.
@@ -1073,6 +1110,12 @@ function startAvailableUpdateDownload(): void {
         backgroundCheckPromotedToUserInitiated ||
         undefined
       clearActiveUpdateDownload(targetVersion)
+      if (startPendingReplacementDownload()) {
+        return
+      }
+      if (activeDownloadVersion && compareVersions(activeDownloadVersion, targetVersion) > 0) {
+        return
+      }
       sendErrorStatus(message, wasUserInitiated)
     })
 }

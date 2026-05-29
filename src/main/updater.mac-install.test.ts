@@ -208,6 +208,64 @@ describe('updater mac install handoff', () => {
     }
   )
 
+  it('keeps staged mac updates pending through same-version fast paths until native readiness', async () => {
+    vi.stubGlobal('process', { ...process, platform: 'darwin' })
+
+    const sendMock = vi.fn()
+    const mainWindow = { webContents: { send: sendMock } }
+
+    const { setupAutoUpdater } = await import('./updater')
+
+    setupAutoUpdater(mainWindow as never, { getLastUpdateCheckAt: () => Date.now() })
+    const nativeDownloadedHandler = nativeUpdaterMock.on.mock.calls.find(
+      ([eventName]) => eventName === 'update-downloaded'
+    )?.[1] as (() => void) | undefined
+    expect(nativeDownloadedHandler).toBeTypeOf('function')
+
+    autoUpdaterMock.emit('checking-for-update')
+    autoUpdaterMock.emit('update-available', { version: '1.0.61' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    autoUpdaterMock.emit('update-downloaded', { version: '1.0.61' })
+
+    sendMock.mockClear()
+    autoUpdaterMock.emit('checking-for-update')
+    sendMock.mockClear()
+    autoUpdaterMock.emit('update-not-available')
+
+    expect(sendMock).toHaveBeenCalledWith('updater:status', {
+      state: 'downloading',
+      percent: 100,
+      version: '1.0.61'
+    })
+    expect(sendMock).not.toHaveBeenCalledWith(
+      'updater:status',
+      expect.objectContaining({ state: 'downloaded' })
+    )
+
+    sendMock.mockClear()
+    autoUpdaterMock.emit('checking-for-update')
+    sendMock.mockClear()
+    autoUpdaterMock.emit('update-available', { version: '1.0.61' })
+
+    expect(sendMock).toHaveBeenCalledWith('updater:status', {
+      state: 'downloading',
+      percent: 100,
+      version: '1.0.61'
+    })
+    expect(sendMock).not.toHaveBeenCalledWith(
+      'updater:status',
+      expect.objectContaining({ state: 'downloaded' })
+    )
+
+    nativeDownloadedHandler?.()
+
+    expect(sendMock).toHaveBeenCalledWith('updater:status', {
+      state: 'downloaded',
+      version: '1.0.61',
+      releaseUrl: undefined
+    })
+  })
+
   it('does not let stale native macOS readiness mark a replacement update ready', async () => {
     vi.stubGlobal('process', { ...process, platform: 'darwin' })
     autoUpdaterMock.downloadUpdate.mockImplementation(() => new Promise(() => {}))

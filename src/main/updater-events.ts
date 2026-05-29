@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { app, autoUpdater as nativeUpdater } from 'electron'
 import type { UpdateStatus } from '../shared/types'
 import {
@@ -44,6 +45,7 @@ type UpdaterHandlerContext = {
   sendErrorStatus: (message: string, userInitiated?: boolean) => void
   sendStatus: (status: UpdateStatus) => void
   scheduleAutomaticUpdateCheck: (delayMs: number) => void
+  startPendingReplacementDownload: () => boolean
   startAvailableUpdateDownload: () => void
   shouldAcceptDownloadedUpdate: (version: string) => boolean
   shouldSuppressMissingManifestPrereleaseFallbackEvent: (message: string, error: unknown) => boolean
@@ -63,6 +65,24 @@ function getActionableUpdateUserInitiated(status: UpdateStatus): boolean | undef
     return status.userInitiated || undefined
   }
   return undefined
+}
+
+function shouldShowDownloadedForStagedUpdate(): boolean {
+  return process.platform !== 'darwin' || isMacInstallerReady()
+}
+
+function shouldApplyAvailableResultAfterChangelog(status: UpdateStatus, version: string): boolean {
+  if (status.state === 'checking' || status.state === 'idle') {
+    return true
+  }
+  if (
+    status.state === 'available' ||
+    status.state === 'downloading' ||
+    status.state === 'downloaded'
+  ) {
+    return compareVersions(status.version, version) < 0
+  }
+  return false
 }
 
 export function registerAutoUpdaterHandlers({
@@ -89,6 +109,7 @@ export function registerAutoUpdaterHandlers({
   sendErrorStatus,
   sendStatus,
   scheduleAutomaticUpdateCheck,
+  startPendingReplacementDownload,
   startAvailableUpdateDownload,
   shouldAcceptDownloadedUpdate,
   shouldSuppressMissingManifestPrereleaseFallbackEvent,
@@ -98,6 +119,26 @@ export function registerAutoUpdaterHandlers({
   setUserInitiatedCheck
 }: UpdaterHandlerContext): void {
   let macNativeReadinessPendingVersion: string | null = null
+
+  const sendStagedUpdateStatus = (version: string, userInitiated: boolean): void => {
+    if (!shouldShowDownloadedForStagedUpdate()) {
+      // Why: on macOS the electron-updater artifact can be staged before ShipIt
+      // has finished pulling it from the localhost proxy.
+      sendStatus({
+        state: 'downloading',
+        percent: 100,
+        version,
+        ...(userInitiated ? { userInitiated: true } : {})
+      })
+      return
+    }
+    sendStatus({
+      state: 'downloaded',
+      version,
+      releaseUrl: getKnownReleaseUrl(),
+      ...(userInitiated ? { userInitiated: true } : {})
+    })
+  }
 
   // On macOS, electron-updater's MacUpdater downloads the ZIP from GitHub,
   // then serves it to Squirrel.Mac via a localhost proxy. The electron-updater
@@ -197,12 +238,7 @@ export function registerAutoUpdaterHandlers({
           scheduleAutomaticUpdateCheck(AUTO_UPDATE_CHECK_INTERVAL_MS)
         }
       }
-      sendStatus({
-        state: 'downloaded',
-        version: stagedVersion,
-        releaseUrl: getKnownReleaseUrl(),
-        userInitiated: wasUserInitiated || undefined
-      })
+      sendStagedUpdateStatus(stagedVersion, wasUserInitiated)
       return
     }
 
@@ -217,7 +253,7 @@ export function registerAutoUpdaterHandlers({
       // currentStatus during that window, broadcasting 'available' here would
       // overwrite a more recent status. Guard against this by checking that the
       // state hasn't advanced past the point where 'available' makes sense.
-      if (getCurrentStatus().state !== 'checking' && getCurrentStatus().state !== 'idle') {
+      if (!shouldApplyAvailableResultAfterChangelog(getCurrentStatus(), info.version)) {
         return
       }
 
@@ -279,12 +315,7 @@ export function registerAutoUpdaterHandlers({
     if (stagedVersion && compareVersions(stagedVersion, app.getVersion()) > 0) {
       // Why: "not available" means no newer feed result, not that a previously
       // staged update disappeared. Keep the restart action available.
-      sendStatus({
-        state: 'downloaded',
-        version: stagedVersion,
-        releaseUrl: getKnownReleaseUrl(),
-        userInitiated: wasUserInitiated || undefined
-      })
+      sendStagedUpdateStatus(stagedVersion, wasUserInitiated)
       return
     }
     sendStatus({ state: 'not-available', userInitiated: wasUserInitiated || undefined })
@@ -304,6 +335,8 @@ export function registerAutoUpdaterHandlers({
   autoUpdater.on('update-downloaded', (info) => {
     clearBackgroundCheckLaunchPending()
     if (!shouldAcceptDownloadedUpdate(info.version)) {
+      clearActiveUpdateDownload(info.version)
+      startPendingReplacementDownload()
       return
     }
     // Don't show the banner if the downloaded version isn't actually newer
@@ -349,8 +382,11 @@ export function registerAutoUpdaterHandlers({
       return
     }
     const statusAtError = getCurrentStatus()
+    const activeDownloadVersionAtError = getActiveDownloadVersion()
     clearBackgroundCheckLaunchPending()
-    if (statusAtError.state !== 'checking') {
+    if (activeDownloadVersionAtError) {
+      clearActiveUpdateDownload(activeDownloadVersionAtError)
+    } else if (statusAtError.state !== 'checking') {
       clearActiveUpdateDownload()
     }
     resetMacInstallState()
@@ -360,8 +396,11 @@ export function registerAutoUpdaterHandlers({
       (missingManifestFallback?.userInitiated ?? getUserInitiatedCheck()) ||
       getActionableUpdateUserInitiated(getCurrentStatus())
     setUserInitiatedCheck(false)
-    if (statusAtError.state === 'checking') {
+    if (statusAtError.state === 'checking' && !activeDownloadVersionAtError) {
       void sendCheckFailureStatus(message, wasUserInitiated || undefined, 'event', err)
+      return
+    }
+    if (startPendingReplacementDownload()) {
       return
     }
     sendErrorStatus(message, wasUserInitiated || undefined)

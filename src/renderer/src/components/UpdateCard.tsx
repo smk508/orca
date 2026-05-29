@@ -120,6 +120,9 @@ export function UpdateCard() {
   // dismissed.  This ref tracks whether the current check cycle was user-initiated
   // so the dismiss gate can let the result through.
   const userInitiatedCycleRef = useRef(false)
+  // Why: status.userInitiated can outlive an explicit close click. Track that
+  // local close so dismissing a visible card wins until a new check/version.
+  const locallyDismissedVersionRef = useRef<string | null>(null)
 
   const changelog: ChangelogData | null = storeChangelog
 
@@ -149,6 +152,7 @@ export function UpdateCard() {
   if (status.state === 'available' && status.version !== prevVersionRef.current) {
     prevVersionRef.current = status.version
     hasStartedDownload.current = false
+    locallyDismissedVersionRef.current = null
     setMediaFailed(false)
     setMediaLoaded(false)
     setInstallError(null)
@@ -225,8 +229,10 @@ export function UpdateCard() {
   // even though the user explicitly asked to see the result.
   if (status.state === 'checking' && isUserInitiated) {
     userInitiatedCycleRef.current = true
+    locallyDismissedVersionRef.current = null
   } else if (status.state === 'idle' || (status.state === 'checking' && !isUserInitiated)) {
     userInitiatedCycleRef.current = false
+    locallyDismissedVersionRef.current = null
   }
 
   // Compact transient states: only show for user-initiated checks.
@@ -285,13 +291,16 @@ export function UpdateCard() {
   // Why: bypass the gate when the current cycle was user-initiated — the user
   // explicitly asked to check, so they expect to see the result even if they
   // dismissed the same version earlier.
+  const isLocallyDismissedVersion =
+    versionRef.current !== null && locallyDismissedVersionRef.current === versionRef.current
   if (
     versionRef.current &&
-    dismissedVersion === versionRef.current &&
-    !userInitiatedCycleRef.current &&
-    !isUserInitiated &&
-    !hasExplicitDownloadIntent &&
-    !isNudgeDriven
+    (dismissedVersion === versionRef.current || isLocallyDismissedVersion) &&
+    (isLocallyDismissedVersion ||
+      (!userInitiatedCycleRef.current &&
+        !isUserInitiated &&
+        !hasExplicitDownloadIntent &&
+        !isNudgeDriven))
   ) {
     if (
       status.state !== 'downloading' &&
@@ -333,6 +342,7 @@ export function UpdateCard() {
     // immediately — otherwise the card would reappear on the next render
     // because the bypass ref still overrides the persisted dismissal.
     userInitiatedCycleRef.current = false
+    locallyDismissedVersionRef.current = cachedVersion
     if (status.state === 'error') {
       setErrorDismissed(true)
       if (cachedVersion) {
