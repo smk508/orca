@@ -31,9 +31,8 @@ Sidebar:
 Checklist modal:
 
 - Title: `Getting started`.
-- Show Core and Advanced sections.
+- Show the 8 core setup steps.
 - Core progress should be prominent in the header.
-- Advanced progress can be visible inside the checklist, but should not drive the sidebar badge.
 - Completed steps use a green checkmark.
 - Incomplete steps use an empty circle.
 
@@ -54,9 +53,9 @@ Core steps represent the minimum set of actions that make Orca useful for parall
 
 The ordering intentionally puts multi-agent and workspace behavior before task sources. The product value should not depend on a GitHub, GitLab, Linear, or other provider connection being configured first.
 
-## Advanced Steps
+## Deferred Advanced Steps
 
-Advanced steps expose higher-leverage workflows after the core path is underway:
+Advanced steps are intentionally not in the first shipped checklist. A required follow-up is to add them back once the core setup surface is stable:
 
 1. Start a browser and send an element to an agent.
 2. Add notes and send them to an agent.
@@ -64,7 +63,7 @@ Advanced steps expose higher-leverage workflows after the core path is underway:
 4. Try mobile.
 5. Configure agent tracking.
 
-Advanced steps should be useful prompts, not requirements. They should not block completion of the core progress count.
+Advanced steps should be useful prompts, not requirements. They should not block completion of the core progress count when they are reintroduced.
 
 ## Completion Signals
 
@@ -81,7 +80,7 @@ Core completion signals:
 - Agent capabilities: required agent capability setup has been completed or the capability is already installed.
 - Setup script: at least one git repository has an effective setup script from local or imported hook settings.
 
-Advanced completion signals:
+Deferred advanced completion signals:
 
 - Browser element: the user has used browser grab/element handoff behavior.
 - Notes: the user has sent notes or review context to an agent.
@@ -104,7 +103,7 @@ Feature tips remain lightweight announcements or education prompts. They are not
 ## Non-Goals
 
 - Do not make the Checklist a blocker for using Orca.
-- Do not require users to complete advanced steps.
+- Do not require users to complete deferred advanced steps.
 - Do not turn this into a gamified achievement system.
 - Do not mirror every checklist state transition into telemetry.
 - Do not assume GitHub-only task sources or local-only execution.
@@ -119,6 +118,6 @@ If telemetry is added later, it should answer a specific product question, use l
 ## Open Questions
 
 - Should the Checklist become dismissible or collapse after all core steps are complete?
-- Should advanced completion ever appear in the sidebar, or remain visible only inside the modal?
+- Should deferred advanced completion ever appear in the sidebar, or remain visible only inside the modal?
 - Should setup script completion be based on any repository with an effective setup script, or only the active repository?
 - Should the core list eventually adapt by role or agent provider, or stay universal for all users?

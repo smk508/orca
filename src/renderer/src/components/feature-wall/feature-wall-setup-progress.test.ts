@@ -17,7 +17,6 @@ function makeInput(
     worktreesByRepo: {},
     tabsByWorktree: {},
     runtimePaneTitlesByTabId: {},
-    hasAutomation: false,
     hasSetupScript: false,
     ...overrides
   }
@@ -40,7 +39,7 @@ describe('getFeatureWallSetupProgress', () => {
   })
 
   it('keeps Add 2 projects as the final core setup task', () => {
-    expect(getFeatureWallSetupSteps('core').map((step) => step.id)).toEqual([
+    expect(getFeatureWallSetupSteps().map((step) => step.id)).toEqual([
       'default-agent',
       'notifications',
       'two-agents',

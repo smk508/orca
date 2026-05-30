@@ -11,8 +11,7 @@ import {
 export function useSetupGuideProgress(
   shouldRefreshCoreState: boolean,
   orchestrationSkillInstalled: boolean,
-  browserUseSkillInstalled: boolean,
-  options: { refreshAdvancedState?: boolean } = {}
+  browserUseSkillInstalled: boolean
 ): FeatureWallSetupProgress {
   const settings = useAppStore((s) => s.settings)
   const featureInteractions = useAppStore((s) => s.featureInteractions)
@@ -27,9 +26,7 @@ export function useSetupGuideProgress(
   const checkLinearConnection = useAppStore((s) => s.checkLinearConnection)
   const repos = useAppStore((s) => s.repos)
   const activeRepoId = useAppStore((s) => s.activeRepoId)
-  const [hasAutomation, setHasAutomation] = useState(false)
   const [hasSetupScript, setHasSetupScript] = useState(false)
-  const shouldRefreshAdvancedState = options.refreshAdvancedState ?? shouldRefreshCoreState
 
   useEffect(() => {
     if (!shouldRefreshCoreState) {
@@ -48,28 +45,6 @@ export function useSetupGuideProgress(
     refreshPreflightStatus,
     shouldRefreshCoreState
   ])
-
-  useEffect(() => {
-    if (!shouldRefreshAdvancedState) {
-      return
-    }
-    let stale = false
-    window.api.automations
-      .list()
-      .then((automations) => {
-        if (!stale) {
-          setHasAutomation(automations.length > 0)
-        }
-      })
-      .catch(() => {
-        if (!stale) {
-          setHasAutomation(false)
-        }
-      })
-    return () => {
-      stale = true
-    }
-  }, [shouldRefreshAdvancedState])
 
   useEffect(() => {
     if (!shouldRefreshCoreState || !settings) {
@@ -122,14 +97,12 @@ export function useSetupGuideProgress(
         worktreesByRepo,
         tabsByWorktree,
         runtimePaneTitlesByTabId,
-        hasAutomation,
         hasSetupScript
       }),
     [
       browserUseSkillInstalled,
       featureInteractions,
       gitRepoCount,
-      hasAutomation,
       hasConnectedTaskSource,
       hasSetupScript,
       orchestrationSkillInstalled,

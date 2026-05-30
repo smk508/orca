@@ -8,7 +8,7 @@ import { useSetupGuideProgress } from '../setup-guide/use-setup-guide-progress'
 
 export function SettingsSetupGuideCard(): React.JSX.Element | null {
   const openModal = useAppStore((s) => s.openModal)
-  const progress = useSetupGuideProgress(true, false, false, { refreshAdvancedState: true })
+  const progress = useSetupGuideProgress(true, false, false)
   const setupSteps = useMemo(() => getFeatureWallSetupSteps(), [])
   const unfinishedSteps = useMemo(
     () => setupSteps.filter((step) => !progress.stepDone[step.id]),

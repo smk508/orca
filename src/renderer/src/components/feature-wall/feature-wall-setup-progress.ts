@@ -19,7 +19,6 @@ export type FeatureWallSetupProgressInput = {
   worktreesByRepo: Record<string, Worktree[]>
   tabsByWorktree: Record<string, TerminalTab[]>
   runtimePaneTitlesByTabId: Record<string, Record<number, string>>
-  hasAutomation: boolean
   hasSetupScript: boolean
 }
 
@@ -27,8 +26,6 @@ export type FeatureWallSetupProgress = {
   stepDone: Record<FeatureWallSetupStepId, boolean>
   coreDoneCount: number
   coreTotal: number
-  advancedDoneCount: number
-  advancedTotal: number
 }
 
 function hasTwoAgentSessionsInOneWorktree(input: FeatureWallSetupProgressInput): boolean {
@@ -85,22 +82,11 @@ export function getFeatureWallSetupProgress(
     'three-workspaces': countWorkspaces(input.worktreesByRepo) >= 2,
     'task-sources': input.hasConnectedTaskSource,
     'agent-capabilities': agentCapabilitiesDone,
-    'setup-script': input.hasSetupScript,
-    'browser-element': hasFeatureInteraction(interactions, 'browser-grab'),
-    'review-notes': hasFeatureInteraction(interactions, 'review-notes'),
-    automation: input.hasAutomation || hasFeatureInteraction(interactions, 'automation-created'),
-    mobile:
-      input.settings?.experimentalMobile === true ||
-      hasFeatureInteraction(interactions, 'mobile-pairing'),
-    'agent-tracking': input.settings ? input.settings.agentStatusHooksEnabled !== false : false
+    'setup-script': input.hasSetupScript
   }
-  const coreSteps = FEATURE_WALL_SETUP_STEPS.filter((step) => step.tier === 'core')
-  const advancedSteps = FEATURE_WALL_SETUP_STEPS.filter((step) => step.tier === 'advanced')
   return {
     stepDone,
-    coreDoneCount: coreSteps.filter((step) => stepDone[step.id]).length,
-    coreTotal: coreSteps.length,
-    advancedDoneCount: advancedSteps.filter((step) => stepDone[step.id]).length,
-    advancedTotal: advancedSteps.length
+    coreDoneCount: FEATURE_WALL_SETUP_STEPS.filter((step) => stepDone[step.id]).length,
+    coreTotal: FEATURE_WALL_SETUP_STEPS.length
   }
 }

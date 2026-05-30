@@ -55,7 +55,7 @@ export default function SetupGuideModal(): JSX.Element | null {
     ) {
       return
     }
-    const nextUnfinishedCoreStep = getFeatureWallSetupSteps('core').find(
+    const nextUnfinishedCoreStep = getFeatureWallSetupSteps().find(
       (step) => !progress.stepDone[step.id]
     )
     if (nextUnfinishedCoreStep && nextUnfinishedCoreStep.id !== activeStep.id) {

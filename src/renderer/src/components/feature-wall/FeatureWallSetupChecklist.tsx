@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo } from 'react'
-import { Check } from 'lucide-react'
+import { ArrowUpRight, Check } from 'lucide-react'
 import type {
   FeatureWallSetupStep,
-  FeatureWallSetupStepId,
-  FeatureWallSetupStepTier
+  FeatureWallSetupStepId
 } from '../../../../shared/feature-wall-setup-steps'
 import { getFeatureWallSetupSteps } from '../../../../shared/feature-wall-setup-steps'
 import { cn } from '@/lib/utils'
@@ -13,14 +12,11 @@ import { TasksAnimatedVisual } from './TasksAnimatedVisual'
 import { AgentCapabilitiesSetupAction } from './AgentCapabilitiesSetupAction'
 import {
   AddReposAction,
-  AgentTrackingAction,
-  MobileAction,
-  OpenAutomationsAction,
-  OpenWorkspaceAction,
   SetupScriptAction,
   TwoAgentsAction,
   WorkspacesAction
 } from './FeatureWallSetupWorkflowActions'
+import { Button } from '@/components/ui/button'
 import { GitHubRow, LinearRow } from '../onboarding/IntegrationsStep'
 import { AgentStep } from '../onboarding/AgentStep'
 import { NotificationStep } from '../onboarding/NotificationStep'
@@ -73,12 +69,11 @@ function SetupStepRow(props: {
 function SetupSection(props: {
   title: string
   count: string
-  tier: FeatureWallSetupStepTier
   activeStepId: FeatureWallSetupStepId | null
   progress: FeatureWallSetupProgress
   onSelectStep: (id: FeatureWallSetupStepId) => void
 }): React.JSX.Element {
-  const steps = getFeatureWallSetupSteps(props.tier)
+  const steps = getFeatureWallSetupSteps()
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -138,18 +133,6 @@ function SelectedStepAction(props: FeatureWallSetupChecklistProps): React.JSX.El
   if (activeStep.id === 'setup-script') {
     return <SetupScriptAction reducedMotion={reducedMotion} />
   }
-  if (activeStep.id === 'mobile') {
-    return <MobileAction />
-  }
-  if (activeStep.id === 'browser-element' || activeStep.id === 'review-notes') {
-    return <OpenWorkspaceAction />
-  }
-  if (activeStep.id === 'automation') {
-    return <OpenAutomationsAction />
-  }
-  if (activeStep.id === 'agent-tracking') {
-    return <AgentTrackingAction />
-  }
   return null
 }
 
@@ -198,6 +181,8 @@ function NotificationAction(): React.JSX.Element {
 }
 
 function TaskSourcesAction(props: { reducedMotion: boolean }): React.JSX.Element {
+  const closeModal = useAppStore((s) => s.closeModal)
+  const openTaskPage = useAppStore((s) => s.openTaskPage)
   return (
     <div className="space-y-5">
       <div className="mx-auto h-[288px] w-full max-w-[520px]">
@@ -207,6 +192,18 @@ function TaskSourcesAction(props: { reducedMotion: boolean }): React.JSX.Element
         <GitHubRow compact />
         <LinearRow compact />
       </div>
+      <Button
+        type="button"
+        size="sm"
+        className="w-fit gap-2"
+        onClick={() => {
+          closeModal()
+          openTaskPage()
+        }}
+      >
+        <ArrowUpRight className="size-3.5" />
+        See tasks
+      </Button>
     </div>
   )
 }
@@ -223,15 +220,6 @@ export function FeatureWallSetupChecklist(
         <SetupSection
           title="Core"
           count={`${progress.coreDoneCount}/${progress.coreTotal}`}
-          tier="core"
-          activeStepId={activeStep?.id ?? null}
-          progress={progress}
-          onSelectStep={onSelectStep}
-        />
-        <SetupSection
-          title="Advanced"
-          count={`${progress.advancedDoneCount}/${progress.advancedTotal}`}
-          tier="advanced"
           activeStepId={activeStep?.id ?? null}
           progress={progress}
           onSelectStep={onSelectStep}

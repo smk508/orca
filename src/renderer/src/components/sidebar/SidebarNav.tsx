@@ -154,11 +154,10 @@ const SidebarNav = React.memo(function SidebarNav() {
   const mobileOnboardingBadge = useMobileSidebarOnboardingBadge(showMobileButton)
   // Why: the sidebar count must be warmed before click so it matches the modal
   // count instead of changing while the lazy modal is mounting.
-  const setupProgress = useSetupGuideProgress(true, false, false, {
-    refreshAdvancedState: setupActive
-  })
+  const setupProgress = useSetupGuideProgress(true, false, false)
+  const setupComplete = setupProgress.coreDoneCount >= setupProgress.coreTotal
   const firstUnfinishedSetupStepId = React.useMemo<FeatureWallSetupStepId>(() => {
-    const firstUnfinished = getFeatureWallSetupSteps('core').find(
+    const firstUnfinished = getFeatureWallSetupSteps().find(
       (step) => !setupProgress.stepDone[step.id]
     )
     return firstUnfinished?.id ?? 'default-agent'
@@ -169,26 +168,28 @@ const SidebarNav = React.memo(function SidebarNav() {
 
   return (
     <div className="flex flex-col gap-0.5 px-2 pt-2 pb-1">
-      <button
-        type="button"
-        onClick={() => openModal('setup-guide', { setupStepId: firstUnfinishedSetupStepId })}
-        aria-current={setupActive ? 'page' : undefined}
-        className={cn(
-          'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] font-medium tracking-tight transition-colors',
-          setupActive
-            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-            : 'text-sidebar-foreground/60 hover:bg-sidebar-foreground/8'
-        )}
-      >
-        <ListChecks
-          className={cn('size-4 shrink-0', !setupActive && 'text-sidebar-foreground/30')}
-          strokeWidth={setupActive ? 2.25 : 1.75}
-        />
-        <span className="flex-1">Getting started with Orca</span>
-        <span className="font-mono text-[11px] text-muted-foreground">
-          {setupProgress.coreDoneCount}/{setupProgress.coreTotal}
-        </span>
-      </button>
+      {!setupComplete ? (
+        <button
+          type="button"
+          onClick={() => openModal('setup-guide', { setupStepId: firstUnfinishedSetupStepId })}
+          aria-current={setupActive ? 'page' : undefined}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] font-medium tracking-tight transition-colors',
+            setupActive
+              ? 'bg-yellow-500/20 text-sidebar-foreground ring-1 ring-yellow-500/30'
+              : 'bg-yellow-500/10 text-sidebar-foreground hover:bg-yellow-500/15'
+          )}
+        >
+          <ListChecks
+            className={cn('size-4 shrink-0', setupActive ? 'text-yellow-700' : 'text-yellow-600')}
+            strokeWidth={setupActive ? 2.25 : 1.75}
+          />
+          <span className="flex-1">Getting started with Orca</span>
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {setupProgress.coreDoneCount}/{setupProgress.coreTotal}
+          </span>
+        </button>
+      ) : null}
       {showTasksButton ? (
         <button
           type="button"

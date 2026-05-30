@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowUpRight, ExternalLink, Plus, Save, Settings } from 'lucide-react'
+import { ArrowUpRight, Plus, Save, Settings } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -199,102 +199,6 @@ export function SetupScriptAction(props: { reducedMotion: boolean }): React.JSX.
         </p>
       ) : null}
     </div>
-  )
-}
-
-export function OpenWorkspaceAction(): React.JSX.Element {
-  const targetWorktree = useSetupTargetWorktree()
-  const openModal = useAppStore((s) => s.openModal)
-  const closeModal = useAppStore((s) => s.closeModal)
-  const requestContextualTour = useAppStore((s) => s.requestContextualTour)
-  return (
-    <Button
-      type="button"
-      size="sm"
-      className="w-fit gap-2"
-      onClick={() => {
-        if (!targetWorktree) {
-          openModal('new-workspace-composer', { telemetrySource: 'unknown' })
-          window.setTimeout(() => {
-            requestContextualTour('workspace-creation', 'setup_guide_try_it_out', false, {
-              force: true
-            })
-          }, 80)
-          return
-        }
-        closeModal()
-        window.requestAnimationFrame(() => {
-          activateAndRevealWorktree(targetWorktree.id)
-          window.setTimeout(() => {
-            requestContextualTour('workspace-agent-sessions', 'setup_guide_try_it_out', false, {
-              force: true
-            })
-          }, 120)
-        })
-      }}
-    >
-      <ArrowUpRight className="size-3.5" />
-      Try it out
-    </Button>
-  )
-}
-
-export function OpenAutomationsAction(): React.JSX.Element {
-  const closeModal = useAppStore((s) => s.closeModal)
-  const openAutomationsPage = useAppStore((s) => s.openAutomationsPage)
-  return (
-    <Button
-      type="button"
-      size="sm"
-      className="w-fit gap-2"
-      onClick={() => {
-        closeModal()
-        openAutomationsPage()
-      }}
-    >
-      <ExternalLink className="size-3.5" />
-      Open automations
-    </Button>
-  )
-}
-
-export function AgentTrackingAction(): React.JSX.Element {
-  const closeModal = useAppStore((s) => s.closeModal)
-  const openSettingsPage = useAppStore((s) => s.openSettingsPage)
-  const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
-  return (
-    <Button
-      type="button"
-      size="sm"
-      className="w-fit gap-2"
-      onClick={() => {
-        openSettingsTarget({ pane: 'agents', repoId: null })
-        closeModal()
-        openSettingsPage()
-      }}
-    >
-      <ExternalLink className="size-3.5" />
-      Open agent settings
-    </Button>
-  )
-}
-
-export function MobileAction(): React.JSX.Element {
-  const closeModal = useAppStore((s) => s.closeModal)
-  const openMobilePage = useAppStore((s) => s.openMobilePage)
-  return (
-    <Button
-      type="button"
-      size="sm"
-      className="w-fit gap-2"
-      onClick={() => {
-        closeModal()
-        openMobilePage()
-      }}
-    >
-      <ExternalLink className="size-3.5" />
-      Open mobile
-    </Button>
   )
 }
 

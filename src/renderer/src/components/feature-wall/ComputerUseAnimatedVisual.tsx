@@ -1,13 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
-import { Check, MonitorCog } from 'lucide-react'
+import { Check, GitBranch } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ClaudeIcon } from '../status-bar/icons'
 import { FeatureWallClickRing } from './FeatureWallClickRing'
-import { CursorIcon, WorkingSpinner } from './feature-tour-preview-glyphs'
+import { CursorIcon } from './feature-tour-preview-glyphs'
 
 type ComputerUsePhase = 'inspect' | 'target' | 'click' | 'verified'
 
 const PHASES: readonly ComputerUsePhase[] = ['inspect', 'target', 'click', 'verified', 'verified']
-const PHASE_MS = 920
+const PHASE_MS = 1100
+
+// Why: the visual must read as "an agent in an Orca worktree drives the
+// local app via the `orca computer` CLI" — each command on the left causes
+// the visible effect on the right, in lockstep.
+const WORKTREE_LABEL = 'checkout fix'
 
 export function ComputerUseAnimatedVisual(props: {
   reducedMotion: boolean
@@ -23,15 +29,15 @@ export function ComputerUseAnimatedVisual(props: {
   const clicked = phase === 'click' || phase === 'verified'
   const verified = phase === 'verified'
 
-  // Why: Calculate cursor coordinates dynamically relative to the container,
-  // so the cursor is perfectly centered on the button on all viewports without drift.
+  // Why: cursor coordinates are computed against the app body so they survive
+  // any reflow when the carousel sizes the slide.
   useLayoutEffect(() => {
     if (props.reducedMotion) {
       setCursorCoords({ x: 0, y: 0, visible: false })
       return
     }
 
-    function updateCoords() {
+    function updateCoords(): void {
       const container = containerRef.current
       const button = buttonRef.current
       if (!container || !button) {
@@ -44,8 +50,8 @@ export function ComputerUseAnimatedVisual(props: {
       const buttonX = buttonRect.left - containerRect.left + buttonRect.width / 2
       const buttonY = buttonRect.top - containerRect.top + buttonRect.height / 2
 
-      const startX = containerRect.width * 0.4
-      const startY = containerRect.height * 0.4
+      const startX = containerRect.width * 0.35
+      const startY = containerRect.height * 0.35
 
       if (phase === 'inspect') {
         setCursorCoords({ x: startX, y: startY, visible: false })
@@ -61,41 +67,13 @@ export function ComputerUseAnimatedVisual(props: {
   }, [phase, props.reducedMotion])
 
   return (
-    <div className="relative grid min-h-[282px] gap-3 rounded-xl border border-border bg-card p-3 text-foreground shadow-xs md:h-[282px] md:grid-cols-[190px_minmax(0,1fr)]">
-      <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-background">
-        <div className="flex h-7 items-center gap-1.5 border-b border-border bg-muted/40 px-2.5">
-          <MonitorCog className="size-3.5 text-muted-foreground" />
-          <span className="truncate text-[11px] font-medium text-muted-foreground">
-            Computer Use
-          </span>
-        </div>
-        <div className="space-y-2 p-3 font-mono text-[11px] leading-relaxed">
-          <AgentLine
-            command="inspect local app"
-            active={phase === 'inspect'}
-            done={targetVisible}
-          />
-          <AgentLine command="click Approve" active={phase === 'target'} done={clicked} />
-          <AgentLine command="verify state" active={phase === 'click'} done={verified} />
-          <div
-            className={cn(
-              'mt-3 rounded-md border px-2.5 py-2 transition-colors',
-              verified
-                ? 'border-primary/30 bg-primary/10 text-primary'
-                : 'border-border bg-muted/25 text-muted-foreground'
-            )}
-          >
-            <div className="flex items-center gap-2 text-[11px] font-medium">
-              {verified ? (
-                <Check className="size-3" />
-              ) : (
-                <WorkingSpinner size="xs" reducedMotion={props.reducedMotion} />
-              )}
-              {verified ? 'Local app updated' : 'Reading window tree'}
-            </div>
-          </div>
-        </div>
-      </div>
+    <div className="relative grid min-h-[282px] gap-3 rounded-xl border border-border bg-card p-3 text-foreground shadow-xs md:h-[282px] md:grid-cols-[230px_minmax(0,1fr)]">
+      <AgentWorktreeTerminal
+        phase={phase}
+        targetVisible={targetVisible}
+        clicked={clicked}
+        verified={verified}
+      />
 
       <div className="relative min-w-0 overflow-hidden rounded-lg border border-border bg-background">
         <div className="flex h-7 items-center gap-1.5 border-b border-border bg-muted/40 px-2.5">
@@ -172,6 +150,142 @@ export function ComputerUseAnimatedVisual(props: {
   )
 }
 
+function AgentWorktreeTerminal(props: {
+  phase: ComputerUsePhase
+  targetVisible: boolean
+  clicked: boolean
+  verified: boolean
+}): JSX.Element {
+  return (
+    <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-background">
+      <div className="flex h-7 items-center gap-1.5 border-b border-border bg-muted/40 px-2.5">
+        <ClaudeIcon size={13} />
+        <span className="truncate text-[11px] font-medium text-muted-foreground">Claude Code</span>
+        <span className="ml-auto inline-flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground">
+          <GitBranch className="size-3" />
+          <span className="truncate">{WORKTREE_LABEL}</span>
+        </span>
+      </div>
+      <div className="space-y-2.5 p-3 font-mono text-[10.5px] leading-snug">
+        <ClaudePrompt
+          active={props.phase === 'inspect'}
+          done={props.targetVisible}
+          text="approve the note in my app"
+        />
+        <CliCommandBlock
+          command={
+            <>
+              <span className="text-muted-foreground">orca computer</span>{' '}
+              <span className="text-foreground">get-app-state</span>
+            </>
+          }
+          arg='--app "Notes"'
+          active={props.phase === 'inspect'}
+          done={props.targetVisible}
+          output={
+            props.targetVisible ? (
+              <>
+                found &ldquo;Approve&rdquo; <span className="text-muted-foreground">[#7]</span>
+              </>
+            ) : null
+          }
+        />
+        <CliCommandBlock
+          command={
+            <>
+              <span className="text-muted-foreground">orca computer</span>{' '}
+              <span className="text-foreground">click</span>
+            </>
+          }
+          arg="--element-index 7"
+          active={props.phase === 'target' || props.phase === 'click'}
+          done={props.clicked}
+          output={props.clicked ? <>click sent</> : null}
+        />
+        <CliCommandBlock
+          command={
+            <>
+              <span className="text-muted-foreground">orca computer</span>{' '}
+              <span className="text-foreground">get-app-state</span>
+            </>
+          }
+          arg='--app "Notes" --json'
+          active={props.phase === 'click'}
+          done={props.verified}
+          output={
+            props.verified ? (
+              <>
+                state: <span className="text-foreground">Approved</span>
+              </>
+            ) : null
+          }
+        />
+      </div>
+    </div>
+  )
+}
+
+function ClaudePrompt(props: { text: string; active: boolean; done: boolean }): JSX.Element {
+  return (
+    <div className="flex min-w-0 items-start gap-1.5">
+      <span className="shrink-0 text-amber-600">&gt;</span>
+      <span
+        className={cn(
+          'truncate',
+          props.active || props.done ? 'text-foreground' : 'text-muted-foreground'
+        )}
+      >
+        {props.text}
+      </span>
+    </div>
+  )
+}
+
+function CliCommandBlock(props: {
+  command: JSX.Element
+  arg: string
+  active: boolean
+  done: boolean
+  output: JSX.Element | null
+}): JSX.Element {
+  return (
+    <div className="space-y-0.5">
+      <div className="flex items-start gap-1.5">
+        <span
+          aria-hidden
+          className={cn(
+            'mt-px shrink-0',
+            props.active || props.done ? 'text-foreground' : 'text-muted-foreground/60'
+          )}
+        >
+          $
+        </span>
+        <div className="min-w-0 flex-1">
+          <div
+            className={cn('truncate', props.active ? 'text-foreground' : 'text-muted-foreground')}
+          >
+            {props.command}
+          </div>
+          <div className="truncate pl-3 text-muted-foreground">{props.arg}</div>
+        </div>
+      </div>
+      <div
+        className={cn(
+          'flex min-h-[14px] items-center gap-1.5 pl-3.5 text-muted-foreground transition-opacity duration-200',
+          props.output ? 'opacity-100' : 'opacity-0'
+        )}
+      >
+        {props.done ? (
+          <Check className="size-2.5 text-primary" strokeWidth={3} />
+        ) : (
+          <span aria-hidden>→</span>
+        )}
+        <span className="truncate">{props.output ?? ' '}</span>
+      </div>
+    </div>
+  )
+}
+
 function useComputerUsePhase(
   reducedMotion: boolean,
   onCycleComplete?: () => void
@@ -212,27 +326,6 @@ function useComputerUsePhase(
   }, [onCycleComplete, reducedMotion])
 
   return PHASES[idx] ?? 'verified'
-}
-
-function AgentLine(props: { command: string; active: boolean; done: boolean }): JSX.Element {
-  return (
-    <div className="flex items-center gap-2 truncate">
-      <span
-        className={cn(
-          'flex size-3.5 shrink-0 items-center justify-center rounded-full border',
-          props.done
-            ? 'border-primary/40 bg-primary/10 text-primary'
-            : 'border-border bg-muted/30 text-muted-foreground'
-        )}
-      >
-        {props.done ? <Check className="size-2.5" strokeWidth={3} /> : null}
-      </span>
-      <span className="shrink-0 text-muted-foreground">&gt;</span>
-      <span className={cn('truncate', props.active ? 'text-foreground' : 'text-muted-foreground')}>
-        {props.command}
-      </span>
-    </div>
-  )
 }
 
 function AppRow(props: { width: string }): JSX.Element {
