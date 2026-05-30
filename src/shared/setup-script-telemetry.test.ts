@@ -25,7 +25,7 @@ describe('setup script telemetry payload builders', () => {
     }
 
     expect(buildSetupScriptPromptTelemetry({ candidate, hasSharedHooks: false })).toEqual({
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'codex',
       file_count_bucket: '2-3',
       unsupported_field_count_bucket: '4+',
@@ -49,7 +49,7 @@ describe('setup script telemetry payload builders', () => {
       })
     ).toEqual({
       action: 'import_completed',
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'conductor',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
@@ -90,7 +90,7 @@ describe('setup script telemetry payload builders', () => {
       })
     ).toEqual({
       action: 'save_detected_setup_completed',
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'package-manager',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',

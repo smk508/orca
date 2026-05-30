@@ -6259,6 +6259,94 @@ describe('OrcaRuntimeService', () => {
     await expect(runtime.searchRepoRefs('id:repo-1', 'main', -5)).rejects.toThrow('invalid_limit')
   })
 
+  it('keeps runtime SSH ref searches bounded before parsing results', async () => {
+    const remoteRepo = {
+      id: 'repo-ssh',
+      path: '/remote/repo',
+      displayName: 'ssh',
+      badgeColor: 'blue',
+      addedAt: 1,
+      connectionId: 'ssh-1'
+    }
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [remoteRepo],
+      getRepo: (id: string) => (id === remoteRepo.id ? remoteRepo : undefined)
+    }
+    const provider = {
+      exec: vi.fn(async (argv: string[], _cwd: string) => {
+        if (argv[0] === 'remote') {
+          return { stdout: 'origin\n', stderr: '' }
+        }
+        return { stdout: 'refs/remotes/origin/feature\0origin/feature', stderr: '' }
+      })
+    }
+    registerSshGitProvider('ssh-1', provider as never)
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    try {
+      await expect(runtime.searchRepoRefs('id:repo-ssh', 'feature', 7)).resolves.toMatchObject({
+        refs: ['origin/feature'],
+        truncated: false
+      })
+    } finally {
+      unregisterSshGitProvider('ssh-1')
+    }
+
+    const [argv, cwd] = provider.exec.mock.calls[0]
+    expect(cwd).toBe('/remote/repo')
+    expect(argv).toContain('--exclude=refs/remotes/**/HEAD')
+    // searchRepoRefs asks for limit + 1 so it can calculate `truncated`.
+    expect(argv).toContain('--count=32')
+  })
+
+  it('falls back for runtime SSH ref searches when remote git lacks --exclude', async () => {
+    const remoteRepo = {
+      id: 'repo-ssh',
+      path: '/remote/repo',
+      displayName: 'ssh',
+      badgeColor: 'blue',
+      addedAt: 1,
+      connectionId: 'ssh-1'
+    }
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [remoteRepo],
+      getRepo: (id: string) => (id === remoteRepo.id ? remoteRepo : undefined)
+    }
+    const provider = {
+      exec: vi.fn(async (argv: string[], _cwd: string) => {
+        if (argv[0] === 'remote') {
+          return { stdout: 'origin\n', stderr: '' }
+        }
+        if (argv.includes('--exclude=refs/remotes/**/HEAD')) {
+          throw Object.assign(new Error('unknown option: exclude'), {
+            stderr: 'unknown option: exclude'
+          })
+        }
+        return { stdout: 'refs/remotes/origin/feature\0origin/feature', stderr: '' }
+      })
+    }
+    registerSshGitProvider('ssh-1', provider as never)
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    try {
+      await expect(runtime.searchRepoRefs('id:repo-ssh', 'feature', 7)).resolves.toMatchObject({
+        refs: ['origin/feature'],
+        truncated: false
+      })
+    } finally {
+      unregisterSshGitProvider('ssh-1')
+    }
+
+    const [initialArgv] = provider.exec.mock.calls[0]
+    const [fallbackArgv] = provider.exec.mock.calls[2]
+    expect(initialArgv).toContain('--exclude=refs/remotes/**/HEAD')
+    expect(initialArgv).toContain('--count=32')
+    expect(fallbackArgv).not.toContain('--exclude=refs/remotes/**/HEAD')
+    expect(fallbackArgv).toContain('--count=132')
+  })
+
   it('resolves SSH worktrees when manually updating lineage', async () => {
     const remoteRepo = {
       id: 'remote-repo',

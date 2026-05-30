@@ -433,7 +433,7 @@ const workspaceCreateFailedSchema = z
   })
   .strict()
 
-const setupScriptPromptModeSchema = z.enum(['candidate_available', 'configure_needed'])
+const setupScriptPromptModeSchema = z.enum(['import_available', 'configure_needed'])
 const setupScriptCountBucketSchema = z.enum(['0', '1', '2-3', '4+'])
 const setupScriptPromptContextSchema = {
   mode: setupScriptPromptModeSchema,
@@ -455,7 +455,7 @@ function validateSetupScriptPromptProvider(
   props: SetupScriptPromptContextTelemetry,
   ctx: z.RefinementCtx
 ): void {
-  if (props.mode === 'candidate_available' && props.provider === undefined) {
+  if (props.mode === 'import_available' && props.provider === undefined) {
     ctx.addIssue({
       code: 'custom',
       path: ['provider'],

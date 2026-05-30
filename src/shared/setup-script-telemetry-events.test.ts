@@ -4,7 +4,7 @@ import { eventSchemas, setupScriptImportProviderSchema } from './telemetry-event
 describe('setup script prompt schemas', () => {
   it('accepts a bucketed candidate prompt exposure', () => {
     const parsed = eventSchemas.setup_script_prompt_shown.safeParse({
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'codex',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '2-3',
@@ -31,7 +31,7 @@ describe('setup script prompt schemas', () => {
   ])('accepts %s detected setup save actions', (action) => {
     const parsed = eventSchemas.setup_script_prompt_action.safeParse({
       action,
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'package-manager',
       file_count_bucket: '2-3',
       unsupported_field_count_bucket: '0',
@@ -44,7 +44,7 @@ describe('setup script prompt schemas', () => {
   it('rejects detected setup save actions without edit state', () => {
     const parsed = eventSchemas.setup_script_prompt_action.safeParse({
       action: 'save_detected_setup_completed',
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'package-manager',
       file_count_bucket: '2-3',
       unsupported_field_count_bucket: '0',
@@ -56,7 +56,7 @@ describe('setup script prompt schemas', () => {
   it('rejects detected setup save actions for non-package-manager imports', () => {
     const parsed = eventSchemas.setup_script_prompt_action.safeParse({
       action: 'save_detected_setup_completed',
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'codex',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
@@ -68,7 +68,7 @@ describe('setup script prompt schemas', () => {
 
   it('rejects unknown setup import providers', () => {
     const parsed = eventSchemas.setup_script_prompt_shown.safeParse({
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'made_up_tool',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
@@ -79,7 +79,7 @@ describe('setup script prompt schemas', () => {
 
   it('rejects candidate prompt exposure without a provider', () => {
     const parsed = eventSchemas.setup_script_prompt_shown.safeParse({
-      mode: 'candidate_available',
+      mode: 'import_available',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
       has_shared_hooks: false
@@ -114,7 +114,7 @@ describe('setup script prompt schemas', () => {
   it('rejects raw setup import details via .strict()', () => {
     const parsed = eventSchemas.setup_script_prompt_action.safeParse({
       action: 'import_completed',
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'codex',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
@@ -139,7 +139,7 @@ describe('setup script prompt schemas', () => {
   it('rejects legacy generation setup action names', () => {
     const parsed = eventSchemas.setup_script_prompt_action.safeParse({
       action: 'generate_setup_clicked',
-      mode: 'candidate_available',
+      mode: 'import_available',
       provider: 'package-manager',
       file_count_bucket: '2-3',
       unsupported_field_count_bucket: '0',

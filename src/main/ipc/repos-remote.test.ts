@@ -1393,6 +1393,8 @@ describe('repos:searchBaseRefs SSH relay', () => {
     const [argv, path] = mockGitProvider.exec.mock.calls[0]
     expect(path).toBe('/remote/repo')
     expect(argv[0]).toBe('for-each-ref')
+    expect(argv).toContain('--exclude=refs/remotes/**/HEAD')
+    expect(argv).toContain('--count=100')
     expect(argv).toContain('refs/heads/**/*upstream*')
     expect(argv).toContain('refs/heads/**/*upstream*/**')
     expect(argv).toContain('refs/remotes/**/*upstream*')
@@ -1421,6 +1423,8 @@ describe('repos:searchBaseRefs SSH relay', () => {
 
     expect(mockGitProvider.exec).toHaveBeenCalledTimes(2)
     const [argv] = mockGitProvider.exec.mock.calls[0]
+    expect(argv).toContain('--exclude=refs/remotes/**/HEAD')
+    expect(argv).toContain('--count=100')
     expect(argv).toContain('refs/remotes/*upstream*/*main*')
     expect(argv).toContain('refs/heads/*upstream*/*main*')
     // Regression guard: the literal slash must never appear inside a
@@ -1429,6 +1433,54 @@ describe('repos:searchBaseRefs SSH relay', () => {
     expect(argv).not.toContain('refs/remotes/*upstream/main*/*')
     expect(argv).not.toContain('refs/remotes/*/*upstream/main*')
     expect(mockGitProvider.exec.mock.calls[1]).toEqual([['remote'], '/remote/repo'])
+  })
+
+  it('threads custom limits into the SSH ref-search count cap', async () => {
+    mockGitProvider.exec = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
+
+    mockStore.getRepo.mockReturnValue({
+      id: 'r1',
+      path: '/remote/repo',
+      connectionId: 'conn-1',
+      kind: 'git'
+    })
+
+    await handlers.get('repos:searchBaseRefs')!(null, {
+      repoId: 'r1',
+      query: 'feature',
+      limit: 7
+    })
+
+    const [argv] = mockGitProvider.exec.mock.calls[0]
+    expect(argv).toContain('--count=28')
+  })
+
+  it('falls back when remote git does not support --exclude', async () => {
+    mockGitProvider.exec = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('unknown option: exclude'), { stderr: '' }))
+      .mockResolvedValueOnce({ stdout: 'origin\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    mockStore.getRepo.mockReturnValue({
+      id: 'r1',
+      path: '/remote/repo',
+      connectionId: 'conn-1',
+      kind: 'git'
+    })
+
+    const result = await handlers.get('repos:searchBaseRefs')!(null, {
+      repoId: 'r1',
+      query: 'feature'
+    })
+
+    expect(result).toEqual([])
+    const firstArgv = mockGitProvider.exec.mock.calls[0][0]
+    const fallbackArgv = mockGitProvider.exec.mock.calls[2][0]
+    expect(firstArgv).toContain('--exclude=refs/remotes/**/HEAD')
+    expect(firstArgv).toContain('--count=100')
+    expect(fallbackArgv).not.toContain('--exclude=refs/remotes/**/HEAD')
+    expect(fallbackArgv).toContain('--count=200')
   })
 
   it('parses NUL-delimited stdout and filters <remote>/HEAD pseudo-refs', async () => {
