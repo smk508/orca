@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react'
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native'
+import { useCallback, useRef, useState } from 'react'
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, BackHandler } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useLocalSearchParams, useRouter } from 'expo-router'
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { ChevronLeft } from 'lucide-react-native'
 import { resolvePairConfirmRouteState } from '../src/transport/pair-confirm-state'
 import { connect } from '../src/transport/rpc-client'
@@ -39,6 +39,20 @@ export default function PairConfirmScreen() {
     status === 'awaiting-confirm' && routeState.kind === 'error'
       ? routeState.errorMessage
       : errorMessage
+
+  const cancel = useCallback(() => {
+    router.replace('/')
+  }, [router])
+
+  useFocusEffect(
+    useCallback(() => {
+      const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+        cancel()
+        return true
+      })
+      return () => subscription.remove()
+    }, [cancel])
+  )
 
   async function confirm() {
     if (!offer) return
@@ -109,10 +123,6 @@ export default function PairConfirmScreen() {
         `Pairing succeeded but couldn't save the host: ${err instanceof Error ? err.message : String(err)}`
       )
     }
-  }
-
-  function cancel() {
-    router.replace('/')
   }
 
   const containerPadding = { paddingTop: insets.top + spacing.sm }
