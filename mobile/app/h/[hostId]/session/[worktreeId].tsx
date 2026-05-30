@@ -42,7 +42,6 @@ import {
   X
 } from 'lucide-react-native'
 import type { RpcClient } from '../../../../src/transport/rpc-client'
-import { getRepoIdFromWorktreeId } from '../../../../src/shared/worktree-id'
 import { loadHosts } from '../../../../src/transport/host-store'
 import { useHostClient } from '../../../../src/transport/client-context'
 import type { ConnectionState, RpcFailure, RpcSuccess } from '../../../../src/transport/types'
@@ -306,6 +305,13 @@ type MobileNewTabAgentLoadState = 'idle' | 'loading' | 'loaded' | 'error'
 type RuntimeRepoSummary = {
   id: string
   connectionId?: string | null
+}
+
+function getRepoIdFromMobileWorktreeId(id: string): string {
+  // Why: mobile cannot import desktop shared modules in its standalone tsc run,
+  // but the runtime worktree id wire format is still `${repoId}::${path}`.
+  const separatorIdx = id.indexOf('::')
+  return separatorIdx === -1 ? id : id.slice(0, separatorIdx)
 }
 
 type MobileDisplayMode = 'auto' | 'phone' | 'desktop'
@@ -2659,7 +2665,7 @@ export default function SessionScreen() {
       if (!repoResponse.ok) {
         throw new Error(repoResponse.error.message)
       }
-      const repoId = getRepoIdFromWorktreeId(worktreeId)
+      const repoId = getRepoIdFromMobileWorktreeId(worktreeId)
       if (!repoId) {
         throw new Error('worktree_repo_missing')
       }
