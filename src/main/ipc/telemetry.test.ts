@@ -169,7 +169,7 @@ describe('telemetry IPC handlers', () => {
     getCohortAtEmitMock.mockReturnValue({ nth_repo_added: 3 })
     const handler = handlers.get('telemetry:track')!
     handler({}, 'setup_script_prompt_shown', {
-      mode: 'import_available',
+      mode: 'candidate_available',
       provider: 'codex',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
@@ -183,7 +183,7 @@ describe('telemetry IPC handlers', () => {
       has_shared_hooks: true
     })
     expect(trackMock).toHaveBeenCalledWith('setup_script_prompt_shown', {
-      mode: 'import_available',
+      mode: 'candidate_available',
       provider: 'codex',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',

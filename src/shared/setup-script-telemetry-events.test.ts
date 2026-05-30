@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { eventSchemas, setupScriptImportProviderSchema } from './telemetry-events'
 
 describe('setup script prompt schemas', () => {
-  it('accepts a bucketed import prompt exposure', () => {
+  it('accepts a bucketed candidate prompt exposure', () => {
     const parsed = eventSchemas.setup_script_prompt_shown.safeParse({
-      mode: 'import_available',
+      mode: 'candidate_available',
       provider: 'codex',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '2-3',
@@ -24,24 +24,51 @@ describe('setup script prompt schemas', () => {
     expect(parsed.success).toBe(true)
   })
 
-  it.each(['generate_setup_clicked', 'generate_setup_completed', 'generate_setup_failed'])(
-    'accepts %s generation prompt actions',
-    (action) => {
-      const parsed = eventSchemas.setup_script_prompt_action.safeParse({
-        action,
-        mode: 'import_available',
-        provider: 'package-manager',
-        file_count_bucket: '2-3',
-        unsupported_field_count_bucket: '0',
-        has_shared_hooks: false
-      })
-      expect(parsed.success).toBe(true)
-    }
-  )
+  it.each([
+    'save_detected_setup_clicked',
+    'save_detected_setup_completed',
+    'save_detected_setup_failed'
+  ])('accepts %s detected setup save actions', (action) => {
+    const parsed = eventSchemas.setup_script_prompt_action.safeParse({
+      action,
+      mode: 'candidate_available',
+      provider: 'package-manager',
+      file_count_bucket: '2-3',
+      unsupported_field_count_bucket: '0',
+      has_shared_hooks: false,
+      edited_before_save: true
+    })
+    expect(parsed.success).toBe(true)
+  })
+
+  it('rejects detected setup save actions without edit state', () => {
+    const parsed = eventSchemas.setup_script_prompt_action.safeParse({
+      action: 'save_detected_setup_completed',
+      mode: 'candidate_available',
+      provider: 'package-manager',
+      file_count_bucket: '2-3',
+      unsupported_field_count_bucket: '0',
+      has_shared_hooks: false
+    })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects detected setup save actions for non-package-manager imports', () => {
+    const parsed = eventSchemas.setup_script_prompt_action.safeParse({
+      action: 'save_detected_setup_completed',
+      mode: 'candidate_available',
+      provider: 'codex',
+      file_count_bucket: '1',
+      unsupported_field_count_bucket: '0',
+      has_shared_hooks: false,
+      edited_before_save: false
+    })
+    expect(parsed.success).toBe(false)
+  })
 
   it('rejects unknown setup import providers', () => {
     const parsed = eventSchemas.setup_script_prompt_shown.safeParse({
-      mode: 'import_available',
+      mode: 'candidate_available',
       provider: 'made_up_tool',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
@@ -50,9 +77,9 @@ describe('setup script prompt schemas', () => {
     expect(parsed.success).toBe(false)
   })
 
-  it('rejects import prompt exposure without a provider', () => {
+  it('rejects candidate prompt exposure without a provider', () => {
     const parsed = eventSchemas.setup_script_prompt_shown.safeParse({
-      mode: 'import_available',
+      mode: 'candidate_available',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
       has_shared_hooks: false
@@ -72,10 +99,22 @@ describe('setup script prompt schemas', () => {
     expect(parsed.success).toBe(false)
   })
 
+  it('rejects edit state on non-save actions', () => {
+    const parsed = eventSchemas.setup_script_prompt_action.safeParse({
+      action: 'configure_clicked',
+      mode: 'configure_needed',
+      file_count_bucket: '0',
+      unsupported_field_count_bucket: '0',
+      has_shared_hooks: false,
+      edited_before_save: true
+    })
+    expect(parsed.success).toBe(false)
+  })
+
   it('rejects raw setup import details via .strict()', () => {
     const parsed = eventSchemas.setup_script_prompt_action.safeParse({
       action: 'import_completed',
-      mode: 'import_available',
+      mode: 'candidate_available',
       provider: 'codex',
       file_count_bucket: '1',
       unsupported_field_count_bucket: '0',
@@ -88,11 +127,24 @@ describe('setup script prompt schemas', () => {
 
   it('rejects unknown setup prompt actions', () => {
     const parsed = eventSchemas.setup_script_prompt_action.safeParse({
-      action: 'generate_setup_cancelled',
+      action: 'save_detected_setup_cancelled',
       mode: 'configure_needed',
       file_count_bucket: '0',
       unsupported_field_count_bucket: '0',
       has_shared_hooks: false
+    })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('rejects legacy generation setup action names', () => {
+    const parsed = eventSchemas.setup_script_prompt_action.safeParse({
+      action: 'generate_setup_clicked',
+      mode: 'candidate_available',
+      provider: 'package-manager',
+      file_count_bucket: '2-3',
+      unsupported_field_count_bucket: '0',
+      has_shared_hooks: false,
+      edited_before_save: false
     })
     expect(parsed.success).toBe(false)
   })

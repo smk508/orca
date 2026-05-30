@@ -17,7 +17,7 @@ export function buildSetupScriptPromptTelemetry({
   hasSharedHooks: boolean
 }): SetupScriptPromptTelemetry {
   const base = {
-    mode: candidate ? 'import_available' : 'configure_needed',
+    mode: candidate ? 'candidate_available' : 'configure_needed',
     file_count_bucket: bucketSetupScriptCount(candidate?.files.length ?? 0),
     unsupported_field_count_bucket: bucketSetupScriptCount(
       candidate?.unsupportedFields?.length ?? 0
@@ -31,15 +31,18 @@ export function buildSetupScriptPromptTelemetry({
 export function buildSetupScriptPromptActionTelemetry({
   action,
   candidate,
-  hasSharedHooks
+  hasSharedHooks,
+  editedBeforeSave
 }: {
   action: SetupScriptPromptAction
   candidate: SetupScriptImportCandidate | null
   hasSharedHooks: boolean
+  editedBeforeSave?: boolean
 }): SetupScriptPromptActionTelemetry {
   return {
     ...buildSetupScriptPromptTelemetry({ candidate, hasSharedHooks }),
-    action
+    action,
+    ...(editedBeforeSave !== undefined ? { edited_before_save: editedBeforeSave } : {})
   }
 }
 

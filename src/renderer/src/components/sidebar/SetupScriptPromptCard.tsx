@@ -221,9 +221,10 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
     async (input: {
       candidate: SetupScriptImportCandidate
       hasSharedHooks: boolean
-      actionPrefix: 'generate_setup' | 'import'
+      actionPrefix: 'save_detected_setup' | 'import'
+      editedBeforeSave?: boolean
     }) => {
-      const { candidate, hasSharedHooks, actionPrefix } = input
+      const { candidate, hasSharedHooks, actionPrefix, editedBeforeSave } = input
       if (!activeRepo) {
         return
       }
@@ -236,9 +237,13 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
           track(
             'setup_script_prompt_action',
             buildSetupScriptPromptActionTelemetry({
-              action: actionPrefix === 'generate_setup' ? 'generate_setup_failed' : 'import_failed',
+              action:
+                actionPrefix === 'save_detected_setup'
+                  ? 'save_detected_setup_failed'
+                  : 'import_failed',
               candidate,
-              hasSharedHooks
+              hasSharedHooks,
+              editedBeforeSave
             })
           )
           toast.error('Failed to save setup script')
@@ -248,12 +253,15 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
           'setup_script_prompt_action',
           buildSetupScriptPromptActionTelemetry({
             action:
-              actionPrefix === 'generate_setup' ? 'generate_setup_completed' : 'import_completed',
+              actionPrefix === 'save_detected_setup'
+                ? 'save_detected_setup_completed'
+                : 'import_completed',
             candidate,
-            hasSharedHooks
+            hasSharedHooks,
+            editedBeforeSave
           })
         )
-        if (actionPrefix === 'generate_setup') {
+        if (actionPrefix === 'save_detected_setup') {
           // Why: the user has already reviewed the detected script in the
           // card; after saving, close the prompt instead of showing a second
           // confirmation panel.
@@ -285,9 +293,13 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
         track(
           'setup_script_prompt_action',
           buildSetupScriptPromptActionTelemetry({
-            action: actionPrefix === 'generate_setup' ? 'generate_setup_failed' : 'import_failed',
+            action:
+              actionPrefix === 'save_detected_setup'
+                ? 'save_detected_setup_failed'
+                : 'import_failed',
             candidate,
-            hasSharedHooks
+            hasSharedHooks,
+            editedBeforeSave
           })
         )
         console.warn('[setup-script-prompt] Failed to save setup script:', error)
@@ -304,7 +316,9 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
       return
     }
     const isPackageManagerCandidate = promptState.candidate.provider === 'package-manager'
-    const actionPrefix = isPackageManagerCandidate ? 'generate_setup' : 'import'
+    const actionPrefix = isPackageManagerCandidate ? 'save_detected_setup' : 'import'
+    const editedBeforeSave =
+      isPackageManagerCandidate && detectedSetupDraft.trim() !== promptState.candidate.setup.trim()
     const candidate = isPackageManagerCandidate
       ? {
           ...promptState.candidate,
@@ -315,20 +329,22 @@ function SetupScriptPromptCard(): React.JSX.Element | null {
       toast.error('Setup script cannot be empty')
       return
     }
-    if (actionPrefix === 'generate_setup') {
+    if (actionPrefix === 'save_detected_setup') {
       track(
         'setup_script_prompt_action',
         buildSetupScriptPromptActionTelemetry({
-          action: 'generate_setup_clicked',
+          action: 'save_detected_setup_clicked',
           candidate,
-          hasSharedHooks: promptState.hasSharedHooks
+          hasSharedHooks: promptState.hasSharedHooks,
+          editedBeforeSave
         })
       )
     }
     await saveSetupCandidate({
       candidate,
       hasSharedHooks: promptState.hasSharedHooks,
-      actionPrefix
+      actionPrefix,
+      editedBeforeSave: isPackageManagerCandidate ? editedBeforeSave : undefined
     })
   }, [activeRepo, detectedSetupDraft, promptState, saveSetupCandidate])
 
