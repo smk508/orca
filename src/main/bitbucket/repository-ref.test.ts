@@ -80,4 +80,21 @@ describe('Bitbucket repository refs', () => {
     expect(sshExecMock).toHaveBeenCalledWith(['remote', 'get-url', 'origin'], '/repo')
     expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
   })
+
+  it('does not cache transient SSH provider failures as unsupported repos', async () => {
+    sshExecMock.mockRejectedValueOnce(new Error('connection closed')).mockResolvedValueOnce({
+      stdout: 'git@bitbucket.org:remote/project.git\n',
+      stderr: ''
+    })
+    registerSshGitProvider('conn-1', { exec: sshExecMock } as never)
+
+    await expect(getBitbucketRepoRefForRemote('/repo', 'origin', 'conn-1')).resolves.toBeNull()
+    await expect(getBitbucketRepoRefForRemote('/repo', 'origin', 'conn-1')).resolves.toEqual({
+      workspace: 'remote',
+      repoSlug: 'project'
+    })
+
+    expect(sshExecMock).toHaveBeenCalledTimes(2)
+    expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
+  })
 })

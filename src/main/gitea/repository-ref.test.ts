@@ -125,4 +125,22 @@ describe('Gitea repository ref parsing', () => {
     expect(sshExecMock).toHaveBeenCalledWith(['remote', 'get-url', 'origin'], '/repo')
     expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
   })
+
+  it('does not cache transient SSH provider failures as unsupported repos', async () => {
+    sshExecMock.mockRejectedValueOnce(new Error('connection closed')).mockResolvedValueOnce({
+      stdout: 'git@gitea.example.test:remote/project.git\n',
+      stderr: ''
+    })
+    registerSshGitProvider('conn-1', { exec: sshExecMock } as never)
+
+    await expect(getGiteaRepoRefForRemote('/repo', 'origin', 'conn-1')).resolves.toBeNull()
+    await expect(getGiteaRepoRefForRemote('/repo', 'origin', 'conn-1')).resolves.toMatchObject({
+      host: 'gitea.example.test',
+      owner: 'remote',
+      repo: 'project'
+    })
+
+    expect(sshExecMock).toHaveBeenCalledTimes(2)
+    expect(gitExecFileAsyncMock).not.toHaveBeenCalled()
+  })
 })
