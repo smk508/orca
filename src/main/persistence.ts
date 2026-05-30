@@ -52,6 +52,7 @@ import type {
 import type { MigrationUnsupportedPtyEntry } from '../shared/agent-status-types'
 import type { SshRemotePtyLease, SshTarget } from '../shared/ssh-types'
 import { isFolderRepo } from '../shared/repo-kind'
+import { normalizeRepoWorktreeFolderPath } from './repo-worktree-folder-path'
 import { getGitUsername } from './git/repo'
 import {
   getDefaultPersistedState,
@@ -2265,6 +2266,7 @@ export class Store {
         | 'repoIcon'
         | 'hookSettings'
         | 'worktreeBaseRef'
+        | 'worktreeFolderPath'
         | 'kind'
         | 'symlinkPaths'
         | 'issueSourcePreference'
@@ -2281,6 +2283,24 @@ export class Store {
       return null
     }
     const sanitizedUpdates = sanitizeRepoUpdatesForPersistence(updates)
+    const nextIsFolder =
+      sanitizedUpdates.kind === 'folder' ||
+      (sanitizedUpdates.kind === undefined && isFolderRepo(repo))
+    if (nextIsFolder) {
+      delete repo.worktreeFolderPath
+      delete sanitizedUpdates.worktreeFolderPath
+    } else if ('worktreeFolderPath' in sanitizedUpdates) {
+      const normalizedWorktreeFolderPath = normalizeRepoWorktreeFolderPath(
+        sanitizedUpdates.worktreeFolderPath,
+        repo
+      )
+      if (normalizedWorktreeFolderPath === undefined) {
+        delete repo.worktreeFolderPath
+        delete sanitizedUpdates.worktreeFolderPath
+      } else {
+        sanitizedUpdates.worktreeFolderPath = normalizedWorktreeFolderPath
+      }
+    }
     if ('projectGroupId' in sanitizedUpdates) {
       const nextGroupId = sanitizedUpdates.projectGroupId
       if (
@@ -2339,7 +2359,7 @@ export class Store {
   }
 
   private hydrateRepo(repo: Repo): Repo {
-    const { repoIcon: rawRepoIcon, ...repoWithoutIcon } = repo
+    const { repoIcon: rawRepoIcon, worktreeFolderPath, ...repoWithoutIcon } = repo
     const repoIcon = sanitizeRepoIcon(rawRepoIcon)
     const gitUsername = isFolderRepo(repo)
       ? ''
@@ -2353,6 +2373,7 @@ export class Store {
     return {
       ...repoWithoutIcon,
       ...(repoIcon !== undefined ? { repoIcon } : {}),
+      ...(!isFolderRepo(repo) && worktreeFolderPath ? { worktreeFolderPath } : {}),
       kind: isFolderRepo(repo) ? 'folder' : 'git',
       gitUsername,
       hookSettings: {

@@ -20,6 +20,7 @@ import { DEFAULT_REPO_BADGE_COLOR } from '../../shared/constants'
 import { normalizeRepoBadgeColor } from '../../shared/repo-badge-color'
 import { sanitizeRepoIcon } from '../../shared/repo-icon'
 import { normalizeRepoSourceControlAiOverrides } from '../../shared/source-control-ai'
+import { normalizeRepoWorktreeFolderPath } from '../repo-worktree-folder-path'
 import { invalidateAuthorizedRootsCache } from './filesystem-auth'
 import type { ChildProcess } from 'child_process'
 import { access, mkdir, readdir, rm } from 'fs/promises'
@@ -916,6 +917,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
             | 'repoIcon'
             | 'hookSettings'
             | 'worktreeBaseRef'
+            | 'worktreeFolderPath'
             | 'kind'
             | 'symlinkPaths'
             | 'issueSourcePreference'
@@ -928,6 +930,10 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
         >
       }
     ) => {
+      const existingRepo = store.getRepo(args.repoId)
+      if (!existingRepo) {
+        return null
+      }
       // Why: validate the persisted preference string at the IPC boundary
       // — the TypeScript signature is erased at runtime, and a preload
       // version skew or renderer bug could otherwise persist a garbage
@@ -998,8 +1004,21 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
           updates.sourceControlAi = normalizedSourceControlAi
         }
       }
+      if ('worktreeFolderPath' in updates) {
+        const nextIsFolder =
+          updates.kind === 'folder' || (updates.kind === undefined && isFolderRepo(existingRepo))
+        updates.worktreeFolderPath = nextIsFolder
+          ? undefined
+          : normalizeRepoWorktreeFolderPath(updates.worktreeFolderPath, existingRepo)
+      }
+      if (updates.kind === 'folder' && !('worktreeFolderPath' in updates)) {
+        updates.worktreeFolderPath = undefined
+      }
       const updated = store.updateRepo(args.repoId, updates)
       if (updated) {
+        if ('worktreeFolderPath' in updates) {
+          invalidateAuthorizedRootsCache()
+        }
         notifyReposChanged(mainWindow)
       }
       return updated

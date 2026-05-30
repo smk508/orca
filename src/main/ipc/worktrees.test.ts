@@ -528,6 +528,116 @@ describe('registerWorktreeHandlers', () => {
     })
   })
 
+  it('creates local desktop worktrees under the project folder override and stamps that layout', async () => {
+    const repoWithOverride = {
+      id: 'repo-1',
+      path: '/workspace/repo',
+      displayName: 'repo',
+      badgeColor: '#000',
+      addedAt: 0,
+      worktreeFolderPath: '/project-worktrees'
+    }
+    store.getRepo.mockReturnValue({ ...repoWithOverride, worktreeBaseRef: null })
+    store.getRepos.mockReturnValue([repoWithOverride])
+    store.setWorktreeMeta.mockImplementation((_worktreeId, meta) => meta)
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '/project-worktrees/project-feature',
+        head: 'abc123',
+        branch: 'project-feature',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+
+    await handlers['worktrees:create'](null, {
+      repoId: 'repo-1',
+      name: 'project-feature'
+    })
+
+    expect(addWorktreeMock).toHaveBeenCalledWith(
+      '/workspace/repo',
+      '/project-worktrees/project-feature',
+      'project-feature',
+      'origin/main',
+      false
+    )
+    expect(store.setWorktreeMeta).toHaveBeenCalledWith(
+      'repo-1::/project-worktrees/project-feature',
+      expect.objectContaining({
+        orcaCreationWorkspaceLayout: {
+          path: '/project-worktrees',
+          nestWorkspaces: false
+        }
+      })
+    )
+  })
+
+  it('uses the project folder captured when local desktop create starts', async () => {
+    const repoWithOverride = {
+      id: 'repo-1',
+      path: '/workspace/repo',
+      displayName: 'repo',
+      badgeColor: '#000',
+      addedAt: 0,
+      worktreeBaseRef: null,
+      worktreeFolderPath: '/project-worktrees'
+    }
+    let resolveRemoteBase!: (value: null) => void
+    runtimeStub.resolveRemoteTrackingBase.mockReturnValue(
+      new Promise<null>((resolve) => {
+        resolveRemoteBase = resolve
+      })
+    )
+    store.getRepo.mockReturnValue(repoWithOverride)
+    store.getRepos.mockReturnValue([repoWithOverride])
+    store.setWorktreeMeta.mockImplementation((_worktreeId, meta) => meta)
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '/project-worktrees/create-race',
+        head: 'abc123',
+        branch: 'create-race',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+
+    const createPromise = handlers['worktrees:create'](null, {
+      repoId: 'repo-1',
+      name: 'create-race'
+    })
+
+    await vi.waitFor(() => {
+      expect(runtimeStub.resolveRemoteTrackingBase).toHaveBeenCalled()
+    })
+    repoWithOverride.worktreeFolderPath = '/changed-worktrees'
+    resolveRemoteBase(null)
+
+    const result = await createPromise
+
+    expect(addWorktreeMock).toHaveBeenCalledWith(
+      '/workspace/repo',
+      '/project-worktrees/create-race',
+      'create-race',
+      'origin/main',
+      false
+    )
+    expect(store.setWorktreeMeta).toHaveBeenCalledWith(
+      'repo-1::/project-worktrees/create-race',
+      expect.objectContaining({
+        orcaCreationWorkspaceLayout: {
+          path: '/project-worktrees',
+          nestWorkspaces: false
+        }
+      })
+    )
+    expect(result).toEqual({
+      worktree: expect.objectContaining({
+        path: '/project-worktrees/create-race'
+      })
+    })
+  })
+
   it('creates an additional workspace for folder-mode repos without git worktree add', async () => {
     const repo = {
       id: 'repo-folder',
@@ -1387,27 +1497,31 @@ describe('registerWorktreeHandlers', () => {
     expect(provider.addWorktree).toHaveBeenCalledWith(
       '/remote/repo',
       'sparse-dashboard',
-      '/remote/repo/../sparse-dashboard',
+      '/remote/sparse-dashboard',
       { base: 'origin/main', noCheckout: true }
     )
     expect(provider.exec).toHaveBeenCalledWith(
       ['sparse-checkout', 'init', '--cone'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
     expect(provider.exec).toHaveBeenCalledWith(
       ['sparse-checkout', 'set', '--', 'apps/mobile', 'packages/shared'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
     expect(provider.exec).toHaveBeenCalledWith(
       ['checkout', 'sparse-dashboard'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
     expect(store.setWorktreeMeta).toHaveBeenCalledWith(
       'repo-ssh::/remote/sparse-dashboard',
       expect.objectContaining({
         sparseDirectories: ['apps/mobile', 'packages/shared'],
         sparseBaseRef: 'origin/main',
-        sparsePresetId: 'preset-1'
+        sparsePresetId: 'preset-1',
+        orcaCreationWorkspaceLayout: {
+          path: '/remote',
+          nestWorkspaces: false
+        }
       })
     )
     expect(result).toEqual({
@@ -1418,6 +1532,68 @@ describe('registerWorktreeHandlers', () => {
         sparsePresetId: 'preset-1'
       })
     })
+  })
+
+  it('creates SSH worktrees under the project folder override', async () => {
+    const repo = {
+      id: 'repo-ssh',
+      path: '/remote/repo',
+      displayName: 'ssh',
+      badgeColor: '#000',
+      addedAt: 0,
+      connectionId: 'conn-1',
+      worktreeBaseRef: 'origin/main',
+      worktreeFolderPath: '/remote/custom-worktrees'
+    }
+    const provider = {
+      exec: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+      fetchRemoteTrackingRef: vi.fn().mockResolvedValue(undefined),
+      addWorktree: vi.fn().mockResolvedValue(undefined),
+      listWorktrees: vi.fn().mockResolvedValue([
+        {
+          path: '/remote/custom-worktrees/ssh-feature',
+          head: 'abc123',
+          branch: 'refs/heads/ssh-feature',
+          isBare: false,
+          isMainWorktree: false
+        }
+      ])
+    }
+    const mux = {
+      request: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn()
+    }
+    store.getRepos.mockReturnValue([repo])
+    store.getRepo.mockReturnValue(repo)
+    store.getSparsePresets.mockReturnValue([])
+    store.setWorktreeMeta.mockImplementation((_worktreeId, meta) => meta)
+    getSshGitProviderMock.mockReturnValue(provider)
+    getActiveMultiplexerMock.mockReturnValue(mux)
+
+    await handlers['worktrees:create'](null, {
+      repoId: 'repo-ssh',
+      name: 'ssh-feature'
+    })
+
+    expect(provider.addWorktree).toHaveBeenCalledWith(
+      '/remote/repo',
+      'ssh-feature',
+      '/remote/custom-worktrees/ssh-feature',
+      { base: 'origin/main' }
+    )
+    expect(mux.request).toHaveBeenCalledWith('session.registerRoot', { rootPath: '/remote/repo' })
+    expect(mux.request).toHaveBeenCalledWith('session.registerRoot', {
+      rootPath: '/remote/custom-worktrees/ssh-feature'
+    })
+    expect(store.setWorktreeMeta).toHaveBeenCalledWith(
+      'repo-ssh::/remote/custom-worktrees/ssh-feature',
+      expect.objectContaining({
+        orcaCreationWorkspaceLayout: {
+          path: '/remote/custom-worktrees',
+          nestWorkspaces: false
+        }
+      })
+    )
   })
 
   it('unsets SSH branch base config before removing a sparse worktree after setup failure', async () => {
@@ -1468,9 +1644,9 @@ describe('registerWorktreeHandlers', () => {
 
     expect(provider.exec).toHaveBeenCalledWith(
       ['config', '--local', '--unset-all', 'branch.sparse-dashboard.base'],
-      '/remote/repo/../sparse-dashboard'
+      '/remote/sparse-dashboard'
     )
-    expect(provider.removeWorktree).toHaveBeenCalledWith('/remote/repo/../sparse-dashboard', true, {
+    expect(provider.removeWorktree).toHaveBeenCalledWith('/remote/sparse-dashboard', true, {
       deleteBranch: true,
       forceBranchDelete: true
     })

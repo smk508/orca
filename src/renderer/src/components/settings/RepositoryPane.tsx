@@ -1,11 +1,11 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { OrcaHooks, Repo, RepoHookSettings } from '../../../../shared/types'
 import { getRepoKindLabel, isFolderRepo } from '../../../../shared/repo-kind'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Separator } from '../ui/separator'
-import { Trash2 } from 'lucide-react'
+import { FolderOpen, Trash2 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
 import { BaseRefPicker } from './BaseRefPicker'
 import { RepositoryHooksSection } from './RepositoryHooksSection'
@@ -27,7 +27,7 @@ type RepositoryPaneProps = {
   hasHooksFile: boolean
   hooksInspectionReady: boolean
   mayNeedUpdate: boolean
-  updateRepo: (repoId: string, updates: Partial<Repo>) => void
+  updateRepo: (repoId: string, updates: Partial<Repo>) => void | Promise<boolean>
   removeProject: (repoId: string) => void
 }
 
@@ -117,9 +117,13 @@ export function RepositoryPane({
 
   const allEntries = getRepositoryPaneSearchEntries(repo)
   const identityEntries = allEntries.filter((entry) =>
-    ['Display Name', 'Project Icon', 'Default Worktree Base', 'Remove Project'].includes(
-      entry.title
-    )
+    [
+      'Display Name',
+      'Project Icon',
+      'Default Worktree Base',
+      'Worktree Folder',
+      'Remove Project'
+    ].includes(entry.title)
   )
   const sparsePresetEntries = allEntries.filter((entry) =>
     ['Sparse Checkout Presets'].includes(entry.title)
@@ -243,21 +247,28 @@ export function RepositoryPane({
         </SearchableSetting>
 
         {!isFolder ? (
-          <SearchableSetting
-            title="Default Worktree Base"
-            description="Default base branch or ref when creating worktrees."
-            keywords={[repo.displayName, 'base ref', 'branch']}
-            className="space-y-3"
-            forceVisible={forceFullPaneForRepoMatch}
-          >
-            <Label className="text-sm font-semibold">Default Worktree Base</Label>
-            <BaseRefPicker
-              repoId={repo.id}
-              currentBaseRef={repo.worktreeBaseRef}
-              onSelect={(ref) => updateRepo(repo.id, { worktreeBaseRef: ref })}
-              onUsePrimary={() => updateRepo(repo.id, { worktreeBaseRef: undefined })}
+          <>
+            <SearchableSetting
+              title="Default Worktree Base"
+              description="Default base branch or ref when creating worktrees."
+              keywords={[repo.displayName, 'base ref', 'branch']}
+              className="space-y-3"
+              forceVisible={forceFullPaneForRepoMatch}
+            >
+              <Label className="text-sm font-semibold">Default Worktree Base</Label>
+              <BaseRefPicker
+                repoId={repo.id}
+                currentBaseRef={repo.worktreeBaseRef}
+                onSelect={(ref) => updateRepo(repo.id, { worktreeBaseRef: ref })}
+                onUsePrimary={() => updateRepo(repo.id, { worktreeBaseRef: undefined })}
+              />
+            </SearchableSetting>
+            <WorktreeFolderSetting
+              repo={repo}
+              updateRepo={updateRepo}
+              forceVisible={forceFullPaneForRepoMatch}
             />
-          </SearchableSetting>
+          </>
         ) : null}
       </section>
     ) : null,
@@ -295,4 +306,109 @@ export function RepositoryPane({
       ))}
     </div>
   )
+}
+
+function WorktreeFolderSetting({
+  repo,
+  updateRepo,
+  forceVisible
+}: {
+  repo: Repo
+  updateRepo: (repoId: string, updates: Partial<Repo>) => void | Promise<boolean>
+  forceVisible: boolean
+}): React.JSX.Element {
+  const activeRuntimeEnvironmentId = useAppStore(
+    (state) => state.settings?.activeRuntimeEnvironmentId ?? null
+  )
+  const [draftPath, setDraftPath] = useState(repo.worktreeFolderPath ?? '')
+  const [saving, setSaving] = useState(false)
+  const canBrowse = canBrowseProjectWorktreeFolder(repo, activeRuntimeEnvironmentId)
+
+  useEffect(() => {
+    setDraftPath(repo.worktreeFolderPath ?? '')
+  }, [repo.id, repo.worktreeFolderPath])
+
+  const commitDraft = useCallback(
+    async (nextPath = draftPath): Promise<void> => {
+      const trimmed = nextPath.trim()
+      if (trimmed === (repo.worktreeFolderPath ?? '')) {
+        setDraftPath(repo.worktreeFolderPath ?? '')
+        return
+      }
+      setSaving(true)
+      try {
+        const result = await updateRepo(repo.id, { worktreeFolderPath: trimmed })
+        if (result === false) {
+          setDraftPath(repo.worktreeFolderPath ?? '')
+          return
+        }
+        setDraftPath(trimmed)
+      } finally {
+        setSaving(false)
+      }
+    },
+    [draftPath, repo.id, repo.worktreeFolderPath, updateRepo]
+  )
+
+  const handleBrowse = async (): Promise<void> => {
+    const path = await window.api.repos.pickDirectory()
+    if (!path) {
+      return
+    }
+    setDraftPath(path)
+    await commitDraft(path)
+  }
+
+  return (
+    <SearchableSetting
+      title="Worktree Folder"
+      description="Optional folder for new worktrees from this project."
+      keywords={[repo.displayName, repo.path, 'worktree folder', 'workspace folder', 'directory']}
+      className="space-y-2"
+      forceVisible={forceVisible}
+    >
+      <div className="space-y-1">
+        <Label className="text-sm font-semibold">Worktree Folder</Label>
+        <p className="text-xs text-muted-foreground">
+          Blank inherits the global workspace folder for local projects, including WSL defaults, or
+          the repo sibling folder for SSH projects.
+        </p>
+      </div>
+      <div className="flex gap-2">
+        <Input
+          value={draftPath}
+          onChange={(event) => setDraftPath(event.target.value)}
+          onBlur={() => void commitDraft()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void commitDraft()
+            }
+          }}
+          placeholder="Inherit default"
+          className="h-9 text-sm"
+        />
+        {canBrowse ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void handleBrowse()}
+            disabled={saving}
+          >
+            <FolderOpen className="size-4" />
+            Browse
+          </Button>
+        ) : null}
+      </div>
+    </SearchableSetting>
+  )
+}
+
+export function canBrowseProjectWorktreeFolder(
+  repo: Repo,
+  activeRuntimeEnvironmentId: string | null | undefined
+): boolean {
+  return !repo.connectionId && !activeRuntimeEnvironmentId?.trim()
 }

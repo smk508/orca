@@ -1,8 +1,17 @@
-import { basename, join, resolve, relative, isAbsolute, posix, win32 } from 'path'
-import type { GitWorktreeInfo, Worktree, WorktreeMeta } from '../../shared/types'
+import { realpathSync } from 'fs'
+import { posix, win32 } from 'path'
+import type {
+  GitWorktreeInfo,
+  GlobalSettings,
+  OrcaWorkspaceLayout,
+  Repo,
+  Worktree,
+  WorktreeMeta
+} from '../../shared/types'
 import { splitWorktreeId } from '../../shared/worktree-id'
 import { DEFAULT_WORKSPACE_STATUS_ID } from '../../shared/workspace-statuses'
 import { getWslHome, parseWslPath } from '../wsl'
+import { normalizeRepoWorktreeFolderPath } from '../repo-worktree-folder-path'
 
 /**
  * Sanitize a worktree name for use in branch names and directory paths.
@@ -53,11 +62,12 @@ export function sanitizeWorktreeDisplayName(input: string): string | undefined {
  * Ensure a target path is within the workspace directory (prevent path traversal).
  */
 export function ensurePathWithinWorkspace(targetPath: string, workspaceDir: string): string {
-  const resolvedWorkspaceDir = resolve(workspaceDir)
-  const resolvedTargetPath = resolve(targetPath)
-  const rel = relative(resolvedWorkspaceDir, resolvedTargetPath)
+  const pathOps = getWorktreePathOps(targetPath, workspaceDir)
+  const resolvedWorkspaceDir = pathOps.resolve(workspaceDir)
+  const resolvedTargetPath = pathOps.resolve(targetPath)
+  const rel = pathOps.relative(resolvedWorkspaceDir, resolvedTargetPath)
 
-  if (isAbsolute(rel) || rel.startsWith('..')) {
+  if (pathOps.isAbsolute(rel) || rel.startsWith('..')) {
     throw new Error('Invalid worktree path')
   }
 
@@ -82,6 +92,58 @@ export function computeBranchName(
   return sanitizedName
 }
 
+export type EffectiveWorktreeLayout = OrcaWorkspaceLayout & {
+  source: 'project' | 'wsl-default' | 'global'
+}
+
+export type RemoteWorktreeLayout = OrcaWorkspaceLayout & {
+  source: 'project' | 'ssh-sibling'
+}
+
+export function resolveEffectiveWorktreeLayout(
+  repo: Pick<Repo, 'path' | 'kind' | 'worktreeFolderPath'>,
+  settings: Pick<GlobalSettings, 'nestWorkspaces' | 'workspaceDir'>
+): EffectiveWorktreeLayout {
+  const projectPath = normalizeRepoWorktreeFolderPath(repo.worktreeFolderPath, repo)
+  if (projectPath) {
+    return { path: projectPath, nestWorkspaces: false, source: 'project' }
+  }
+
+  const wsl = parseWslPath(repo.path)
+  if (wsl) {
+    const wslHome = getWslHome(wsl.distro)
+    if (wslHome) {
+      return {
+        path: win32.join(wslHome, 'orca', 'workspaces'),
+        nestWorkspaces: settings.nestWorkspaces,
+        source: 'wsl-default'
+      }
+    }
+  }
+
+  return {
+    path: settings.workspaceDir,
+    nestWorkspaces: settings.nestWorkspaces,
+    source: 'global'
+  }
+}
+
+export function resolveRemoteWorktreeLayout(
+  repo: Pick<Repo, 'path' | 'kind' | 'worktreeFolderPath'>
+): RemoteWorktreeLayout {
+  const projectPath = normalizeRepoWorktreeFolderPath(repo.worktreeFolderPath, repo)
+  if (projectPath) {
+    return { path: projectPath, nestWorkspaces: false, source: 'project' }
+  }
+
+  const pathOps = getWorktreePathOps(repo.path)
+  return {
+    path: pathOps.dirname(repo.path),
+    nestWorkspaces: false,
+    source: 'ssh-sibling'
+  }
+}
+
 /**
  * Compute the filesystem path where the worktree directory will be created.
  *
@@ -95,14 +157,12 @@ export function computeBranchName(
 export function computeWorktreePath(
   sanitizedName: string,
   repoPath: string,
-  settings: { nestWorkspaces: boolean; workspaceDir: string }
+  settings: { nestWorkspaces: boolean; workspaceDir: string },
+  options: { useWslDefault?: boolean } = {}
 ): string {
-  const pathOps =
-    looksLikeWindowsPath(repoPath) || looksLikeWindowsPath(settings.workspaceDir)
-      ? win32
-      : { basename, join }
+  const pathOps = getWorktreePathOps(repoPath, settings.workspaceDir)
 
-  const wsl = parseWslPath(repoPath)
+  const wsl = options.useWslDefault === false ? null : parseWslPath(repoPath)
   if (wsl) {
     const wslHome = getWslHome(wsl.distro)
     if (wslHome) {
@@ -128,6 +188,27 @@ export function computeWorktreePath(
   return pathOps.join(settings.workspaceDir, sanitizedName)
 }
 
+export function computeWorktreePathForLayout(
+  sanitizedName: string,
+  repoPath: string,
+  layout: Pick<OrcaWorkspaceLayout, 'path' | 'nestWorkspaces'>
+): string {
+  return computeWorktreePath(
+    sanitizedName,
+    repoPath,
+    { workspaceDir: layout.path, nestWorkspaces: layout.nestWorkspaces },
+    { useWslDefault: false }
+  )
+}
+
+export function computeRemoteWorktreePath(
+  sanitizedName: string,
+  repo: Pick<Repo, 'path' | 'kind' | 'worktreeFolderPath'>
+): string {
+  const layout = resolveRemoteWorktreeLayout(repo)
+  return computeWorktreePathForLayout(sanitizedName, repo.path, layout)
+}
+
 export function areWorktreePathsEqual(
   leftPath: string,
   rightPath: string,
@@ -142,13 +223,29 @@ export function areWorktreePathsEqual(
     // create spuriously fails until the next full reload repopulates state.
     return left.toLowerCase() === right.toLowerCase()
   }
-  const left = posix.normalize(posix.resolve(leftPath))
-  const right = posix.normalize(posix.resolve(rightPath))
+  const left = posix.normalize(posix.resolve(realpathExistingPosixPath(leftPath)))
+  const right = posix.normalize(posix.resolve(realpathExistingPosixPath(rightPath)))
   return left === right
 }
 
+function realpathExistingPosixPath(pathValue: string): string {
+  try {
+    // Why: git worktree list reports canonical paths on macOS, where /var is
+    // a symlink to /private/var. Match the path Git returns after creation.
+    return realpathSync(pathValue)
+  } catch {
+    return pathValue
+  }
+}
+
 function looksLikeWindowsPath(pathValue: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(pathValue) || pathValue.startsWith('\\\\')
+  return (
+    /^[A-Za-z]:[\\/]/.test(pathValue) || pathValue.startsWith('\\\\') || pathValue.startsWith('//')
+  )
+}
+
+function getWorktreePathOps(...paths: string[]) {
+  return paths.some(looksLikeWindowsPath) ? win32 : posix
 }
 
 /**
@@ -184,7 +281,11 @@ export function mergeWorktree(
     isBare: git.isBare,
     ...(git.isSparse === true ? { isSparse: true } : {}),
     isMainWorktree: git.isMainWorktree,
-    displayName: meta?.displayName || branchShort || defaultDisplayName || basename(git.path),
+    displayName:
+      meta?.displayName ||
+      branchShort ||
+      defaultDisplayName ||
+      getWorktreePathOps(git.path).basename(git.path),
     comment: meta?.comment || '',
     linkedIssue: meta?.linkedIssue ?? null,
     linkedPR: meta?.linkedPR ?? null,

@@ -5,6 +5,7 @@ import type * as RepoWorktrees from '../repo-worktrees'
 import { listRepoWorktrees } from '../repo-worktrees'
 import type { GitWorktreeInfo, Repo } from '../../shared/types'
 import {
+  getAllowedRoots,
   invalidateAuthorizedRootsCache,
   rebuildAuthorizedRootsCache,
   resolveRegisteredWorktreePath
@@ -63,5 +64,26 @@ describe('filesystem auth worktree roots', () => {
       resolve(lastWorktreePath)
     )
     expect(listRepoWorktrees).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows local project worktree folder overrides but ignores SSH overrides', () => {
+    const localOverrideRepo: Repo = {
+      ...repo,
+      worktreeFolderPath: '/project-worktrees'
+    }
+    const sshRepo: Repo = {
+      ...repo,
+      id: 'repo-ssh',
+      path: '/remote/repo',
+      connectionId: 'ssh-1',
+      worktreeFolderPath: '/remote/worktrees'
+    }
+    const store = {
+      getRepos: () => [localOverrideRepo, sshRepo],
+      getSettings: () => ({ workspaceDir: '/workspace' })
+    } as unknown as Store
+
+    expect(getAllowedRoots(store)).toContain(resolve('/project-worktrees'))
+    expect(getAllowedRoots(store)).not.toContain(resolve('/remote/worktrees'))
   })
 })

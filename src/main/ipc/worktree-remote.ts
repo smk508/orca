@@ -8,7 +8,7 @@
 // cohesive flow would split awkwardly.
 
 import type { BrowserWindow } from 'electron'
-import { join, posix, win32 } from 'path'
+import { posix, win32 } from 'path'
 import { existsSync } from 'fs'
 import { randomUUID } from 'crypto'
 import type { Store } from '../persistence'
@@ -30,7 +30,6 @@ import { gitExecFileAsync } from '../git/runner'
 import { parseGitHubOwnerRepo } from '../github/gh-utils'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import type { RemoteFetchResult, RemoteTrackingBase } from '../runtime/orca-runtime'
-import { isWslPath, parseWslPath, getWslHome } from '../wsl'
 import {
   buildPosixRunnerScript,
   buildWindowsRunnerScript,
@@ -53,7 +52,10 @@ import {
   sanitizeWorktreeDisplayName,
   computeBranchName,
   computeWorktreePath,
+  computeRemoteWorktreePath,
   ensurePathWithinWorkspace,
+  resolveEffectiveWorktreeLayout,
+  resolveRemoteWorktreeLayout,
   shouldSetDisplayName,
   mergeWorktree,
   areWorktreePathsEqual
@@ -735,8 +737,8 @@ export async function createRemoteWorktree(
     username
   )
 
-  // Compute worktree path relative to the repo's parent on the remote
-  const remotePath = `${repo.path}/../${sanitizedName}`
+  const remoteLayout = resolveRemoteWorktreeLayout(repo)
+  const remotePath = computeRemoteWorktreePath(sanitizedName, repo)
 
   // Determine base branch
   // Why: previously fell back to a hardcoded 'origin/main' when
@@ -970,8 +972,8 @@ export async function createRemoteWorktree(
     orcaCreatedAt: now,
     orcaCreationSource: 'ssh',
     orcaCreationWorkspaceLayout: {
-      path: settings.workspaceDir,
-      nestWorkspaces: settings.nestWorkspaces
+      path: remoteLayout.path,
+      nestWorkspaces: remoteLayout.nestWorkspaces
     },
     baseRef: baseBranch,
     ...(checkoutExistingBranch ? { preserveBranchOnDelete: true } : {}),
@@ -1052,6 +1054,9 @@ export async function createLocalWorktree(
   runtime?: OrcaRuntimeService
 ): Promise<CreateWorktreeResult> {
   const settings = store.getSettings()
+  // Why: Store.updateRepo mutates repo objects in place; an in-flight create
+  // must keep using the layout that was current when the handler started.
+  const worktreeLayout = resolveEffectiveWorktreeLayout(repo, settings)
 
   const username = getGitUsername(repo.path)
   const requestedName = args.name
@@ -1113,14 +1118,6 @@ export async function createLocalWorktree(
       .catch(() => undefined)
     emitCreateWorktreeProgress(mainWindow, 'fetching')
   }
-  // Why: WSL worktrees live under ~/orca/workspaces inside the WSL
-  // filesystem. Validate against that root, not the Windows workspace dir.
-  // If WSL home lookup fails, keep using the configured workspace root so
-  // the path traversal guard still runs on the fallback path.
-  const wslInfo = isWslPath(repo.path) ? parseWslPath(repo.path) : null
-  const wslHome = wslInfo ? getWslHome(wslInfo.distro) : null
-  const workspaceRoot = wslHome ? join(wslHome, 'orca', 'workspaces') : settings.workspaceDir
-
   // Why: this validation does not depend on remote refs, so it can overlap a
   // required remote-tracking base refresh.
   const primarySetupScript = getEffectiveHooks(repo)?.scripts.setup
@@ -1225,8 +1222,16 @@ export async function createLocalWorktree(
     }
 
     worktreePath = ensurePathWithinWorkspace(
-      computeWorktreePath(effectiveSanitizedName, repo.path, settings),
-      workspaceRoot
+      computeWorktreePath(
+        effectiveSanitizedName,
+        repo.path,
+        {
+          workspaceDir: worktreeLayout.path,
+          nestWorkspaces: worktreeLayout.nestWorkspaces
+        },
+        { useWslDefault: false }
+      ),
+      worktreeLayout.path
     )
     if (existsSync(worktreePath)) {
       continue
@@ -1359,8 +1364,8 @@ export async function createLocalWorktree(
     orcaCreatedAt: now,
     orcaCreationSource: 'desktop',
     orcaCreationWorkspaceLayout: {
-      path: settings.workspaceDir,
-      nestWorkspaces: settings.nestWorkspaces
+      path: worktreeLayout.path,
+      nestWorkspaces: worktreeLayout.nestWorkspaces
     },
     baseRef: baseBranch,
     ...(checkoutExistingBranch ? { preserveBranchOnDelete: true } : {}),

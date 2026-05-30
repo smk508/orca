@@ -15,7 +15,6 @@ import {
   deriveValidatedClonePath,
   getClonePathComparisonKey
 } from '../git/repo-clone-path'
-import { isWslPath, parseWslPath, getWslHome } from '../wsl'
 import { createHash, randomUUID } from 'crypto'
 import { isAbsolute, join } from 'path'
 import { mkdir, readFile, readdir, rm, stat } from 'fs/promises'
@@ -357,6 +356,7 @@ import {
   isOrphanCompatiblePreflightError,
   isOrphanedWorktreeError,
   mergeWorktree,
+  resolveEffectiveWorktreeLayout,
   sanitizeWorktreeName,
   shouldSetDisplayName,
   areWorktreePathsEqual
@@ -5668,6 +5668,7 @@ export class OrcaRuntimeService {
         | 'repoIcon'
         | 'hookSettings'
         | 'worktreeBaseRef'
+        | 'worktreeFolderPath'
         | 'kind'
         | 'symlinkPaths'
         | 'issueSourcePreference'
@@ -5677,15 +5678,26 @@ export class OrcaRuntimeService {
         | 'projectGroupOrder'
         | 'sourceControlAi'
       >
-    >
+    > & { worktreeFolderPath?: string | null }
   ): Promise<Repo> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
     }
     const repo = await this.resolveRepoSelector(repoSelector)
-    const updated = this.store.updateRepo(repo.id, omitUndefinedProperties(updates))
+    const repoUpdates = { ...updates }
+    if ('worktreeFolderPath' in repoUpdates && repoUpdates.worktreeFolderPath === null) {
+      repoUpdates.worktreeFolderPath = undefined
+    }
+    const compactUpdates = omitUndefinedProperties(repoUpdates)
+    if ('worktreeFolderPath' in repoUpdates && repoUpdates.worktreeFolderPath === undefined) {
+      compactUpdates.worktreeFolderPath = undefined
+    }
+    const updated = this.store.updateRepo(repo.id, compactUpdates)
     if (!updated) {
       throw new Error('repo_not_found')
+    }
+    if ('worktreeFolderPath' in repoUpdates) {
+      invalidateAuthorizedRootsCache()
     }
     this.invalidateResolvedWorktreeCache()
     this.notifier?.reposChanged()
@@ -7427,6 +7439,12 @@ export class OrcaRuntimeService {
 
     const repo = await this.resolveRepoSelector(args.repoSelector)
     const createSettings = this.store.getSettings()
+    // Why: Store.updateRepo mutates repo objects in place; local Git creates
+    // must keep the project-folder decision made when this request started.
+    const localWorktreeLayout =
+      !isFolderRepo(repo) && !repo.connectionId
+        ? resolveEffectiveWorktreeLayout(repo, createSettings)
+        : null
     const requestedAgentEnabled =
       args.createdWithAgent !== undefined
         ? isTuiAgentEnabled(args.createdWithAgent, createSettings.disabledTuiAgents)
@@ -7602,14 +7620,17 @@ export class OrcaRuntimeService {
       }
     }
 
-    let worktreePath = computeWorktreePath(sanitizedName, repo.path, settings)
-    // Why: CLI-managed WSL worktrees live under ~/orca/workspaces inside the
-    // distro filesystem. If home lookup fails, still validate against the
-    // configured workspace dir so the traversal guard is never bypassed.
-    const wslInfo = isWslPath(repo.path) ? parseWslPath(repo.path) : null
-    const wslHome = wslInfo ? getWslHome(wslInfo.distro) : null
-    const workspaceRoot = wslHome ? join(wslHome, 'orca', 'workspaces') : settings.workspaceDir
-    worktreePath = ensurePathWithinWorkspace(worktreePath, workspaceRoot)
+    const worktreeLayout = localWorktreeLayout ?? resolveEffectiveWorktreeLayout(repo, settings)
+    let worktreePath = computeWorktreePath(
+      sanitizedName,
+      repo.path,
+      {
+        workspaceDir: worktreeLayout.path,
+        nestWorkspaces: worktreeLayout.nestWorkspaces
+      },
+      { useWslDefault: false }
+    )
+    worktreePath = ensurePathWithinWorkspace(worktreePath, worktreeLayout.path)
     const remoteTrackingBase = await this.resolveRemoteTrackingBase(repo.path, baseBranch)
     if (remoteTrackingBase) {
       const hadLocalBaseRef = await this.hasRemoteTrackingRef(repo.path, remoteTrackingBase)
@@ -7734,8 +7755,8 @@ export class OrcaRuntimeService {
       orcaCreatedAt: now,
       orcaCreationSource: 'runtime',
       orcaCreationWorkspaceLayout: {
-        path: settings.workspaceDir,
-        nestWorkspaces: settings.nestWorkspaces
+        path: worktreeLayout.path,
+        nestWorkspaces: worktreeLayout.nestWorkspaces
       },
       ...displayNameMeta,
       baseRef: baseBranch,

@@ -86,6 +86,8 @@ export type Repo = {
   kind?: RepoKind
   gitUsername?: string
   worktreeBaseRef?: string
+  /** Optional absolute folder where new Git worktrees for this repo are created. */
+  worktreeFolderPath?: string
   hookSettings?: RepoHookSettings
   /** SSH target ID for remote repos. null/undefined = local. */
   connectionId?: string | null

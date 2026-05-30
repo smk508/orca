@@ -6,6 +6,7 @@ import {
   relativePathInsideRoot
 } from './cross-platform-path'
 import { parseWslUncPath } from './wsl-paths'
+import { isFolderRepo } from './repo-kind'
 import type {
   DetectedWorktree,
   ExternalWorktreeVisibility,
@@ -44,12 +45,15 @@ export function effectiveExternalWorktreeVisibility(
 
 export function buildKnownOrcaWorkspaceLayouts(
   settings: Pick<GlobalSettings, 'workspaceDir' | 'nestWorkspaces' | 'workspaceDirHistory'>,
-  repo?: Pick<Repo, 'path' | 'connectionId'>
+  repo?: Pick<Repo, 'path' | 'connectionId' | 'kind' | 'worktreeFolderPath'>
 ): OrcaWorkspaceLayout[] {
   const layouts: OrcaWorkspaceLayout[] = []
   if (!repo?.connectionId && settings.workspaceDir) {
     layouts.push({ path: settings.workspaceDir, nestWorkspaces: settings.nestWorkspaces })
     appendWorkspaceLayouts(layouts, settings.workspaceDirHistory ?? [])
+  }
+  if (repo && !repo.connectionId && !isFolderRepo(repo) && repo.worktreeFolderPath) {
+    layouts.push({ path: repo.worktreeFolderPath, nestWorkspaces: false })
   }
 
   const wslLayouts = repo ? buildWslWorkspaceLayouts(repo.path, settings) : []

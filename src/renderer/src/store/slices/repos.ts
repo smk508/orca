@@ -30,6 +30,7 @@ type RepoUpdate = Partial<
     | 'repoIcon'
     | 'hookSettings'
     | 'worktreeBaseRef'
+    | 'worktreeFolderPath'
     | 'kind'
     | 'symlinkPaths'
     | 'issueSourcePreference'
@@ -58,6 +59,9 @@ function sanitizeRepoUpdate(updates: RepoUpdate): RepoUpdate {
     } else {
       sanitized.repoIcon = repoIcon
     }
+  }
+  if ('worktreeFolderPath' in sanitized && sanitized.worktreeFolderPath === undefined) {
+    sanitized.worktreeFolderPath = ''
   }
   return sanitized
 }
@@ -593,16 +597,21 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       try {
         const sanitizedUpdates = sanitizeRepoUpdate(updates)
         const target = getActiveRuntimeTarget(get().settings)
-        await (target.kind === 'local'
-          ? window.api.repos.update({ repoId: projectId, updates: sanitizedUpdates })
-          : callRuntimeRpc(
-              target,
-              'repo.update',
-              { repo: projectId, updates: sanitizedUpdates },
-              { timeoutMs: 15_000 }
-            ))
+        const updatedRepo =
+          target.kind === 'local'
+            ? await window.api.repos.update({ repoId: projectId, updates: sanitizedUpdates })
+            : (
+                await callRuntimeRpc<{ repo: Repo }>(
+                  target,
+                  'repo.update',
+                  { repo: projectId, updates: sanitizedUpdates },
+                  { timeoutMs: 15_000 }
+                )
+              ).repo
         set((s) => ({
-          repos: s.repos.map((r) => (r.id === projectId ? { ...r, ...sanitizedUpdates } : r))
+          repos: s.repos.map((r) =>
+            r.id === projectId ? (updatedRepo ?? { ...r, ...sanitizedUpdates }) : r
+          )
         }))
         return true
       } catch (err) {
