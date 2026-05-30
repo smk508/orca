@@ -48,8 +48,8 @@ export const FEATURE_WALL_SETUP_STEPS: readonly FeatureWallSetupStep[] = [
   },
   {
     id: 'agent-capabilities',
-    name: 'Enable advanced agent capabilities',
-    subtitle: 'Enable advanced agent capabilities',
+    name: 'Install CLI & Skills',
+    subtitle: 'Install CLI & Skills',
     description: 'Enable the tools that let agents work more independently.'
   },
   {

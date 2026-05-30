@@ -4,7 +4,8 @@ import {
   type FeatureWallSetupStepId
 } from '../../../../shared/feature-wall-setup-steps'
 import type { GlobalSettings, TerminalTab, Worktree } from '../../../../shared/types'
-import { getAgentLabel } from '../../lib/agent-status'
+import type { AgentStatusEntry } from '../../../../shared/agent-status-types'
+import { parsePaneKey } from '../../../../shared/stable-pane-id'
 
 export type FeatureWallSetupProgressInput = {
   settings: GlobalSettings | null
@@ -17,7 +18,7 @@ export type FeatureWallSetupProgressInput = {
   gitRepoCount: number
   worktreesByRepo: Record<string, Worktree[]>
   tabsByWorktree: Record<string, TerminalTab[]>
-  runtimePaneTitlesByTabId: Record<string, Record<number, string>>
+  agentStatusByPaneKey: Record<string, AgentStatusEntry>
   hasSetupScript: boolean
 }
 
@@ -27,29 +28,37 @@ export type FeatureWallSetupProgress = {
   coreTotal: number
 }
 
-function hasTwoAgentSessionsInOneWorktree(input: FeatureWallSetupProgressInput): boolean {
+function hasTwoHookReportedAgentsInOneWorktree(input: FeatureWallSetupProgressInput): boolean {
+  const validWorktreeIds = new Set(
+    Object.values(input.worktreesByRepo)
+      .flat()
+      .map((worktree) => worktree.id)
+  )
+  const tabIdToWorktreeId = new Map<string, string>()
   for (const [worktreeId, tabs] of Object.entries(input.tabsByWorktree)) {
-    if (
-      !Object.values(input.worktreesByRepo).some((worktrees) =>
-        worktrees.some((w) => w.id === worktreeId)
-      )
-    ) {
+    if (!validWorktreeIds.has(worktreeId)) {
       continue
     }
-    let agentSessionCount = 0
     for (const tab of tabs) {
-      const paneTitles = input.runtimePaneTitlesByTabId[tab.id]
-      if (paneTitles && Object.keys(paneTitles).length > 0) {
-        agentSessionCount += Object.values(paneTitles).filter((title) =>
-          getAgentLabel(title)
-        ).length
-      } else if (getAgentLabel(tab.title)) {
-        agentSessionCount += 1
-      }
-      if (agentSessionCount >= 2) {
-        return true
-      }
+      tabIdToWorktreeId.set(tab.id, worktreeId)
     }
+  }
+
+  const agentCountsByWorktree = new Map<string, number>()
+  for (const paneKey of Object.keys(input.agentStatusByPaneKey)) {
+    const parsed = parsePaneKey(paneKey)
+    if (!parsed) {
+      continue
+    }
+    const worktreeId = tabIdToWorktreeId.get(parsed.tabId)
+    if (!worktreeId) {
+      continue
+    }
+    const count = (agentCountsByWorktree.get(worktreeId) ?? 0) + 1
+    if (count >= 2) {
+      return true
+    }
+    agentCountsByWorktree.set(worktreeId, count)
   }
   return false
 }
@@ -73,7 +82,7 @@ export function getFeatureWallSetupProgress(
     notifications:
       input.settings?.notifications.enabled === true &&
       input.settings.notifications.agentTaskComplete === true,
-    'two-agents': hasTwoAgentSessionsInOneWorktree(input),
+    'two-agents': hasTwoHookReportedAgentsInOneWorktree(input),
     'three-workspaces': countWorkspaces(input.worktreesByRepo) >= 2,
     'task-sources': input.hasConnectedTaskSource,
     'agent-capabilities': agentCapabilitiesDone,

@@ -26,7 +26,7 @@ export function useSetupGuideProgress(
   const featureInteractions = useAppStore((s) => s.featureInteractions)
   const worktreesByRepo = useAppStore((s) => s.worktreesByRepo)
   const tabsByWorktree = useAppStore((s) => s.tabsByWorktree)
-  const runtimePaneTitlesByTabId = useAppStore((s) => s.runtimePaneTitlesByTabId)
+  const agentStatusByPaneKey = useAppStore((s) => s.agentStatusByPaneKey)
   const preflightStatus = useAppStore((s) => s.preflightStatus)
   const preflightStatusChecked = useAppStore((s) => s.preflightStatusChecked)
   const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
@@ -168,7 +168,7 @@ export function useSetupGuideProgress(
         gitRepoCount,
         worktreesByRepo,
         tabsByWorktree,
-        runtimePaneTitlesByTabId,
+        agentStatusByPaneKey,
         hasSetupScript
       }),
     [
@@ -178,11 +178,11 @@ export function useSetupGuideProgress(
       detectedBrowserUseSkillInstalled,
       detectedOrchestrationSkillInstalled,
       featureInteractions,
+      agentStatusByPaneKey,
       gitRepoCount,
       hasConnectedTaskSource,
       hasSetupScript,
       orchestrationSkillInstalled,
-      runtimePaneTitlesByTabId,
       settings,
       tabsByWorktree,
       worktreesByRepo

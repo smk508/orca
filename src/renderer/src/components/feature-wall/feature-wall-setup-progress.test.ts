@@ -18,7 +18,7 @@ function makeInput(
     gitRepoCount: 0,
     worktreesByRepo: {},
     tabsByWorktree: {},
-    runtimePaneTitlesByTabId: {},
+    agentStatusByPaneKey: {},
     hasSetupScript: false,
     ...overrides
   }
@@ -65,7 +65,7 @@ describe('getFeatureWallSetupProgress', () => {
     expect(progress.stepDone['two-agents']).toBe(false)
   })
 
-  it('marks two agents complete once two agent sessions exist in one worktree', () => {
+  it('does not mark two agents complete from terminal titles alone', () => {
     const progress = getFeatureWallSetupProgress(
       makeInput({
         worktreesByRepo: { 'repo-1': [makeWorktree('worktree-1')] },
@@ -78,7 +78,80 @@ describe('getFeatureWallSetupProgress', () => {
       })
     )
 
+    expect(progress.stepDone['two-agents']).toBe(false)
+  })
+
+  it('marks two agents complete once two hook-reported agent sessions exist in one worktree', () => {
+    const progress = getFeatureWallSetupProgress(
+      makeInput({
+        worktreesByRepo: { 'repo-1': [makeWorktree('worktree-1')] },
+        tabsByWorktree: {
+          'worktree-1': [
+            { id: 'tab-1', title: 'Terminal' },
+            { id: 'tab-2', title: 'Terminal' }
+          ] as never
+        },
+        agentStatusByPaneKey: {
+          'tab-1:00000000-0000-4000-8000-000000000001': {
+            paneKey: 'tab-1:00000000-0000-4000-8000-000000000001',
+            state: 'working',
+            prompt: 'first task',
+            updatedAt: 1,
+            stateStartedAt: 1,
+            agentType: 'claude',
+            stateHistory: []
+          },
+          'tab-2:00000000-0000-4000-8000-000000000002': {
+            paneKey: 'tab-2:00000000-0000-4000-8000-000000000002',
+            state: 'waiting',
+            prompt: 'second task',
+            updatedAt: 2,
+            stateStartedAt: 2,
+            agentType: 'codex',
+            stateHistory: []
+          }
+        }
+      })
+    )
+
     expect(progress.stepDone['two-agents']).toBe(true)
+  })
+
+  it('does not mark two agents complete when hook-reported agents are in separate worktrees', () => {
+    const progress = getFeatureWallSetupProgress(
+      makeInput({
+        worktreesByRepo: {
+          'repo-1': [makeWorktree('worktree-1')],
+          'repo-2': [makeWorktree('worktree-2')]
+        },
+        tabsByWorktree: {
+          'worktree-1': [{ id: 'tab-1', title: 'Terminal' }] as never,
+          'worktree-2': [{ id: 'tab-2', title: 'Terminal' }] as never
+        },
+        agentStatusByPaneKey: {
+          'tab-1:00000000-0000-4000-8000-000000000001': {
+            paneKey: 'tab-1:00000000-0000-4000-8000-000000000001',
+            state: 'working',
+            prompt: 'first task',
+            updatedAt: 1,
+            stateStartedAt: 1,
+            agentType: 'claude',
+            stateHistory: []
+          },
+          'tab-2:00000000-0000-4000-8000-000000000002': {
+            paneKey: 'tab-2:00000000-0000-4000-8000-000000000002',
+            state: 'working',
+            prompt: 'second task',
+            updatedAt: 2,
+            stateStartedAt: 2,
+            agentType: 'codex',
+            stateHistory: []
+          }
+        }
+      })
+    )
+
+    expect(progress.stepDone['two-agents']).toBe(false)
   })
 
   it('marks worktrees complete once two worktrees exist', () => {

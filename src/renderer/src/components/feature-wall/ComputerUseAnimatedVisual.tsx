@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
-import { Check, GitBranch } from 'lucide-react'
+import { GitBranch } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ClaudeIcon } from '../status-bar/icons'
 import { FeatureWallClickRing } from './FeatureWallClickRing'
@@ -166,20 +166,10 @@ function AgentWorktreeTerminal(props: {
           <span className="truncate">{WORKTREE_LABEL}</span>
         </span>
       </div>
-      <div className="space-y-2.5 p-3 font-mono text-[10.5px] leading-snug">
-        <ClaudePrompt
-          active={props.phase === 'inspect'}
-          done={props.targetVisible}
-          text="approve the note in my app"
-        />
+      <div className="space-y-2 p-3 font-mono text-[10.5px] leading-snug">
+        <TerminalRequest text="approve the note in my app" />
         <CliCommandBlock
-          command={
-            <>
-              <span className="text-muted-foreground">orca computer</span>{' '}
-              <span className="text-foreground">get-app-state</span>
-            </>
-          }
-          arg='--app "Notes"'
+          commandLines={['orca computer get-app-state', '--app "Notes"']}
           active={props.phase === 'inspect'}
           done={props.targetVisible}
           output={
@@ -191,31 +181,19 @@ function AgentWorktreeTerminal(props: {
           }
         />
         <CliCommandBlock
-          command={
-            <>
-              <span className="text-muted-foreground">orca computer</span>{' '}
-              <span className="text-foreground">click</span>
-            </>
-          }
-          arg="--element-index 7"
+          commandLines={['orca computer click', '--element-index 7']}
           active={props.phase === 'target' || props.phase === 'click'}
           done={props.clicked}
           output={props.clicked ? <>click sent</> : null}
         />
         <CliCommandBlock
-          command={
-            <>
-              <span className="text-muted-foreground">orca computer</span>{' '}
-              <span className="text-foreground">get-app-state</span>
-            </>
-          }
-          arg='--app "Notes" --json'
+          commandLines={['orca computer get-app-state', '--app "Notes" --json']}
           active={props.phase === 'click'}
           done={props.verified}
           output={
             props.verified ? (
               <>
-                state: <span className="text-foreground">Approved</span>
+                <span aria-hidden>→</span> <span className="text-foreground">computer</span>
               </>
             ) : null
           }
@@ -225,62 +203,38 @@ function AgentWorktreeTerminal(props: {
   )
 }
 
-function ClaudePrompt(props: { text: string; active: boolean; done: boolean }): JSX.Element {
+function TerminalRequest(props: { text: string }): JSX.Element {
   return (
-    <div className="flex min-w-0 items-start gap-1.5">
-      <span className="shrink-0 text-amber-600">&gt;</span>
-      <span
-        className={cn(
-          'truncate',
-          props.active || props.done ? 'text-foreground' : 'text-muted-foreground'
-        )}
-      >
-        {props.text}
-      </span>
+    <div className="min-w-0 truncate text-muted-foreground">
+      <span>{props.text}</span>
     </div>
   )
 }
 
 function CliCommandBlock(props: {
-  command: JSX.Element
-  arg: string
+  commandLines: readonly string[]
   active: boolean
   done: boolean
   output: JSX.Element | null
 }): JSX.Element {
+  const commandTone = props.active || props.done ? 'text-foreground' : 'text-muted-foreground/65'
   return (
     <div className="space-y-0.5">
-      <div className="flex items-start gap-1.5">
-        <span
-          aria-hidden
-          className={cn(
-            'mt-px shrink-0',
-            props.active || props.done ? 'text-foreground' : 'text-muted-foreground/60'
-          )}
-        >
-          $
-        </span>
-        <div className="min-w-0 flex-1">
-          <div
-            className={cn('truncate', props.active ? 'text-foreground' : 'text-muted-foreground')}
-          >
-            {props.command}
+      <div className={cn('text-[11px]', commandTone)}>$</div>
+      <div className={cn('min-w-0 space-y-0.5 pl-2', commandTone)}>
+        {props.commandLines.map((line) => (
+          <div key={line} className="truncate">
+            {line}
           </div>
-          <div className="truncate pl-3 text-muted-foreground">{props.arg}</div>
-        </div>
+        ))}
       </div>
       <div
         className={cn(
-          'flex min-h-[14px] items-center gap-1.5 pl-3.5 text-muted-foreground transition-opacity duration-200',
+          'min-h-[14px] truncate pl-2 text-muted-foreground transition-opacity duration-200',
           props.output ? 'opacity-100' : 'opacity-0'
         )}
       >
-        {props.done ? (
-          <Check className="size-2.5 text-primary" strokeWidth={3} />
-        ) : (
-          <span aria-hidden>→</span>
-        )}
-        <span className="truncate">{props.output ?? ' '}</span>
+        {props.output ?? ' '}
       </div>
     </div>
   )

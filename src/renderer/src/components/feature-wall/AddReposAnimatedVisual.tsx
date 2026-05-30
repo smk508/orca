@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
-import { Briefcase, FolderGit2, House } from 'lucide-react'
+import { FolderGit2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ClaudeIcon } from '../status-bar/icons'
 import { CodexInlineIcon, WorkingSpinner } from './feature-tour-preview-glyphs'
@@ -9,29 +9,32 @@ type RepoFocus = 'personal' | 'work' | 'both'
 
 type RepoVisual = {
   id: Exclude<RepoFocus, 'both'>
-  label: string
   name: string
   worktree: string
+  prompt: string
+  action: string
   agent: 'Claude Code' | 'Codex'
-  icon: ReactNode
+  agentIcon: ReactNode
 }
 
 const REPOS: readonly RepoVisual[] = [
   {
     id: 'personal',
-    label: 'Personal',
     name: 'recipe-box',
     worktree: 'weekend polish',
+    prompt: 'refine recipe search',
+    action: 'Editing search filters',
     agent: 'Claude Code',
-    icon: <House className="size-3.5" />
+    agentIcon: <ClaudeIcon size={12} />
   },
   {
     id: 'work',
-    label: 'Work',
     name: 'billing-app',
     worktree: 'checkout fix',
+    prompt: 'fix checkout bug',
+    action: 'Updating checkout tests',
     agent: 'Codex',
-    icon: <Briefcase className="size-3.5" />
+    agentIcon: <CodexInlineIcon />
   }
 ]
 
@@ -62,56 +65,104 @@ function RepoProjectCard(props: {
   return (
     <section
       className={cn(
-        'flex min-w-0 flex-col rounded-lg border bg-background transition-[border-color,box-shadow,background-color] duration-500',
-        props.active ? 'border-primary/35 bg-primary/5 shadow-xs' : 'border-border'
+        'flex min-w-0 flex-col gap-2 rounded-lg border border-sidebar-border bg-sidebar p-2 text-sidebar-foreground transition-[border-color,box-shadow] duration-500',
+        props.active ? 'shadow-xs' : null
       )}
     >
-      <div className="flex h-10 items-center gap-2 border-b border-border px-3">
-        <span
-          className={cn(
-            'flex size-5 items-center justify-center rounded-md border border-border bg-card transition-colors',
-            props.active ? 'text-primary' : 'text-muted-foreground'
-          )}
-        >
-          {props.repo.icon}
-        </span>
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold leading-none text-foreground">
-            {props.repo.name}
-          </div>
-          <div className="mt-1 text-[10px] font-medium uppercase tracking-[0.06em] text-muted-foreground">
-            {props.repo.label}
-          </div>
-        </div>
-      </div>
+      <ProjectSidebarRow name={props.repo.name} />
 
-      <div className="flex flex-1 flex-col gap-3 p-3">
-        <div className="rounded-lg border border-border bg-card p-3">
-          <div className="flex items-center gap-2">
-            <span className="flex size-5 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
-              <FolderGit2 className="size-3.5" />
-            </span>
-            <span className="min-w-0 truncate text-xs font-semibold text-foreground">
-              {props.repo.worktree}
-            </span>
-          </div>
-          <div className="mt-3 rounded-md border border-border bg-background p-2.5 font-mono text-[11px]">
-            <TerminalLine>
-              <Prompt>&gt;</Prompt>
-              {props.repo.id === 'personal' ? 'refine recipe search' : 'fix checkout bug'}
-            </TerminalLine>
-            <TerminalLine muted>
-              <WorkingSpinner size="xs" reducedMotion={props.reducedMotion} />
-              {props.repo.agent} working
-            </TerminalLine>
-            <TerminalLine muted>
-              {props.repo.agent === 'Codex' ? <CodexInlineIcon /> : <ClaudeIcon size={12} />}
-              {props.repo.id === 'personal' ? 'Updating UI' : 'Editing tests'}
-            </TerminalLine>
-          </div>
+      <ProjectWorktreeRow
+        repo={props.repo}
+        active={props.active}
+        reducedMotion={props.reducedMotion}
+      />
+
+      <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-background text-foreground">
+        <VisualTitlebar title={`${props.repo.worktree} - ${props.repo.agent}`} />
+        <div className="space-y-1.5 p-2.5 font-mono text-[11px]">
+          <TerminalLine>
+            <Prompt>&gt;</Prompt>
+            {props.repo.prompt}
+          </TerminalLine>
+          <TerminalLine muted>
+            {props.repo.agentIcon}
+            {props.repo.agent} session ready
+          </TerminalLine>
+          <TerminalLine muted>
+            <WorkingSpinner size="xs" reducedMotion={props.reducedMotion} />
+            {props.repo.action}
+          </TerminalLine>
         </div>
       </div>
     </section>
+  )
+}
+
+function ProjectSidebarRow(props: { name: string }): JSX.Element {
+  return (
+    <div
+      aria-hidden
+      className="relative flex h-8 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-sidebar-foreground"
+    >
+      <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+        <FolderGit2 className="size-3.5" />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-none">
+        {props.name}
+      </span>
+      <span className="min-w-[3.75rem] rounded-full bg-sidebar-accent px-1.5 py-0.5 text-center text-[9px] font-medium leading-none text-muted-foreground">
+        1 worktree
+      </span>
+    </div>
+  )
+}
+
+function ProjectWorktreeRow(props: {
+  repo: RepoVisual
+  active: boolean
+  reducedMotion: boolean
+}): JSX.Element {
+  return (
+    <div
+      className={cn(
+        'rounded-md border border-sidebar-border px-2.5 py-2 transition-colors',
+        props.active ? 'bg-sidebar-accent' : 'bg-sidebar'
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          className={cn(
+            'size-1.5 shrink-0 rounded-full',
+            props.active ? 'bg-emerald-500' : 'bg-muted-foreground/35'
+          )}
+        />
+        <span className="truncate text-xs font-medium text-sidebar-foreground">
+          {props.repo.worktree}
+        </span>
+      </div>
+      <div className="mt-2 grid grid-cols-[8px_14px_minmax(0,1fr)] items-center gap-1.5">
+        <WorkingSpinner size="xs" reducedMotion={props.reducedMotion} />
+        <span className="flex size-3.5 items-center justify-center text-sidebar-foreground/65">
+          {props.repo.agentIcon}
+        </span>
+        <span className="truncate font-mono text-[11px] text-sidebar-foreground/65">
+          {props.repo.prompt}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function VisualTitlebar(props: { title: string }): JSX.Element {
+  return (
+    <div className="flex h-6 items-center gap-1.5 border-b border-border bg-muted/40 px-2">
+      <span className="size-2 rounded-full bg-foreground/15" />
+      <span className="size-2 rounded-full bg-foreground/15" />
+      <span className="size-2 rounded-full bg-foreground/15" />
+      <span className="ml-1 truncate font-mono text-[11px] text-muted-foreground">
+        {props.title}
+      </span>
+    </div>
   )
 }
 
