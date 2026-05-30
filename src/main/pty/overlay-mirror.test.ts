@@ -28,4 +28,34 @@ describe('safeRemoveOverlay', () => {
     expect(existsSync(overlayDir)).toBe(false)
     expect(warnSpy).not.toHaveBeenCalled()
   })
+
+  it('refuses to remove the overlay root itself', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-overlay-root-'))
+    tempRoots.push(root)
+    const marker = join(root, 'marker.txt')
+    writeFileSync(marker, 'root')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    safeRemoveOverlay(root, root)
+
+    expect(existsSync(marker)).toBe(true)
+    expect(warnSpy).toHaveBeenCalledOnce()
+  })
+
+  it('refuses parent traversal outside the overlay root', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'orca-overlay-parent-'))
+    tempRoots.push(parent)
+    const root = join(parent, 'root')
+    const outside = join(parent, 'outside')
+    mkdirSync(root)
+    mkdirSync(outside)
+    const marker = join(outside, 'marker.txt')
+    writeFileSync(marker, 'outside')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    safeRemoveOverlay(join(root, '..', 'outside'), root)
+
+    expect(existsSync(marker)).toBe(true)
+    expect(warnSpy).toHaveBeenCalledOnce()
+  })
 })
