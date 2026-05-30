@@ -7,6 +7,7 @@ import { RefreshCw, Terminal } from 'lucide-react'
 import type { GlobalSettings, TuiAgent } from '../../../../shared/types'
 import type {
   SourceControlAiOperation,
+  SourceControlAiSettingsPatch,
   SourceControlAiSettings
 } from '../../../../shared/source-control-ai-types'
 import {
@@ -46,13 +47,10 @@ import { matchesSettingsSearch } from './settings-search'
 type CommitMessageAiPaneProps = {
   settings: GlobalSettings
   updateSettings: (updates: Partial<GlobalSettings>) => void | Promise<void>
+  writeSourceControlAiSettings?: (patch: SourceControlAiSettingsPatch) => Promise<void>
   onCustomPromptDirtyChange?: (dirty: boolean) => void
   customPromptDiscardSignal?: number
 }
-
-type SourceControlAiConfigPatch =
-  | Partial<SourceControlAiSettings>
-  | ((current: SourceControlAiSettings) => Partial<SourceControlAiSettings>)
 
 type ModelDiscoveryState = {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -204,6 +202,7 @@ export function getCommitMessageSettingsPaneDiscoveryHostKey(
 export function CommitMessageAiPane({
   settings,
   updateSettings,
+  writeSourceControlAiSettings,
   onCustomPromptDirtyChange,
   customPromptDiscardSignal
 }: CommitMessageAiPaneProps): React.JSX.Element {
@@ -339,7 +338,7 @@ export function CommitMessageAiPane({
   const activeDiscovery =
     rawActiveDiscovery?.hostKey === discoveryHostKey ? rawActiveDiscovery : undefined
 
-  const writeConfig = (patch: SourceControlAiConfigPatch): Promise<void> => {
+  const localWriteConfig = (patch: SourceControlAiSettingsPatch): Promise<void> => {
     const next = settingsWriteQueueRef.current
       .catch(() => undefined)
       .then(async () => {
@@ -351,6 +350,7 @@ export function CommitMessageAiPane({
     settingsWriteQueueRef.current = next
     return next
   }
+  const writeConfig = writeSourceControlAiSettings ?? localWriteConfig
 
   const refreshModels = async (agentId: TuiAgent): Promise<void> => {
     const capability =

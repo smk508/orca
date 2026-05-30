@@ -6,6 +6,7 @@ import { ChevronDown } from 'lucide-react'
 import type { GlobalSettings } from '../../../../shared/types'
 import type {
   SourceControlAiModelChoice,
+  SourceControlAiSettingsPatch,
   SourceControlAiSettings
 } from '../../../../shared/source-control-ai-types'
 import { buildBranchNamePrompt } from '../../../../shared/branch-name-from-work'
@@ -36,22 +37,31 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/colla
 import { Label } from '../ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
+import { AUTO_RENAME_BRANCH_ADVANCED_SEARCH_ENTRIES } from './auto-rename-branch-search'
 import { SearchableSetting } from './SearchableSetting'
+import { matchesSettingsSearch, normalizeSettingsSearchQuery } from './settings-search'
 
 type AutoRenameBranchFromWorkSettingProps = {
   settings: GlobalSettings
   updateSettings: (updates: Partial<GlobalSettings>) => void | Promise<void>
+  writeSourceControlAiSettings: (patch: SourceControlAiSettingsPatch) => Promise<void>
+  forceVisible?: boolean
+  onBranchPromptDirtyChange?: (dirty: boolean) => void
+  branchPromptDiscardSignal?: number
+  settingsSearchQuery?: string
 }
-
-type SourceControlAiConfigPatch =
-  | Partial<SourceControlAiSettings>
-  | ((current: SourceControlAiSettings) => Partial<SourceControlAiSettings>)
 
 const INHERIT_BRANCH_MODEL_VALUE = '__inherit_branch_model__'
 const BUILT_IN_BRANCH_NAME_PROMPT = buildBranchNamePrompt({
   firstPrompt: '{first agent prompt}',
   assistantMessage: '{agent initial response, when available}'
 })
+export function shouldOpenAutoRenameBranchAdvanced(searchQuery: string): boolean {
+  return (
+    normalizeSettingsSearchQuery(searchQuery) !== '' &&
+    matchesSettingsSearch(searchQuery, AUTO_RENAME_BRANCH_ADVANCED_SEARCH_ENTRIES)
+  )
+}
 
 function readSourceControlSettings(settings: GlobalSettings): SourceControlAiSettings {
   return normalizeSourceControlAiSettings(settings.sourceControlAi, settings.commitMessageAi)
@@ -107,19 +117,27 @@ function resolveSelectedThinking(
 
 export function AutoRenameBranchFromWorkSetting({
   settings,
-  updateSettings
+  updateSettings,
+  writeSourceControlAiSettings,
+  forceVisible = false,
+  onBranchPromptDirtyChange,
+  branchPromptDiscardSignal,
+  settingsSearchQuery
 }: AutoRenameBranchFromWorkSettingProps): React.JSX.Element {
+  const storeSearchQuery = useAppStore((state) => state.settingsSearchQuery)
+  const searchQuery = settingsSearchQuery ?? storeSearchQuery
   const activeWorktree = useActiveWorktree()
   const activeConnectionId = getConnectionId(activeWorktree?.id ?? null)
   const discoveryHostKey = getCommitMessageModelDiscoveryHostKeyForScope(
     activeWorktree?.id ? getRuntimeGitScope(settings, activeConnectionId) : activeConnectionId
   )
   const config = readSourceControlSettings(settings)
-  const latestConfigRef = useRef(config)
-  latestConfigRef.current = config
-  const settingsWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [optionsOpen, setOptionsOpen] = useState(false)
+  const advancedSearchOpen = shouldOpenAutoRenameBranchAdvanced(searchQuery)
+  const advancedOpen = optionsOpen || advancedSearchOpen
   const persistedBranchNamePrompt = config.instructionsByOperation.branchName ?? ''
+  const persistedBranchNamePromptRef = useRef(persistedBranchNamePrompt)
+  persistedBranchNamePromptRef.current = persistedBranchNamePrompt
   const [branchNamePromptDraft, setBranchNamePromptDraft] = useState(persistedBranchNamePrompt)
   const [isSavingPrompt, setIsSavingPrompt] = useState(false)
   const branchNamePromptDirty = branchNamePromptDraft !== persistedBranchNamePrompt
@@ -129,6 +147,23 @@ export function AutoRenameBranchFromWorkSetting({
       setBranchNamePromptDraft(persistedBranchNamePrompt)
     }
   }, [branchNamePromptDirty, persistedBranchNamePrompt])
+
+  useEffect(() => {
+    setBranchNamePromptDraft(persistedBranchNamePromptRef.current)
+    // Why: Settings owns the discard confirmation, but the draft lives here so
+    // the row can keep its prompt-specific save/discard affordances.
+  }, [branchPromptDiscardSignal])
+
+  useEffect(() => {
+    onBranchPromptDirtyChange?.(branchNamePromptDirty)
+  }, [branchNamePromptDirty, onBranchPromptDirtyChange])
+
+  useEffect(
+    () => () => {
+      onBranchPromptDirtyChange?.(false)
+    },
+    [onBranchPromptDirtyChange]
+  )
 
   const resolvedAgentId = resolveCommitMessageAgentChoice(
     config.agentId,
@@ -161,27 +196,12 @@ export function AutoRenameBranchFromWorkSetting({
     ? resolveSelectedThinking(config, selectedBranchModel, branchModelChoice)
     : undefined
 
-  const writeConfig = (patch: SourceControlAiConfigPatch): Promise<void> => {
-    const next = settingsWriteQueueRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        const latestSettings = useAppStore.getState().settings ?? settings
-        const latestConfig = latestSettings
-          ? readSourceControlSettings(latestSettings)
-          : latestConfigRef.current
-        const resolvedPatch = typeof patch === 'function' ? patch(latestConfig) : patch
-        await updateSettings({ sourceControlAi: { ...latestConfig, ...resolvedPatch } })
-      })
-    settingsWriteQueueRef.current = next
-    return next
-  }
-
   const onBranchModelChange = (modelId: string): void => {
     if (!activeCapability) {
       return
     }
     if (modelId === INHERIT_BRANCH_MODEL_VALUE) {
-      void writeConfig((current) => {
+      void writeSourceControlAiSettings((current) => {
         const nextOverrides = { ...current.modelOverridesByOperation }
         const nextChoice = clearSourceControlAiModelChoiceForHost(
           nextOverrides.branchName,
@@ -201,7 +221,7 @@ export function AutoRenameBranchFromWorkSetting({
     if (!model) {
       return
     }
-    void writeConfig((current) => {
+    void writeSourceControlAiSettings((current) => {
       const nextChoice = selectSourceControlAiModelChoiceForHost(
         current.modelOverridesByOperation?.branchName,
         discoveryHostKey,
@@ -228,7 +248,7 @@ export function AutoRenameBranchFromWorkSetting({
   }
 
   const onBranchThinkingChange = (modelId: string, thinkingId: string): void => {
-    void writeConfig((current) => ({
+    void writeSourceControlAiSettings((current) => ({
       modelOverridesByOperation: {
         ...current.modelOverridesByOperation,
         branchName: {
@@ -248,7 +268,7 @@ export function AutoRenameBranchFromWorkSetting({
     }
     setIsSavingPrompt(true)
     try {
-      await writeConfig((current) => ({
+      await writeSourceControlAiSettings((current) => ({
         instructionsByOperation: {
           ...current.instructionsByOperation,
           branchName: branchNamePromptDraft
@@ -279,6 +299,7 @@ export function AutoRenameBranchFromWorkSetting({
         'prompt',
         'slug'
       ]}
+      forceVisible={forceVisible || branchNamePromptDirty || advancedSearchOpen}
       className="space-y-3 py-2"
     >
       <div className="flex items-center justify-between gap-4">
@@ -310,7 +331,7 @@ export function AutoRenameBranchFromWorkSetting({
         </button>
       </div>
 
-      <Collapsible open={optionsOpen} onOpenChange={setOptionsOpen}>
+      <Collapsible open={advancedOpen} onOpenChange={setOptionsOpen}>
         <CollapsibleTrigger asChild>
           <Button
             type="button"
@@ -320,7 +341,7 @@ export function AutoRenameBranchFromWorkSetting({
           >
             Advanced
             <ChevronDown
-              className={cn('size-3.5 transition-transform', optionsOpen && 'rotate-180')}
+              className={cn('size-3.5 transition-transform', advancedOpen && 'rotate-180')}
             />
           </Button>
         </CollapsibleTrigger>
@@ -346,7 +367,7 @@ export function AutoRenameBranchFromWorkSetting({
                       className="w-[520px] max-w-[calc(100vw-2rem)] p-3"
                     >
                       <div>
-                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                        <pre className="scrollbar-sleek max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
                           {BUILT_IN_BRANCH_NAME_PROMPT}
                         </pre>
                       </div>
