@@ -123,6 +123,16 @@ export function resolveRepoAiDraftState(
     currentSerialized === current.baseSerialized ||
     currentSerialized === persistedSerialized
   ) {
+    if (
+      current.repoId === repoId &&
+      current.baseSerialized === persistedSerialized &&
+      currentSerialized === persistedSerialized
+    ) {
+      // Why: render-phase callers compare by reference to bail out of an
+      // infinite setState loop; return the same object when the result is
+      // structurally identical to current.
+      return current
+    }
     return {
       repoId,
       value: persistedRepoAi,
