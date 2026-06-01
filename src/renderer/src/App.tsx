@@ -1584,12 +1584,10 @@ function App(): React.JSX.Element {
           {/* Why: leaf-mounted retention sync keeps agent-status retention
             subscriptions from re-rendering the App tree. */}
           <RetainedAgentsSyncGate />
-          {/* Why: workspace activation is a hot path; including activeWorktreeId
-            in reset keys remounts whole surfaces during wake. */}
           <RecoverableRenderErrorBoundary
             boundaryId="app.workspace-shell"
             surface="workspace-shell"
-            resetKey={activeView}
+            resetKey={`${activeView}:${activeWorktreeId ?? 'none'}`}
             title="The workspace shell hit an error."
             description="The app is still running. Retry the shell or use the menu to report the crash details."
           >
@@ -1694,7 +1692,7 @@ function App(): React.JSX.Element {
                           <RecoverableRenderErrorBoundary
                             boundaryId="sidebar.worktrees"
                             surface="sidebar"
-                            resetKey={activeView}
+                            resetKey={`${activeView}:${activeWorktreeId ?? 'none'}`}
                             title="The workspace list hit an error."
                             description="The active workspace remains open. Retry the list or switch views."
                           >
@@ -1709,7 +1707,7 @@ function App(): React.JSX.Element {
                       <RecoverableRenderErrorBoundary
                         boundaryId="sidebar.worktrees"
                         surface="sidebar"
-                        resetKey={activeView}
+                        resetKey={`${activeView}:${activeWorktreeId ?? 'none'}`}
                         title="The workspace list hit an error."
                         description="The active page remains open. Retry the list or switch views."
                       >
@@ -1758,7 +1756,7 @@ function App(): React.JSX.Element {
                         <RecoverableRenderErrorBoundary
                           boundaryId="terminal.workbench"
                           surface="terminal-workbench"
-                          resetKey="terminal"
+                          resetKey={activeWorktreeId ?? 'none'}
                           title="The workspace workbench hit an error."
                           description="Terminal, browser, or editor rendering failed in this workspace. Retry to remount it."
                         >
@@ -1769,7 +1767,7 @@ function App(): React.JSX.Element {
                         <RecoverableRenderErrorBoundary
                           boundaryId={`page.${activeView}`}
                           surface="page"
-                          resetKey={activeView}
+                          resetKey={`${activeView}:${activeWorktreeId ?? 'none'}`}
                           title="This page hit an error."
                           description="Retry the page or navigate to another Orca surface."
                         >
@@ -1793,15 +1791,16 @@ function App(): React.JSX.Element {
                   </div>
                 </div>
               </div>
-              {/* Why: keep the right-sidebar shell mounted for layout stability.
-              Its heavy panels disconnect while closed so workspace wake stays
-              responsive. Unmount on the tasks view since that surface is
-              intentionally distraction-free. */}
+              {/* Why: keep RightSidebar mounted even when closed so that its
+              child components (FileExplorer, SourceControl, etc.) and their
+              filesystem watchers + cached directory trees survive across
+              open/close toggles. Unmount on the tasks view since that
+              surface is intentionally distraction-free. */}
               {showRightSidebarControls ? (
                 <RecoverableRenderErrorBoundary
                   boundaryId="right-sidebar"
                   surface="right-sidebar"
-                  resetKey={rightSidebarTab}
+                  resetKey={`${activeWorktreeId ?? 'none'}:${rightSidebarTab}`}
                   title="The right sidebar hit an error."
                   description="Retry the sidebar or switch tabs to reload this surface."
                 >

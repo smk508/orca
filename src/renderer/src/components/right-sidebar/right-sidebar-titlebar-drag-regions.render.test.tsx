@@ -6,7 +6,6 @@ import { TopActivityOverflowMenu } from './activity-bar-buttons'
 import { RIGHT_SIDEBAR_HEADER_NO_DRAG_CLASS_NAME } from './right-sidebar-titlebar-drag-regions'
 
 const mockAppState = vi.hoisted(() => ({
-  rightSidebarOpen: true,
   activityBarPosition: 'top' as 'top' | 'side'
 }))
 
@@ -25,7 +24,7 @@ vi.mock('@/hooks/useShortcutLabel', () => ({
 vi.mock('@/store', () => ({
   useAppStore: (selector: (state: Record<string, unknown>) => unknown) =>
     selector({
-      rightSidebarOpen: mockAppState.rightSidebarOpen,
+      rightSidebarOpen: true,
       rightSidebarWidth: 350,
       setRightSidebarWidth: vi.fn(),
       rightSidebarTab: 'explorer',
@@ -131,7 +130,6 @@ function expectNoDrag(tag: string): void {
 
 describe('rendered right sidebar titlebar drag regions', () => {
   beforeEach(() => {
-    mockAppState.rightSidebarOpen = true
     mockAppState.activityBarPosition = 'top'
   })
 
@@ -189,17 +187,5 @@ describe('rendered right sidebar titlebar drag regions', () => {
     expectNoDrag(buttonOpeningTag(markup, 'Source Control'))
     expectNoDrag(buttonOpeningTag(markup, 'Checks'))
     expect(buttonOpeningTag(markup, 'Toggle right sidebar')).toContain('sidebar-toggle')
-  })
-
-  it('does not render hidden panel content while the sidebar is closed', () => {
-    mockAppState.rightSidebarOpen = false
-
-    const markup = renderToStaticMarkup(<RightSidebar />)
-
-    expect(markup).not.toContain('data-file-explorer')
-    expect(markup).not.toContain('data-source-control')
-    expect(markup).not.toContain('data-search-panel')
-    expect(markup).not.toContain('data-checks-panel')
-    expect(markup).not.toContain('data-ports-panel')
   })
 })

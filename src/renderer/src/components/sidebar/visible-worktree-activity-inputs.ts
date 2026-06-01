@@ -1,31 +1,26 @@
 import type { BrowserWorkspace, TerminalTab } from '../../../../shared/types'
 
-export type TerminalActivityTab = Pick<TerminalTab, 'id'>
-export type BrowserActivityTab = Pick<BrowserWorkspace, 'id'>
-export type WorktreeSectionTerminalActivityTab = Pick<TerminalTab, 'id' | 'title'>
+type TerminalActivityTab = Pick<TerminalTab, 'id'>
+type BrowserActivityTab = Pick<BrowserWorkspace, 'id'>
 
-function haveSameProjection<T, U>(
-  previous: readonly U[] | undefined,
-  next: readonly T[],
-  isSame: (previousTab: U, nextTab: T) => boolean
+function haveSameIds<T extends { id: string }>(
+  previous: readonly T[] | undefined,
+  next: readonly { id: string }[]
 ): boolean {
   if (!previous || previous.length !== next.length) {
     return false
   }
   for (let index = 0; index < next.length; index++) {
-    const previousTab = previous[index]
-    if (!previousTab || !isSame(previousTab, next[index])) {
+    if (previous[index]?.id !== next[index]?.id) {
       return false
     }
   }
   return true
 }
 
-function projectTabs<T, U>(
+function projectIdTabs<T extends { id: string }, U extends { id: string }>(
   tabsByWorktree: Record<string, readonly T[]>,
-  previousProjection: Record<string, U[]> | null,
-  projectTab: (tab: T) => U,
-  isSame: (previousTab: U, nextTab: T) => boolean
+  previousProjection: Record<string, U[]> | null
 ): { projection: Record<string, U[]>; unchanged: boolean } {
   const nextProjection: Record<string, U[]> = {}
   let unchanged =
@@ -34,27 +29,15 @@ function projectTabs<T, U>(
 
   for (const [worktreeId, tabs] of Object.entries(tabsByWorktree)) {
     const previousTabs = previousProjection?.[worktreeId]
-    if (haveSameProjection(previousTabs, tabs, isSame)) {
+    if (haveSameIds(previousTabs, tabs)) {
       nextProjection[worktreeId] = previousTabs as U[]
       continue
     }
     unchanged = false
-    nextProjection[worktreeId] = tabs.map(projectTab)
+    nextProjection[worktreeId] = tabs.map((tab) => ({ id: tab.id }) as U)
   }
 
   return { projection: nextProjection, unchanged }
-}
-
-function projectIdTabs<T extends { id: string }, U extends { id: string }>(
-  tabsByWorktree: Record<string, readonly T[]>,
-  previousProjection: Record<string, U[]> | null
-): { projection: Record<string, U[]>; unchanged: boolean } {
-  return projectTabs(
-    tabsByWorktree,
-    previousProjection,
-    (tab) => ({ id: tab.id }) as U,
-    (previousTab, nextTab) => previousTab.id === nextTab.id
-  )
 }
 
 let cachedTerminalSource: Record<string, TerminalTab[]> | null = null
@@ -72,30 +55,6 @@ export function getVisibleWorktreeTerminalActivityTabs(
     return cachedTerminalProjection
   }
   cachedTerminalProjection = projection
-  return projection
-}
-
-let cachedSectionTerminalSource: Record<string, TerminalTab[]> | null = null
-let cachedSectionTerminalProjection: Record<string, WorktreeSectionTerminalActivityTab[]> | null =
-  null
-
-export function getWorktreeSectionTerminalActivityTabs(
-  tabsByWorktree: Record<string, TerminalTab[]>
-): Record<string, WorktreeSectionTerminalActivityTab[]> {
-  if (cachedSectionTerminalSource === tabsByWorktree && cachedSectionTerminalProjection) {
-    return cachedSectionTerminalProjection
-  }
-  const { projection, unchanged } = projectTabs(
-    tabsByWorktree,
-    cachedSectionTerminalProjection,
-    (tab) => ({ id: tab.id, title: tab.title }),
-    (previousTab, nextTab) => previousTab.id === nextTab.id && previousTab.title === nextTab.title
-  )
-  cachedSectionTerminalSource = tabsByWorktree
-  if (unchanged && cachedSectionTerminalProjection) {
-    return cachedSectionTerminalProjection
-  }
-  cachedSectionTerminalProjection = projection
   return projection
 }
 

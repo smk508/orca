@@ -41,13 +41,6 @@ export function resolveRuntimePaneTitleLeafId(
   tabLayout: TerminalLayoutSnapshot | undefined,
   runtimePaneId: string
 ): string | null {
-  return resolveRuntimePaneTitleLeafIdFromRoot(tabLayout?.root, runtimePaneId)
-}
-
-export function resolveRuntimePaneTitleLeafIdFromRoot(
-  root: TerminalPaneLayoutNode | null | undefined,
-  runtimePaneId: string
-): string | null {
   if (isTerminalLeafId(runtimePaneId)) {
     return runtimePaneId
   }
@@ -55,6 +48,6 @@ export function resolveRuntimePaneTitleLeafIdFromRoot(
   if (!Number.isInteger(numericPaneId) || numericPaneId < FIRST_PANE_ID) {
     return null
   }
-  const leafIds = collectLeafIdsInReplayCreationOrder(root)
+  const leafIds = collectLeafIdsInReplayCreationOrder(tabLayout?.root)
   return leafIds[numericPaneId - FIRST_PANE_ID] ?? null
 }
