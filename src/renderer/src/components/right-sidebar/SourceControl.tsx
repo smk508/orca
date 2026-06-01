@@ -6343,10 +6343,10 @@ function DiffCommentsInlineList({
 
 function conflictAbortButtonVariant(
   conflictOperation: GitConflictOperation
-): 'ghost' | 'destructive' {
+): 'outline' | 'destructive' {
   // Why: aborting a rebase is the escape hatch for this state, so it should
   // match the quiet conflict-review action instead of reading as a red danger path.
-  return conflictOperation === 'rebase' ? 'ghost' : 'destructive'
+  return conflictOperation === 'rebase' ? 'outline' : 'destructive'
 }
 
 export function ConflictSummaryCard({
@@ -6407,7 +6407,7 @@ export function ConflictSummaryCard({
         </Button>
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
           className="mt-1.5 h-7 w-full text-xs"
           onClick={onReview}
@@ -6460,7 +6460,7 @@ export function OperationBanner({
 
   return (
     <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-center gap-2">
         <Icon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <span className="text-xs font-medium text-foreground">{label}</span>
       </div>
