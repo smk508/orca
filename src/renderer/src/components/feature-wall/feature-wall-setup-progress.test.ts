@@ -265,4 +265,18 @@ describe('getFeatureWallSetupProgress', () => {
 
     expect(progress.stepDone['agent-capabilities']).toBe(true)
   })
+
+  it('does not block agent capabilities on unavailable Computer Use access', () => {
+    const progress = getFeatureWallSetupProgress(
+      makeInput({
+        browserUseSkillInstalled: true,
+        computerUseSkillInstalled: true,
+        computerUsePermissionsReady: false,
+        computerUseUnavailable: true,
+        orchestrationSkillInstalled: true
+      })
+    )
+
+    expect(progress.stepDone['agent-capabilities']).toBe(true)
+  })
 })

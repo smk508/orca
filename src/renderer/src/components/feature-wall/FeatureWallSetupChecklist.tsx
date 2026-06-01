@@ -106,6 +106,7 @@ function SelectedStepAction(props: FeatureWallSetupChecklistProps): React.JSX.El
   if (!activeStep) {
     return null
   }
+  const activeDone = props.progress.stepDone[activeStep.id]
   if (activeStep.id === 'default-agent') {
     return <DefaultAgentAction />
   }
@@ -119,6 +120,9 @@ function SelectedStepAction(props: FeatureWallSetupChecklistProps): React.JSX.El
     return <TwoAgentsAction reducedMotion={reducedMotion} />
   }
   if (activeStep.id === 'two-worktrees') {
+    if (activeDone) {
+      return null
+    }
     return <WorkspacesAction reducedMotion={reducedMotion} />
   }
   if (activeStep.id === 'task-sources') {

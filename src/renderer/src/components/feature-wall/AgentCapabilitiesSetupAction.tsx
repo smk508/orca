@@ -133,6 +133,11 @@ type AgentCapabilitySlide = {
 
 const AGENT_CAPABILITY_SETUP_ROWS: readonly AgentCapabilitySetupRow[] = [
   {
+    id: 'orchestration',
+    title: 'Agent Orchestration',
+    icon: <Workflow className="size-4" />
+  },
+  {
     id: 'browserUse',
     title: 'Agent Browser Use',
     icon: <Globe2 className="size-4" />
@@ -141,11 +146,6 @@ const AGENT_CAPABILITY_SETUP_ROWS: readonly AgentCapabilitySetupRow[] = [
     id: 'computerUse',
     title: 'Computer Use',
     icon: <MonitorCog className="size-4" />
-  },
-  {
-    id: 'orchestration',
-    title: 'Agent Orchestration',
-    icon: <Workflow className="size-4" />
   }
 ]
 

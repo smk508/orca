@@ -37,6 +37,7 @@ export function useSetupGuideProgress(
   const activeRepoId = useAppStore((s) => s.activeRepoId)
   const [hasSetupScript, setHasSetupScript] = useState(false)
   const [computerUsePermissionsReady, setComputerUsePermissionsReady] = useState(false)
+  const [computerUseUnavailable, setComputerUseUnavailable] = useState(false)
   const { installed: detectedBrowserUseSkillInstalled } = useInstalledAgentSkill(
     ORCA_CLI_SKILL_NAME,
     {
@@ -117,11 +118,13 @@ export function useSetupGuideProgress(
         status.helperUnavailableReason === null &&
         status.permissions.every((permission) => permission.status !== 'not-granted')
     )
+    setComputerUseUnavailable(status?.helperUnavailableReason !== null)
   }, [])
 
   useEffect(() => {
     if (!shouldRefreshCoreState || !computerUseSkillInstalled) {
       setComputerUsePermissionsReady(false)
+      setComputerUseUnavailable(false)
       return
     }
     let stale = false
@@ -163,6 +166,7 @@ export function useSetupGuideProgress(
         browserUseSkillInstalled: browserUseSkillInstalled || detectedBrowserUseSkillInstalled,
         computerUseSkillInstalled,
         computerUsePermissionsReady,
+        computerUseUnavailable,
         orchestrationSkillInstalled:
           orchestrationSkillInstalled || detectedOrchestrationSkillInstalled,
         gitRepoCount,
@@ -173,6 +177,7 @@ export function useSetupGuideProgress(
       }),
     [
       browserUseSkillInstalled,
+      computerUseUnavailable,
       computerUsePermissionsReady,
       computerUseSkillInstalled,
       detectedBrowserUseSkillInstalled,
