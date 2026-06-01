@@ -47,6 +47,7 @@ import {
   type BrowserZoomState
 } from './browser-touch-geometry'
 import { displayBrowserUrl, normalizeBrowserUrl } from './browser-url'
+import { resolveMobileBrowserAddressSync } from './mobile-browser-address-sync'
 
 export type MobileBrowserTab = {
   type: 'browser'
@@ -135,6 +136,10 @@ export function MobileBrowserPane({
   const cachedInitialFrame = peekCachedBrowserFrame(cacheKey)
   const [addressValue, setAddressValue] = useState(displayBrowserUrl(tab.url))
   const [addressFocused, setAddressFocused] = useState(false)
+  const [addressSyncState, setAddressSyncState] = useState({
+    focused: false,
+    url: tab.url
+  })
   const [keyboardValue, setKeyboardValue] = useState('')
   const [frameUri, setFrameUri] = useState<string | null>(cachedInitialFrame?.uri ?? null)
   const [frameMetadata, setFrameMetadata] = useState<BrowserScreencastFrameMetadata | null>(
@@ -222,11 +227,18 @@ export function MobileBrowserPane({
     }
   }, [worktreeId])
 
-  useEffect(() => {
-    if (!addressFocused) {
+  const addressSync = resolveMobileBrowserAddressSync(addressSyncState, {
+    focused: addressFocused,
+    url: tab.url
+  })
+  if (addressSync.nextState !== addressSyncState) {
+    setAddressSyncState(addressSync.nextState)
+    if (addressSync.shouldSyncValue) {
+      // Why: keep browser stream/goto address updates intact, but avoid a
+      // stale post-blur paint when the tab URL is the source of truth.
       setAddressValue(displayBrowserUrl(tab.url))
     }
-  }, [addressFocused, tab.url])
+  }
 
   useLayoutEffect(() => {
     // Why: gesture and stream handlers need committed values before passive
@@ -418,7 +430,9 @@ export function MobileBrowserPane({
     busyRef.current = true
     setBusy(true)
     let startupTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      if (streamGenerationRef.current !== generation) return
+      if (streamGenerationRef.current !== generation) {
+        return
+      }
       busyRef.current = false
       setBusy(false)
       setError('Browser stream timed out.')
@@ -437,7 +451,9 @@ export function MobileBrowserPane({
         ...streamRequest
       },
       (payload) => {
-        if (streamGenerationRef.current !== generation) return
+        if (streamGenerationRef.current !== generation) {
+          return
+        }
         const event = payload as {
           type?: string
           message?: string
@@ -497,7 +513,9 @@ export function MobileBrowserPane({
       },
       {
         onBinaryFrame: (frame) => {
-          if (streamGenerationRef.current !== generation) return
+          if (streamGenerationRef.current !== generation) {
+            return
+          }
           clearStartupTimer()
           if (cacheKey) {
             applyFrameThrottled(frame, cacheKey)
@@ -746,9 +764,13 @@ export function MobileBrowserPane({
       clearLongPressTimer()
       longPressTimerRef.current = setTimeout(() => {
         const start = startPointRef.current
-        if (!start) return
+        if (!start) {
+          return
+        }
         const point = mapTouchPoint(start.x, start.y)
-        if (!point) return
+        if (!point) {
+          return
+        }
         rightClickSentRef.current = true
         void sendPointerClick(point, 'right')
         onToast('Right click')

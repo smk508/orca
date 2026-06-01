@@ -108,6 +108,9 @@ describe('MacOSNativeProviderClient', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     await firstRejection
     expect(firstSocket.destroyed).toBe(true)
+    expect(firstSocket.listenerCount('data')).toBe(0)
+    expect(firstSocket.listenerCount('close')).toBe(0)
+    expect(firstSocket.listenerCount('error')).toBe(1)
 
     const secondCall = client.capabilities()
     await vi.waitFor(() => expect(sockets).toHaveLength(2))
@@ -118,7 +121,7 @@ describe('MacOSNativeProviderClient', () => {
     // Why: a timed-out helper socket can flush events after restart. Those
     // stale events must not clear/reject the active replacement request.
     firstSocket.emit('data', '{"id":999,"ok":false,"error":{"code":"old","message":"old"}}\n')
-    firstSocket.emit('error', new Error('old helper failed late'))
+    expect(() => firstSocket.emit('error', new Error('old helper failed late'))).not.toThrow()
     firstSocket.emit('close')
 
     const capabilities = {
@@ -147,6 +150,9 @@ describe('MacOSNativeProviderClient', () => {
     firstSocket.emit('error', new Error('active helper failed'))
     await firstRejection
     expect(firstSocket.destroyed).toBe(true)
+    expect(firstSocket.listenerCount('data')).toBe(0)
+    expect(firstSocket.listenerCount('close')).toBe(0)
+    expect(firstSocket.listenerCount('error')).toBe(1)
     expect(rmSyncMock).toHaveBeenCalledWith(firstSocketDirectory, {
       recursive: true,
       force: true
@@ -168,5 +174,21 @@ describe('MacOSNativeProviderClient', () => {
     )
 
     await expect(secondCall).resolves.toEqual(capabilities)
+  })
+
+  it('terminates the helper process when socket startup fails', async () => {
+    const providerKill = vi.fn()
+    spawnMock.mockReturnValueOnce({ unref: vi.fn(), kill: providerKill })
+    connectMacOSProviderSocketMock.mockRejectedValueOnce(new Error('socket did not open'))
+    const { MacOSNativeProviderClient } = await loadClientModule()
+    const client = new MacOSNativeProviderClient()
+
+    await expect(client.capabilities()).rejects.toThrow('socket did not open')
+
+    expect(providerKill).toHaveBeenCalledWith('SIGTERM')
+    expect(rmSyncMock).toHaveBeenCalledWith(expect.stringContaining('orca-computer-use-'), {
+      recursive: true,
+      force: true
+    })
   })
 })

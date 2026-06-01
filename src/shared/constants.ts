@@ -154,9 +154,15 @@ export function getDefaultOnboardingState(): OnboardingState {
   }
 }
 
+function getDefaultWorkspaceDir(homeDir: string): string {
+  const separator = homeDir.includes('\\') ? '\\' : '/'
+  const trimmedHomeDir = homeDir.replace(/[\\/]+$/, '')
+  return [trimmedHomeDir, 'orca', 'workspaces'].join(separator)
+}
+
 export function getDefaultSettings(homedir: string): GlobalSettings {
   return {
-    workspaceDir: `${homedir}/orca/workspaces`,
+    workspaceDir: getDefaultWorkspaceDir(homedir),
     nestWorkspaces: true,
     workspaceDirHistory: [],
     refreshLocalBaseRefOnWorktreeCreate: false,
@@ -221,6 +227,8 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     terminalAllowOsc52Clipboard: false,
     setupScriptLaunchMode: 'new-tab',
     terminalScrollbackBytes: 10_000_000,
+    httpProxyUrl: '',
+    httpProxyBypassRules: '',
     openLinksInApp: true,
     openInApplications: [],
     rightSidebarOpenByDefault: true,
@@ -264,6 +272,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     geminiCliOAuthEnabled: false,
     agentCmdOverrides: {},
     agentStatusHooksEnabled: true,
+    tabAutoGenerateTitle: false,
     keepComputerAwakeWhileAgentsRun: false,
     // Why: 'auto' runs a layout-aware probe at boot (see
     // src/renderer/src/lib/keyboard-layout/*) that picks 'true' for US and
@@ -380,6 +389,7 @@ export function getDefaultUIState(): PersistedUIState {
     hideSleepingWorkspaces: DEFAULT_HIDE_SLEEPING_WORKSPACES,
     showSleepingWorkspaces: DEFAULT_SHOW_SLEEPING_WORKSPACES,
     hideDefaultBranchWorkspace: false,
+    showDotfilesByWorktree: {},
     filterRepoIds: [],
     collapsedGroups: [],
     uiZoomLevel: 0,
@@ -388,7 +398,6 @@ export function getDefaultUIState(): PersistedUIState {
     agentActivityDisplayMode: DEFAULT_AGENT_ACTIVITY_DISPLAY_MODE,
     workspaceStatuses: cloneDefaultWorkspaceStatuses(),
     workspaceBoardOpacity: 1,
-    workspaceBoardCompact: false,
     workspaceBoardColumnWidth: 308,
     _workspaceStatusesDefaultOrderMigrated: true,
     _workspaceStatusesDefaultWorkflowMigrated: true,
@@ -419,6 +428,7 @@ export function getDefaultWorkspaceSession(): WorkspaceSessionState {
     activeBrowserTabIdByWorktree: {},
     activeFileIdByWorktree: {},
     activeTabTypeByWorktree: {},
-    browserUrlHistory: []
+    browserUrlHistory: [],
+    defaultTerminalTabsAppliedByWorktreeId: {}
   }
 }

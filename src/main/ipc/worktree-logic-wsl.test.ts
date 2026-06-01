@@ -81,4 +81,19 @@ describe('computeWorktreePath WSL layout', () => {
       )
     ).toBe('\\\\wsl.localhost\\Ubuntu\\home\\jin\\custom-worktrees\\feature')
   })
+
+  it('uses an explicit WSL UNC workspace root without remapping it', () => {
+    parseWslPathMock.mockReturnValue({
+      distro: 'Ubuntu',
+      linuxPath: '/home/jin/src/repo'
+    })
+    getWslHomeMock.mockReturnValue('\\\\wsl.localhost\\Ubuntu\\home\\jin')
+
+    expect(
+      computeWorktreePath('feature', '\\\\wsl.localhost\\Ubuntu\\home\\jin\\src\\repo', {
+        nestWorkspaces: false,
+        workspaceDir: '\\\\wsl.localhost\\Ubuntu\\home\\jin\\custom-worktrees'
+      })
+    ).toBe('\\\\wsl.localhost\\Ubuntu\\home\\jin\\custom-worktrees\\feature')
+  })
 })

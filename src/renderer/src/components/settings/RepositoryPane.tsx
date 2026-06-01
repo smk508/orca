@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { OrcaHooks, Repo, RepoHookSettings } from '../../../../shared/types'
 import { getRepoKindLabel, isFolderRepo } from '../../../../shared/repo-kind'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Separator } from '../ui/separator'
-import { FolderOpen, Trash2 } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
 import { BaseRefPicker } from './BaseRefPicker'
 import { RepositoryHooksSection } from './RepositoryHooksSection'
@@ -19,7 +19,9 @@ import { useAppStore } from '../../store'
 import { getRepositoryIconSectionId } from './repository-settings-targets'
 import { RepositoryIconPicker } from './RepositoryIconPicker'
 import { getRepositoryPaneSearchEntries } from './repository-search'
+import { WorktreeLocationSetting } from './RepositoryWorktreeLocationSetting'
 export { getRepositoryPaneSearchEntries }
+export { canBrowseProjectWorktreeFolder } from './RepositoryWorktreeLocationSetting'
 
 type RepositoryPaneProps = {
   repo: Repo
@@ -52,7 +54,8 @@ export function RepositoryPane({
 }: RepositoryPaneProps): React.JSX.Element {
   const isFolder = isFolderRepo(repo)
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
-  const symlinksEnabled = useAppStore((state) => state.settings?.experimentalWorktreeSymlinks)
+  const settings = useAppStore((state) => state.settings)
+  const symlinksEnabled = settings?.experimentalWorktreeSymlinks
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null)
   const [copiedTemplate, setCopiedTemplate] = useState(false)
   const copiedTemplateResetTimerRef = useRef<number | null>(null)
@@ -121,7 +124,7 @@ export function RepositoryPane({
       'Display Name',
       'Project Icon',
       'Default Worktree Base',
-      'Worktree Folder',
+      'Worktree Location',
       'Remove Project'
     ].includes(entry.title)
   )
@@ -263,9 +266,10 @@ export function RepositoryPane({
                 onUsePrimary={() => updateRepo(repo.id, { worktreeBaseRef: undefined })}
               />
             </SearchableSetting>
-            <WorktreeFolderSetting
+            <WorktreeLocationSetting
               repo={repo}
               updateRepo={updateRepo}
+              placeholder={settings?.workspaceDir ?? ''}
               forceVisible={forceFullPaneForRepoMatch}
             />
           </>
@@ -306,109 +310,4 @@ export function RepositoryPane({
       ))}
     </div>
   )
-}
-
-function WorktreeFolderSetting({
-  repo,
-  updateRepo,
-  forceVisible
-}: {
-  repo: Repo
-  updateRepo: (repoId: string, updates: Partial<Repo>) => void | Promise<boolean>
-  forceVisible: boolean
-}): React.JSX.Element {
-  const activeRuntimeEnvironmentId = useAppStore(
-    (state) => state.settings?.activeRuntimeEnvironmentId ?? null
-  )
-  const [draftPath, setDraftPath] = useState(repo.worktreeFolderPath ?? '')
-  const [saving, setSaving] = useState(false)
-  const canBrowse = canBrowseProjectWorktreeFolder(repo, activeRuntimeEnvironmentId)
-
-  useEffect(() => {
-    setDraftPath(repo.worktreeFolderPath ?? '')
-  }, [repo.id, repo.worktreeFolderPath])
-
-  const commitDraft = useCallback(
-    async (nextPath = draftPath): Promise<void> => {
-      const trimmed = nextPath.trim()
-      if (trimmed === (repo.worktreeFolderPath ?? '')) {
-        setDraftPath(repo.worktreeFolderPath ?? '')
-        return
-      }
-      setSaving(true)
-      try {
-        const result = await updateRepo(repo.id, { worktreeFolderPath: trimmed })
-        if (result === false) {
-          setDraftPath(repo.worktreeFolderPath ?? '')
-          return
-        }
-        setDraftPath(trimmed)
-      } finally {
-        setSaving(false)
-      }
-    },
-    [draftPath, repo.id, repo.worktreeFolderPath, updateRepo]
-  )
-
-  const handleBrowse = async (): Promise<void> => {
-    const path = await window.api.repos.pickDirectory()
-    if (!path) {
-      return
-    }
-    setDraftPath(path)
-    await commitDraft(path)
-  }
-
-  return (
-    <SearchableSetting
-      title="Worktree Folder"
-      description="Optional folder for new worktrees from this project."
-      keywords={[repo.displayName, repo.path, 'worktree folder', 'workspace folder', 'directory']}
-      className="space-y-2"
-      forceVisible={forceVisible}
-    >
-      <div className="space-y-1">
-        <Label className="text-sm font-semibold">Worktree Folder</Label>
-        <p className="text-xs text-muted-foreground">
-          Blank inherits the global workspace folder for local projects, including WSL defaults, or
-          the repo sibling folder for SSH projects.
-        </p>
-      </div>
-      <div className="flex gap-2">
-        <Input
-          value={draftPath}
-          onChange={(event) => setDraftPath(event.target.value)}
-          onBlur={() => void commitDraft()}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              void commitDraft()
-            }
-          }}
-          placeholder="Inherit default"
-          className="h-9 text-sm"
-        />
-        {canBrowse ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => void handleBrowse()}
-            disabled={saving}
-          >
-            <FolderOpen className="size-4" />
-            Browse
-          </Button>
-        ) : null}
-      </div>
-    </SearchableSetting>
-  )
-}
-
-export function canBrowseProjectWorktreeFolder(
-  repo: Repo,
-  activeRuntimeEnvironmentId: string | null | undefined
-): boolean {
-  return !repo.connectionId && !activeRuntimeEnvironmentId?.trim()
 }

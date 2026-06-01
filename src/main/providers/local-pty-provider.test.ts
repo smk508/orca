@@ -69,13 +69,19 @@ describe('LocalPtyProvider', () => {
   }
   let exitCb: ((info: { exitCode: number }) => void) | undefined
   let origShell: string | undefined
+  let origCodexHome: string | undefined
+  let origOrcaCodexHome: string | undefined
   let origPlatform: PropertyDescriptor | undefined
 
   beforeEach(() => {
     origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
     Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
     origShell = process.env.SHELL
+    origCodexHome = process.env.CODEX_HOME
+    origOrcaCodexHome = process.env.ORCA_CODEX_HOME
     process.env.SHELL = '/bin/zsh'
+    delete process.env.CODEX_HOME
+    delete process.env.ORCA_CODEX_HOME
 
     existsSyncMock.mockReturnValue(true)
     statSyncMock.mockReturnValue({ isDirectory: () => true, mode: 0o755 })
@@ -110,6 +116,16 @@ describe('LocalPtyProvider', () => {
       delete process.env.SHELL
     } else {
       process.env.SHELL = origShell
+    }
+    if (origCodexHome === undefined) {
+      delete process.env.CODEX_HOME
+    } else {
+      process.env.CODEX_HOME = origCodexHome
+    }
+    if (origOrcaCodexHome === undefined) {
+      delete process.env.ORCA_CODEX_HOME
+    } else {
+      process.env.ORCA_CODEX_HOME = origOrcaCodexHome
     }
   })
 
@@ -296,8 +312,32 @@ describe('LocalPtyProvider', () => {
         '--',
         'bash',
         '-c',
-        "cd '/mnt/c/Users/jin/repo' && exec bash -l"
+        'cd \'/mnt/c/Users/jin/repo\' && export PATH="$HOME/.local/bin:$PATH" && exec bash -l'
       ])
+    })
+
+    it('marks Orca terminal handle for WSL import when buildSpawnEnv opts in', async () => {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      provider.configure({
+        buildSpawnEnv: (_id, env, ctx) => {
+          env.ORCA_TERMINAL_HANDLE = 'term_wsl'
+          if (ctx?.isWsl) {
+            env.WSLENV = 'ORCA_TERMINAL_HANDLE/u'
+          }
+          return env
+        }
+      })
+
+      await provider.spawn({
+        cols: 80,
+        rows: 24,
+        cwd: '\\\\wsl.localhost\\Ubuntu\\home\\jin\\repo'
+      })
+
+      const spawnCall = spawnMock.mock.calls.at(-1)!
+      expect(spawnCall[0]).toBe('wsl.exe')
+      expect(spawnCall[2].env.ORCA_TERMINAL_HANDLE).toBe('term_wsl')
+      expect(spawnCall[2].env.WSLENV).toBe('ORCA_TERMINAL_HANDLE/u')
     })
 
     it('does not inherit parent Orca pane identity when caller omits pane env', async () => {
@@ -425,8 +465,52 @@ describe('LocalPtyProvider', () => {
 
       expect(spawnMock).toHaveBeenCalledWith(
         'wsl.exe',
-        ['-d', 'Ubuntu', '--', 'bash', '-c', "cd '/home/jin/repo/subdir' && exec bash -l"],
+        [
+          '-d',
+          'Ubuntu',
+          '--',
+          'bash',
+          '-c',
+          'cd \'/home/jin/repo/subdir\' && export PATH="$HOME/.local/bin:$PATH" && exec bash -l'
+        ],
         expect.objectContaining({ cwd: expect.any(String) })
+      )
+    })
+
+    it('resolves the Git Bash default shell and preserves the requested cwd', async () => {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+      const originalProgramFiles = process.env.ProgramFiles
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      process.env.ProgramFiles = 'C:\\Program Files'
+      provider.configure({ getWindowsShell: () => 'git-bash' })
+
+      try {
+        await provider.spawn({
+          cols: 80,
+          rows: 24,
+          cwd: 'C:\\Users\\jin\\repo'
+        })
+      } finally {
+        if (platform) {
+          Object.defineProperty(process, 'platform', platform)
+        }
+        if (originalProgramFiles === undefined) {
+          delete process.env.ProgramFiles
+        } else {
+          process.env.ProgramFiles = originalProgramFiles
+        }
+      }
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        ['--login', '-i'],
+        expect.objectContaining({
+          cwd: 'C:\\Users\\jin\\repo',
+          env: expect.objectContaining({
+            CHERE_INVOKING: '1',
+            PYTHONUTF8: '1'
+          })
+        })
       )
     })
   })

@@ -1,11 +1,12 @@
 /* eslint-disable max-lines -- Why: shared type definitions for all runtime RPC methods live in one file for discoverability and import simplicity. */
-import type { AgentStatusEntry } from './agent-status-types'
+import type { AgentStatusEntry, AgentStatusOrchestrationContext } from './agent-status-types'
 import type {
   BaseRefSearchResult,
   BrowserCookieImportResult,
   BrowserSessionProfile,
   BrowserSessionProfileSource,
   GitWorktreeInfo,
+  RemoveWorktreeResult,
   Repo,
   TabGroupLayoutNode,
   TerminalColorOverrides,
@@ -98,6 +99,12 @@ export type RuntimeSyncWindowGraph = {
   tabs: RuntimeSyncedTab[]
   leaves: RuntimeSyncedLeaf[]
   mobileSessionTabs?: RuntimeMobileSessionTabsSnapshot[]
+}
+
+export type RuntimeSyncWindowGraphResult = RuntimeStatus & {
+  /** Main owns terminal handles/dispatches, so renderer graph sync returns the
+   *  parent metadata needed by title-derived agent rows without name guessing. */
+  agentOrchestrationByPaneKey?: Record<string, AgentStatusOrchestrationContext>
 }
 
 export type RuntimeMobileSessionTerminalTab = {
@@ -415,6 +422,11 @@ export type RuntimeWorktreeCreateResult = {
   worktree: RuntimeWorktreeRecord
   lineage: WorktreeLineage | null
   warnings: WorktreeLineageWarning[]
+  warning?: string
+}
+
+export type RuntimeWorktreeRemoveResult = RemoveWorktreeResult & {
+  removed: boolean
   warning?: string
 }
 

@@ -33,14 +33,18 @@ export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[
             keywords: [repo.displayName, 'base ref', 'branch']
           },
           {
-            title: 'Worktree Folder',
-            description: 'Optional folder for new worktrees from this project.',
+            title: 'Worktree Location',
+            description: 'Project-specific directory for new worktrees.',
             keywords: [
               repo.displayName,
               repo.path,
               'worktree folder',
               'workspace folder',
-              'directory'
+              'worktree path',
+              'workspace path',
+              'directory',
+              'relative',
+              '../worktrees'
             ]
           },
           {
@@ -79,8 +83,7 @@ export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[
               'branch name',
               'rename',
               'model',
-              'prompt',
-              'instructions'
+              'prompt'
             ]
           },
           {

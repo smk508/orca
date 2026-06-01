@@ -61,6 +61,14 @@ import {
   getResourceUsageRuntimePaneTitlesByTabId,
   getResourceUsageTabsByWorktree
 } from './resource-usage-open-slices'
+import {
+  resolveResourceUsageSpaceScanReady,
+  type ResourceUsageSpaceScanSnapshot
+} from './resource-usage-space-scan-ready'
+import {
+  getResourceManagerAriaLabel,
+  getResourceManagerTooltipLines
+} from './resource-manager-terminal-copy'
 
 const POLL_MS = 2_000
 const SESSIONS_POLL_MS = 10_000
@@ -670,7 +678,13 @@ export function ResourceUsageStatusSegment({
   const [sessionsError, setSessionsError] = useState(false)
   const [killConfirm, setKillConfirm] = useState<UnifiedSessionRow | null>(null)
   const [killing, setKilling] = useState(false)
-  const [spaceScanReady, setSpaceScanReady] = useState(false)
+  const [spaceScanSnapshot, setSpaceScanSnapshot] = useState<ResourceUsageSpaceScanSnapshot>(
+    () => ({
+      ready: false,
+      previousScanning: workspaceSpaceScanning,
+      lastSeenScannedAt: workspaceSpaceScannedAt
+    })
+  )
   // Why: tab titles can update on terminal keystrokes. The resource popover's
   // merged tree needs them only while open, so closed status-bar badges should
   // not subscribe to those high-churn maps.
@@ -684,8 +698,6 @@ export function ResourceUsageStatusSegment({
   const tabsByWorktree = useAppStore((s) =>
     getResourceUsageTabsByWorktree(s, open, runtimeEnvironmentActive)
   )
-  const previousSpaceScanningRef = useRef(workspaceSpaceScanning)
-  const lastSeenSpaceScanAtRef = useRef<number | null>(workspaceSpaceScannedAt)
   // Why: this segment only understands the local Electron PTY/resource daemon.
   // While a runtime server is active, hiding local samples avoids showing or
   // killing sessions from the wrong machine.
@@ -705,8 +717,6 @@ export function ResourceUsageStatusSegment({
     cancelAnimationFrame(popoverBodyFocusFrameRef.current)
     popoverBodyFocusFrameRef.current = null
   }, [])
-
-  useEffect(() => cancelPopoverBodyFocusFrame, [cancelPopoverBodyFocusFrame])
 
   const setPopoverBodyNode = useCallback(
     (node: HTMLDivElement | null): void => {
@@ -754,37 +764,24 @@ export function ResourceUsageStatusSegment({
 
   // Why: Space scans can finish after the user backs out of the full page or
   // closes this popover; the status-bar trigger becomes the handoff point.
-  useEffect(() => {
-    if (runtimeEnvironmentActive) {
-      setSpaceScanReady(false)
-      previousSpaceScanningRef.current = false
-      return
-    }
-    const scannedAt = workspaceSpaceScannedAt
-    const wasScanning = previousSpaceScanningRef.current
-    const scanCompleted =
-      wasScanning &&
-      !workspaceSpaceScanning &&
-      scannedAt !== null &&
-      scannedAt !== lastSeenSpaceScanAtRef.current
-
-    if (scanCompleted) {
-      lastSeenSpaceScanAtRef.current = scannedAt
-      setSpaceScanReady(!open && activeView !== 'space')
-    } else if (spaceScanReady && (open || activeView === 'space')) {
-      setSpaceScanReady(false)
-      lastSeenSpaceScanAtRef.current = scannedAt
-    }
-
-    previousSpaceScanningRef.current = workspaceSpaceScanning
-  }, [
-    activeView,
-    open,
+  const nextSpaceScanSnapshot = resolveResourceUsageSpaceScanReady({
+    snapshot: spaceScanSnapshot,
     runtimeEnvironmentActive,
-    spaceScanReady,
-    workspaceSpaceScannedAt,
-    workspaceSpaceScanning
-  ])
+    open,
+    activeView,
+    scannedAt: workspaceSpaceScannedAt,
+    scanning: workspaceSpaceScanning
+  })
+  if (
+    nextSpaceScanSnapshot.ready !== spaceScanSnapshot.ready ||
+    nextSpaceScanSnapshot.previousScanning !== spaceScanSnapshot.previousScanning ||
+    nextSpaceScanSnapshot.lastSeenScannedAt !== spaceScanSnapshot.lastSeenScannedAt
+  ) {
+    // Why: keep the scan transition render-time without mutating refs during
+    // render; React can safely retry this guarded state update before commit.
+    setSpaceScanSnapshot(nextSpaceScanSnapshot)
+  }
+  const spaceScanReady = nextSpaceScanSnapshot.ready
 
   // Poll memory + sessions when popover is open. Sessions also poll in the
   // background at a slower rate so the badge count stays reasonably fresh
@@ -947,6 +944,17 @@ export function ResourceUsageStatusSegment({
   // empty/stale even though the resource numbers look fine.
   const sessionsOnlyError =
     !runtimeEnvironmentActive && sessionsError && memorySnapshotError === null
+  const resourceManagerTooltipLines = getResourceManagerTooltipLines({
+    memoryLabel: memBadgeLabel,
+    sessionCount: sessions.length,
+    runtimeEnvironmentActive,
+    spaceScanReady
+  })
+  const resourceManagerAriaLabel = getResourceManagerAriaLabel({
+    sessionCount: sessions.length,
+    runtimeEnvironmentActive,
+    spaceScanReady
+  })
 
   const toggleRepo = useCallback((repoId: string): void => {
     setCollapsedRepos((prev) => {
@@ -1115,9 +1123,9 @@ export function ResourceUsageStatusSegment({
               {...STATUS_BAR_CONTEXT_MENU_EXEMPT_PROPS}
               className="relative inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-accent/70"
               aria-label={
-                spaceScanReady && !runtimeEnvironmentActive
-                  ? 'Resource manager, Space scan ready'
-                  : 'Resource manager'
+                daemonUnreachable
+                  ? `${resourceManagerAriaLabel}, daemon unreachable`
+                  : resourceManagerAriaLabel
               }
             >
               {spaceScanReady && !runtimeEnvironmentActive ? (
@@ -1155,13 +1163,14 @@ export function ResourceUsageStatusSegment({
         </TooltipTrigger>
         <TooltipContent side="top" sideOffset={6}>
           <div className="space-y-0.5">
-            <div>
-              Resource Manager — {memBadgeLabel} · {sessions.length} session
-              {sessions.length === 1 ? '' : 's'}
-            </div>
-            {spaceScanReady && !runtimeEnvironmentActive ? (
-              <div className="text-primary">Space scan ready</div>
-            ) : null}
+            {resourceManagerTooltipLines.map((line, index) => (
+              <div
+                key={`${index}:${line}`}
+                className={line === 'Space scan ready' ? 'text-primary' : ''}
+              >
+                {line}
+              </div>
+            ))}
           </div>
         </TooltipContent>
       </Tooltip>
@@ -1183,7 +1192,9 @@ export function ResourceUsageStatusSegment({
         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
           <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-foreground">
             <MemoryStick className="size-3 shrink-0 text-muted-foreground" />
-            <span className="truncate">Resource Manager</span>
+            <span className="truncate">
+              {runtimeEnvironmentActive ? 'Resource Manager' : 'Resource Manager - Terminals'}
+            </span>
           </div>
 
           <div className="flex items-center gap-0.5">

@@ -31,6 +31,7 @@ type RepoUpdate = Partial<
     | 'hookSettings'
     | 'worktreeBaseRef'
     | 'worktreeFolderPath'
+    | 'worktreeBasePath'
     | 'kind'
     | 'symlinkPaths'
     | 'issueSourcePreference'
@@ -41,6 +42,21 @@ type RepoUpdate = Partial<
     | 'sourceControlAi'
   >
 >
+
+type NestedRepoScanControls = {
+  scanId?: string
+  onProgress?: (scan: NestedRepoScanResult) => void
+}
+
+function normalizeNestedRepoScanResult(scan: NestedRepoScanResult): NestedRepoScanResult {
+  return {
+    ...scan,
+    stopped: scan.stopped ?? false,
+    maxDepth: scan.maxDepth ?? 3,
+    maxRepos: scan.maxRepos ?? 100,
+    timeoutMs: scan.timeoutMs ?? null
+  }
+}
 
 function sanitizeRepoUpdate(updates: RepoUpdate): RepoUpdate {
   const sanitized = { ...updates }
@@ -62,6 +78,9 @@ function sanitizeRepoUpdate(updates: RepoUpdate): RepoUpdate {
   }
   if ('worktreeFolderPath' in sanitized && sanitized.worktreeFolderPath === undefined) {
     sanitized.worktreeFolderPath = ''
+  }
+  if ('worktreeBasePath' in sanitized && sanitized.worktreeBasePath !== undefined) {
+    sanitized.worktreeBasePath = sanitized.worktreeBasePath.trim() || undefined
   }
   return sanitized
 }
@@ -97,12 +116,18 @@ export type RepoSlice = {
   addRepo: () => Promise<Repo | null>
   addRepoPath: (path: string, kind?: 'git' | 'folder') => Promise<Repo | null>
   addNonGitFolder: (path: string) => Promise<Repo | null>
-  scanNestedRepos: (path: string, connectionId?: string) => Promise<NestedRepoScanResult | null>
+  scanNestedRepos: (
+    path: string,
+    connectionId?: string,
+    controls?: NestedRepoScanControls
+  ) => Promise<NestedRepoScanResult | null>
+  cancelNestedRepoScan: (scanId: string) => Promise<boolean>
   importNestedRepos: (args: {
     parentPath: string
     groupName: string
     projectPaths: string[]
     connectionId?: string
+    scanId?: string
     mode: 'group' | 'separate'
   }) => Promise<ProjectGroupImportResult | null>
   createProjectGroup: (name: string) => Promise<ProjectGroup | null>
@@ -132,7 +157,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       const target = getActiveRuntimeTarget(get().settings)
       const repos =
         target.kind === 'local'
-          ? ((await window.api.repos.list()) as Repo[])
+          ? await window.api.repos.list()
           : (
               await callRuntimeRpc<{ repos: Repo[] }>(
                 target,
@@ -166,7 +191,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       const target = getActiveRuntimeTarget(get().settings)
       const projectGroups =
         target.kind === 'local'
-          ? ((await window.api.projectGroups.list()) as ProjectGroup[])
+          ? await window.api.projectGroups.list()
           : (
               await callRuntimeRpc<{ groups: ProjectGroup[] }>(
                 target,
@@ -183,23 +208,56 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
     }
   },
 
-  scanNestedRepos: async (path, connectionId) => {
+  scanNestedRepos: async (path, connectionId, controls) => {
     try {
       const target = getActiveRuntimeTarget(get().settings)
-      return target.kind === 'local'
-        ? ((await window.api.projectGroups.scanNested({
-            path,
-            connectionId
-          })) as NestedRepoScanResult)
-        : await callRuntimeRpc<NestedRepoScanResult>(
-            target,
-            'projectGroup.scanNested',
-            { path },
-            { timeoutMs: 15_000 }
+      if (target.kind === 'local') {
+        const unsubscribe =
+          controls?.scanId && controls.onProgress
+            ? window.api.projectGroups.onNestedScanProgress(({ scanId, scan }) => {
+                if (scanId === controls.scanId) {
+                  controls.onProgress?.(normalizeNestedRepoScanResult(scan))
+                }
+              })
+            : undefined
+        try {
+          return normalizeNestedRepoScanResult(
+            await window.api.projectGroups.scanNested({
+              path,
+              connectionId,
+              scanId: controls?.scanId
+            })
           )
+        } finally {
+          unsubscribe?.()
+        }
+      }
+      return normalizeNestedRepoScanResult(
+        await callRuntimeRpc<NestedRepoScanResult>(
+          target,
+          'projectGroup.scanNested',
+          { path },
+          // Why: older runtime servers cannot stream or cancel scans, so the
+          // renderer must retain a bounded failure path for large folders.
+          { timeoutMs: 20_000 }
+        )
+      )
     } catch (err) {
       console.error('Failed to scan nested repos:', err)
       return null
+    }
+  },
+
+  cancelNestedRepoScan: async (scanId) => {
+    try {
+      const target = getActiveRuntimeTarget(get().settings)
+      if (target.kind !== 'local') {
+        return false
+      }
+      return await window.api.projectGroups.cancelNestedScan({ scanId })
+    } catch (err) {
+      console.error('Failed to cancel nested repo scan:', err)
+      return false
     }
   },
 
@@ -208,7 +266,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       const target = getActiveRuntimeTarget(get().settings)
       const result =
         target.kind === 'local'
-          ? ((await window.api.projectGroups.importNested(args)) as ProjectGroupImportResult)
+          ? await window.api.projectGroups.importNested(args)
           : await callRuntimeRpc<ProjectGroupImportResult>(
               target,
               'projectGroup.importNested',
@@ -216,6 +274,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
                 parentPath: args.parentPath,
                 groupName: args.groupName,
                 projectPaths: args.projectPaths,
+                scanId: args.scanId,
                 mode: args.mode
               },
               { timeoutMs: 60_000 }
@@ -237,10 +296,10 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       const target = getActiveRuntimeTarget(get().settings)
       const group =
         target.kind === 'local'
-          ? ((await window.api.projectGroups.create({
+          ? await window.api.projectGroups.create({
               name,
               createdFrom: 'manual'
-            })) as ProjectGroup)
+            })
           : (
               await callRuntimeRpc<{ group: ProjectGroup }>(
                 target,
@@ -262,7 +321,7 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       const target = getActiveRuntimeTarget(get().settings)
       const updated =
         target.kind === 'local'
-          ? ((await window.api.projectGroups.update({ groupId, updates })) as ProjectGroup | null)
+          ? await window.api.projectGroups.update({ groupId, updates })
           : (
               await callRuntimeRpc<{ group: ProjectGroup | null }>(
                 target,
@@ -324,11 +383,11 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       const target = getActiveRuntimeTarget(get().settings)
       const moved =
         target.kind === 'local'
-          ? ((await window.api.projectGroups.moveProject({
+          ? await window.api.projectGroups.moveProject({
               projectId,
               groupId,
               order
-            })) as Repo | null)
+            })
           : (
               await callRuntimeRpc<{ repo: Repo | null }>(
                 target,
@@ -597,21 +656,16 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
       try {
         const sanitizedUpdates = sanitizeRepoUpdate(updates)
         const target = getActiveRuntimeTarget(get().settings)
-        const updatedRepo =
-          target.kind === 'local'
-            ? await window.api.repos.update({ repoId: projectId, updates: sanitizedUpdates })
-            : (
-                await callRuntimeRpc<{ repo: Repo }>(
-                  target,
-                  'repo.update',
-                  { repo: projectId, updates: sanitizedUpdates },
-                  { timeoutMs: 15_000 }
-                )
-              ).repo
+        await (target.kind === 'local'
+          ? window.api.repos.update({ repoId: projectId, updates: sanitizedUpdates })
+          : callRuntimeRpc(
+              target,
+              'repo.update',
+              { repo: projectId, updates: sanitizedUpdates },
+              { timeoutMs: 15_000 }
+            ))
         set((s) => ({
-          repos: s.repos.map((r) =>
-            r.id === projectId ? (updatedRepo ?? { ...r, ...sanitizedUpdates }) : r
-          )
+          repos: s.repos.map((r) => (r.id === projectId ? { ...r, ...sanitizedUpdates } : r))
         }))
         return true
       } catch (err) {

@@ -33,6 +33,8 @@ describe('RepositoryPane search entries', () => {
     expect(matchesSettingsSearch('command source', entries)).toBe(true)
     expect(matchesSettingsSearch('local settings scripts', entries)).toBe(true)
     expect(matchesSettingsSearch('worktree folder', entries)).toBe(true)
+    expect(matchesSettingsSearch('../worktrees', entries)).toBe(true)
+    expect(matchesSettingsSearch('worktree path', entries)).toBe(true)
   })
 
   it('matches project identity searches on display name and path only', () => {
@@ -76,7 +78,7 @@ describe('RepositoryPane search entries', () => {
     }
   })
 
-  it('renders the worktree folder setting for Git repos but not folder repos', () => {
+  it('renders the worktree location setting for Git repos but not folder repos', () => {
     const gitHtml = renderToStaticMarkup(
       React.createElement(
         TooltipProvider,
@@ -108,12 +110,12 @@ describe('RepositoryPane search entries', () => {
       )
     )
 
-    expect(gitHtml).toContain('Worktree Folder')
+    expect(gitHtml).toContain('Worktree Location')
     expect(gitHtml).toContain('lucide-folder-open')
-    expect(folderHtml).not.toContain('Worktree Folder')
+    expect(folderHtml).not.toContain('Worktree Location')
   })
 
-  it('hides the worktree folder Browse button for SSH and remote runtime projects', () => {
+  it('hides the worktree location Browse button for SSH and remote runtime projects', () => {
     const render = (project: Repo): string =>
       renderToStaticMarkup(
         React.createElement(

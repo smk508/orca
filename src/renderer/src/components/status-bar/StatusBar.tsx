@@ -51,7 +51,10 @@ import { TOGGLE_FLOATING_TERMINAL_EVENT } from '@/lib/floating-terminal'
 import { useShortcutLabel } from '@/hooks/useShortcutLabel'
 import { FloatingTerminalIconContextMenu } from '@/components/floating-terminal/FloatingTerminalIconContextMenu'
 import { summarizeCodexRestartStatus } from './codex-restart-status-summary'
-import { useWindowsTerminalCapabilities } from '@/lib/windows-terminal-capabilities'
+import {
+  getWindowsTerminalCapabilityOwnerKey,
+  useWindowsTerminalCapabilities
+} from '@/lib/windows-terminal-capabilities'
 
 type StatusBarProps = {
   floatingTerminalOpen: boolean
@@ -600,7 +603,9 @@ function ClaudeSwitcherMenu({
   const claudeTarget = useAppStore((s) => s.rateLimits.claudeTarget)
   const settings = useAppStore((s) => s.settings)
   const windowsTerminalCapabilities = useWindowsTerminalCapabilities(
-    navigator.userAgent.includes('Windows')
+    navigator.userAgent.includes('Windows'),
+    false,
+    getWindowsTerminalCapabilityOwnerKey(settings?.activeRuntimeEnvironmentId)
   )
   const claudeAccountSyncKey = useAppStore((s) => {
     const settings = s.settings
@@ -638,8 +643,12 @@ function ClaudeSwitcherMenu({
     }
   }, [])
 
-  useEffect(() => {
-    if (accountsExpanded) {
+  // Why: inactive-account usage is needed only for the explicit switcher
+  // expansion, so fetch it on that event instead of one render later.
+  const handleAccountsExpandedToggle = useCallback((): void => {
+    const nextExpanded = !accountsExpanded
+    setAccountsExpanded(nextExpanded)
+    if (nextExpanded) {
       void fetchInactiveClaudeAccountUsage()
     }
   }, [accountsExpanded, fetchInactiveClaudeAccountUsage])
@@ -730,7 +739,7 @@ function ClaudeSwitcherMenu({
       <DropdownMenuItem
         onSelect={(event) => {
           event.preventDefault()
-          setAccountsExpanded((prev) => !prev)
+          handleAccountsExpandedToggle()
         }}
       >
         <span className="max-w-[180px] truncate text-[12px] text-foreground">
@@ -776,11 +785,11 @@ function ClaudeSwitcherMenu({
                         </span>
                       ) : null}
                     </div>
-                    {inactiveUsage?.isFetching && !inactiveUsage.claude ? (
+                    {inactiveUsage?.isFetching && !inactiveUsage.rateLimits ? (
                       <InlineUsageSkeleton />
-                    ) : inactiveUsage?.claude ? (
+                    ) : inactiveUsage?.rateLimits ? (
                       <InlineUsageBars
-                        limits={inactiveUsage.claude}
+                        limits={inactiveUsage.rateLimits}
                         isFetching={inactiveUsage.isFetching}
                       />
                     ) : null}
@@ -1084,7 +1093,9 @@ function CodexSwitcherMenu({
   const codexTarget = useAppStore((s) => s.rateLimits.codexTarget)
   const settings = useAppStore((s) => s.settings)
   const windowsTerminalCapabilities = useWindowsTerminalCapabilities(
-    navigator.userAgent.includes('Windows')
+    navigator.userAgent.includes('Windows'),
+    false,
+    getWindowsTerminalCapabilityOwnerKey(settings?.activeRuntimeEnvironmentId)
   )
   const codexAccountSyncKey = useAppStore((s) => {
     const settings = s.settings
@@ -1290,7 +1301,7 @@ function CodexSwitcherMenu({
                   const showSignInAction =
                     !target.active &&
                     target.id !== null &&
-                    isUnavailableInactiveUsage(inactiveUsage?.claude)
+                    isUnavailableInactiveUsage(inactiveUsage?.rateLimits)
                   const isSigningIn = reauthenticatingAccountId === target.id
                   const isBusy = isSwitching || reauthenticatingAccountId !== null
 
@@ -1322,7 +1333,7 @@ function CodexSwitcherMenu({
                             </span>
                           ) : null}
                         </div>
-                        {inactiveUsage?.isFetching && !inactiveUsage.claude ? (
+                        {inactiveUsage?.isFetching && !inactiveUsage.rateLimits ? (
                           <InlineUsageSkeleton />
                         ) : showSignInAction ? (
                           <InlineUsageSignInAction
@@ -1337,9 +1348,9 @@ function CodexSwitcherMenu({
                               }
                             }}
                           />
-                        ) : inactiveUsage?.claude ? (
+                        ) : inactiveUsage?.rateLimits ? (
                           <InlineUsageBars
-                            limits={inactiveUsage.claude}
+                            limits={inactiveUsage.rateLimits}
                             isFetching={inactiveUsage.isFetching}
                           />
                         ) : null}

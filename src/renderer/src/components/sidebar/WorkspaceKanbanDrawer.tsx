@@ -53,8 +53,6 @@ export default function WorkspaceKanbanDrawer({
   const updateWorktreesMeta = useAppStore((s) => s.updateWorktreesMeta)
   const workspaceStatuses = useAppStore((s) => s.workspaceStatuses)
   const setWorkspaceStatuses = useAppStore((s) => s.setWorkspaceStatuses)
-  const workspaceBoardCompact = useAppStore((s) => s.workspaceBoardCompact)
-  const setWorkspaceBoardCompact = useAppStore((s) => s.setWorkspaceBoardCompact)
   const workspaceBoardColumnWidth = useAppStore((s) => s.workspaceBoardColumnWidth)
   const setWorkspaceBoardColumnWidth = useAppStore((s) => s.setWorkspaceBoardColumnWidth)
   const sortBy = useAppStore((s) => s.sortBy)
@@ -330,6 +328,11 @@ export default function WorkspaceKanbanDrawer({
   const handleWorktreeActivate = useCallback(() => {
     onOpenChange(false)
   }, [onOpenChange])
+  const handleHeaderClose = useCallback(() => {
+    // Why: generic Radix close requests stay ignored so sidebar drag/outside
+    // dismiss rules remain explicit; the header X is a board-owned close path.
+    onOpenChange(false)
+  }, [onOpenChange])
   const handleSheetOpenChange = useCallback(
     (nextOpen: boolean) => {
       // Why: Radix treats any outside pointer release as a dismiss request.
@@ -484,7 +487,6 @@ export default function WorkspaceKanbanDrawer({
             width: `min(calc(100vw - ${drawerLeftCss}), 1294px)`
           } as React.CSSProperties
         }
-        data-workspace-board-compact={workspaceBoardCompact ? 'true' : 'false'}
         onOpenAutoFocus={(event) => {
           // Why: Radix focuses the first toolbar button on open, which opens
           // its tooltip without hover and makes the drawer feel noisy.
@@ -542,12 +544,7 @@ export default function WorkspaceKanbanDrawer({
       >
         <WorkspaceKanbanDrawerHeader
           selectedCount={selectedWorktrees.length}
-          compact={workspaceBoardCompact}
           workspaceStatuses={workspaceStatuses}
-          onCompactChange={(compact) => {
-            useAppStore.getState().recordFeatureInteraction('workspace-board-actions')
-            setWorkspaceBoardCompact(compact)
-          }}
           onRenameStatus={handleRenameStatus}
           onChangeStatusColor={handleChangeStatusColor}
           onChangeStatusIcon={handleChangeStatusIcon}
@@ -555,6 +552,7 @@ export default function WorkspaceKanbanDrawer({
           onRemoveStatus={handleRemoveStatus}
           onAddStatus={handleAddStatus}
           onFilterMenuOpenChange={onMenuOpenChange}
+          onClose={handleHeaderClose}
         />
         <div
           ref={boardRef}
@@ -578,7 +576,6 @@ export default function WorkspaceKanbanDrawer({
               worktreesByStatus={worktreesByStatus}
               repoMap={repoMap}
               activeWorktreeId={activeWorktreeId}
-              compact={workspaceBoardCompact}
               columnWidth={columnWidth}
               isResizingColumn={isResizingColumn}
               dragOverStatus={dragOverStatus}

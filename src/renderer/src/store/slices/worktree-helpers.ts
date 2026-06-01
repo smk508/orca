@@ -3,7 +3,9 @@ import type {
   CreateSparseCheckoutRequest,
   DetectedWorktree,
   DetectedWorktreeListResult,
+  ForceDeleteWorktreeBranchResult,
   GitPushTarget,
+  RemoveWorktreeResult,
   SetupDecision,
   TuiAgent,
   WorkspaceCreateTelemetrySource,
@@ -22,6 +24,12 @@ export type WorktreeDeleteState = {
   isDeleting: boolean
   error: string | null
   canForceDelete: boolean
+}
+
+export type WorktreeMetaUpdateGuard = (worktree: Worktree | DetectedWorktree | undefined) => boolean
+
+export type WorktreeMetaUpdateOptions = {
+  shouldApply?: WorktreeMetaUpdateGuard
 }
 
 export type WorktreeSlice = {
@@ -99,12 +107,23 @@ export type WorktreeSlice = {
     linkedGitLabIssue?: number,
     startup?: WorktreeStartupLaunch
   ) => Promise<CreateWorktreeResult>
+  prefetchWorktreeCreateBase: (repoId: string, baseBranch?: string) => Promise<void>
   removeWorktree: (
     worktreeId: string,
     force?: boolean
-  ) => Promise<{ ok: true } | { ok: false; error: string }>
+  ) => Promise<({ ok: true } & RemoveWorktreeResult) | { ok: false; error: string }>
+  markWorktreesDeleting: (worktreeIds: readonly string[]) => void
+  forceDeletePreservedBranch: (
+    worktreeId: string,
+    branchName: string,
+    expectedHead: string
+  ) => Promise<({ ok: true } & ForceDeleteWorktreeBranchResult) | { ok: false; error: string }>
   clearWorktreeDeleteState: (worktreeId: string) => void
-  updateWorktreeMeta: (worktreeId: string, updates: Partial<WorktreeMeta>) => Promise<void>
+  updateWorktreeMeta: (
+    worktreeId: string,
+    updates: Partial<WorktreeMeta>,
+    options?: WorktreeMetaUpdateOptions
+  ) => Promise<void>
   updateWorktreesMeta: (
     updatesByWorktreeId: ReadonlyMap<string, Partial<WorktreeMeta>>
   ) => Promise<void>

@@ -4,6 +4,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import type { SshTarget } from '../../shared/ssh-types'
 import { expandSshConfigIncludes } from './ssh-config-include-expander'
+import { resolveSshConfigHomePath } from './ssh-config-path-expansion'
 
 export type SshConfigHost = {
   host: string
@@ -33,21 +34,19 @@ export function parseSshConfig(content: string): SshConfigHost[] {
       continue
     }
 
-    const match = line.match(/^(\S+)\s+(.+)$/)
-    if (!match) {
+    const directive = parseConfigDirective(line)
+    if (!directive) {
       continue
     }
 
-    const [, keyword, rawValue] = match
-    const key = keyword.toLowerCase()
-    const value = rawValue.trim()
+    const { key, rawValue } = directive
 
     if (key === 'host') {
       if (current.length > 0) {
         appendHosts(hosts, current)
       }
 
-      const patterns = splitHostPatterns(value)
+      const patterns = splitHostPatterns(rawValue)
       const concretePatterns = patterns.filter(
         (pattern) => !pattern.startsWith('!') && !pattern.includes('*') && !pattern.includes('?')
       )
@@ -72,6 +71,8 @@ export function parseSshConfig(content: string): SshConfigHost[] {
       continue
     }
 
+    const value = parseScalarConfigValue(rawValue)
+
     switch (key) {
       case 'hostname':
         for (const host of current) {
@@ -90,12 +91,12 @@ export function parseSshConfig(content: string): SshConfigHost[] {
         break
       case 'identityfile':
         for (const host of current) {
-          host.identityFile = resolveHomePath(value)
+          host.identityFile = resolveSshConfigHomePath(value)
         }
         break
       case 'identityagent':
         for (const host of current) {
-          host.identityAgent = resolveHomePath(value)
+          host.identityAgent = resolveSshConfigHomePath(value)
         }
         break
       case 'identitiesonly':
@@ -105,7 +106,9 @@ export function parseSshConfig(content: string): SshConfigHost[] {
         break
       case 'proxycommand':
         for (const host of current) {
-          host.proxyCommand = value
+          // Why: OpenSSH treats ProxyCommand as a shell snippet and preserves
+          // the rest of the line, including quotes and `#` characters.
+          host.proxyCommand = rawValue.trim()
         }
         break
       case 'proxyusefdpass':
@@ -135,8 +138,30 @@ function appendHosts(target: SshConfigHost[], entries: SshConfigHost[]): void {
   }
 }
 
+function parseConfigDirective(line: string): { key: string; rawValue: string } | null {
+  const match = line.match(/^([^=\s]+)(?:\s*=\s*|\s+)(.*)$/)
+  if (!match) {
+    return null
+  }
+
+  return {
+    key: match[1].toLowerCase(),
+    rawValue: match[2].trim()
+  }
+}
+
+function parseScalarConfigValue(input: string): string {
+  // Why: scalar OpenSSH directives strip wrapping quotes and inline comments;
+  // keeping them would turn valid config values into bad hostnames/users/paths.
+  return splitOpenSshArguments(input)[0] ?? ''
+}
+
 function splitHostPatterns(input: string): string[] {
-  const patterns: string[] = []
+  return splitOpenSshArguments(input)
+}
+
+function splitOpenSshArguments(input: string): string[] {
+  const args: string[] = []
   let current = ''
   let inQuotes = false
   let escaped = false
@@ -165,7 +190,7 @@ function splitHostPatterns(input: string): string[] {
 
     if (!inQuotes && /\s/.test(char)) {
       if (current) {
-        patterns.push(current)
+        args.push(current)
         current = ''
       }
       continue
@@ -175,17 +200,10 @@ function splitHostPatterns(input: string): string[] {
   }
 
   if (current) {
-    patterns.push(current)
+    args.push(current)
   }
 
-  return patterns
-}
-
-function resolveHomePath(filepath: string): string {
-  if (filepath.startsWith('~/') || filepath === '~') {
-    return join(homedir(), filepath.slice(1))
-  }
-  return filepath
+  return args
 }
 
 /** Read and parse the user's ~/.ssh/config file. Returns empty array if not found. */
@@ -311,7 +329,7 @@ export function parseSshGOutput(stdout: string): SshResolvedConfig {
     const key = line.substring(0, spaceIdx).toLowerCase()
     const value = line.substring(spaceIdx + 1).trim()
     if (key === 'identityfile') {
-      identityFiles.push(resolveHomePath(value))
+      identityFiles.push(resolveSshConfigHomePath(value))
     } else {
       map.set(key, value)
     }
@@ -324,7 +342,7 @@ export function parseSshGOutput(stdout: string): SshResolvedConfig {
   const rawJump = map.get('proxyjump')
   const proxyJump = rawJump && rawJump !== 'none' ? rawJump : undefined
   const rawIdentityAgent = map.get('identityagent')
-  const identityAgent = rawIdentityAgent ? resolveHomePath(rawIdentityAgent) : undefined
+  const identityAgent = rawIdentityAgent ? resolveSshConfigHomePath(rawIdentityAgent) : undefined
 
   return {
     hostname: map.get('hostname') ?? '',

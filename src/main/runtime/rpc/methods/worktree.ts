@@ -2,7 +2,9 @@ import { defineMethod, type RpcMethod } from '../core'
 import {
   WorktreeCreate,
   WorktreeDetectedListParams,
+  WorktreeForceDeleteBranch,
   WorktreeListParams,
+  WorktreePrefetchCreateBase,
   WorktreePsParams,
   WorktreeRemove,
   WorktreeResolveMrBase,
@@ -92,6 +94,17 @@ export const WORKTREE_METHODS: RpcMethod[] = [
       })
   }),
   defineMethod({
+    name: 'worktree.prefetchCreateBase',
+    params: WorktreePrefetchCreateBase,
+    handler: async (params, { runtime }) => {
+      await runtime.prefetchManagedWorktreeCreateBase({
+        repoSelector: params.repo,
+        baseBranch: params.baseBranch
+      })
+      return null
+    }
+  }),
+  defineMethod({
     name: 'worktree.set',
     params: WorktreeSet,
     handler: async (params, { runtime }) => ({
@@ -166,5 +179,11 @@ export const WORKTREE_METHODS: RpcMethod[] = [
       )
       return { removed: true, ...result }
     }
+  }),
+  defineMethod({
+    name: 'worktree.forceDeleteBranch',
+    params: WorktreeForceDeleteBranch,
+    handler: async (params, { runtime }) =>
+      runtime.forceDeletePreservedBranch(params.worktree, params.branchName, params.expectedHead)
   })
 ]

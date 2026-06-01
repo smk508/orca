@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- Why: SSH config parsing fixtures cover OpenSSH file parsing and ssh -G output together so import and connection resolution stay aligned. */
 import { describe, expect, it, vi } from 'vitest'
+import { join } from 'path'
 import { parseSshConfig, sshConfigHostsToTargets, parseSshGOutput } from './ssh-config-parser'
 
 vi.mock('os', () => ({
@@ -7,6 +8,11 @@ vi.mock('os', () => ({
 }))
 
 const LARGE_HOST_ALIAS_COUNT = 150_000
+const TEST_HOME = '/home/testuser'
+
+function testHomePath(...parts: string[]): string {
+  return join(TEST_HOME, ...parts)
+}
 
 function buildHostAliases(count: number): string {
   const aliases: string[] = []
@@ -85,7 +91,57 @@ Host myserver
   IdentityFile ~/.ssh/id_ed25519
 `
     const hosts = parseSshConfig(config)
-    expect(hosts[0].identityFile).toBe('/home/testuser/.ssh/id_ed25519')
+    expect(hosts[0].identityFile).toBe(testHomePath('.ssh', 'id_ed25519'))
+  })
+
+  it('parses Windows-style IdentityFile with ~ expansion', () => {
+    const config = `
+Host myserver
+  HostName example.com
+  IdentityFile ~\\.ssh\\id_ed25519
+`
+    const hosts = parseSshConfig(config)
+    expect(hosts[0].identityFile).toBe(testHomePath('.ssh', 'id_ed25519'))
+  })
+
+  it('parses quoted scalar values like OpenSSH', () => {
+    const config = `
+Host quoted
+  HostName "localhost" # local test
+  User "deploy" # deploy user
+  Port "2202" # ssh port
+  IdentityFile "~/.ssh/id with space" # private key
+  IdentityAgent "~/.1password/agent sock" # agent socket
+  IdentitiesOnly "yes" # limit keys
+  ProxyJump "bastion" # jump host
+`
+    const hosts = parseSshConfig(config)
+    expect(hosts[0]).toEqual({
+      host: 'quoted',
+      hostname: 'localhost',
+      user: 'deploy',
+      port: 2202,
+      identityFile: testHomePath('.ssh', 'id with space'),
+      identityAgent: testHomePath('.1password', 'agent sock'),
+      identitiesOnly: true,
+      proxyJump: 'bastion'
+    })
+  })
+
+  it('parses equals-form scalar directives', () => {
+    const config = `
+Host eq
+  HostName=eq.example.com
+  User=deploy
+  Port=2202
+`
+    const hosts = parseSshConfig(config)
+    expect(hosts[0]).toEqual({
+      host: 'eq',
+      hostname: 'eq.example.com',
+      user: 'deploy',
+      port: 2202
+    })
   })
 
   it('parses IdentityAgent with ~ expansion', () => {
@@ -95,7 +151,7 @@ Host myserver
   IdentityAgent ~/.1password/agent.sock
 `
     const hosts = parseSshConfig(config)
-    expect(hosts[0].identityAgent).toBe('/home/testuser/.1password/agent.sock')
+    expect(hosts[0].identityAgent).toBe(testHomePath('.1password', 'agent.sock'))
   })
 
   it('parses IdentitiesOnly', () => {
@@ -120,6 +176,15 @@ Host internal
     expect(hosts[0].proxyCommand).toBe('ssh -W %h:%p bastion')
     expect(hosts[0].proxyUseFdpass).toBe(true)
     expect(hosts[0].proxyJump).toBe('bastion.example.com')
+  })
+
+  it('preserves ProxyCommand as the rest of the line', () => {
+    const config = `
+Host internal
+  ProxyCommand sh -c "nc %h %p" # shell comment
+`
+    const hosts = parseSshConfig(config)
+    expect(hosts[0].proxyCommand).toBe('sh -c "nc %h %p" # shell comment')
   })
 
   it('ignores comments and blank lines', () => {
@@ -217,12 +282,12 @@ Host staging stage
     expect(hosts).toEqual([
       {
         host: 'staging',
-        identityAgent: '/home/testuser/.1password/agent.sock',
+        identityAgent: testHomePath('.1password', 'agent.sock'),
         identitiesOnly: true
       },
       {
         host: 'stage',
-        identityAgent: '/home/testuser/.1password/agent.sock',
+        identityAgent: testHomePath('.1password', 'agent.sock'),
         identitiesOnly: true
       }
     ])
@@ -341,8 +406,8 @@ describe('parseSshGOutput', () => {
 
     const result = parseSshGOutput(output)
     expect(result.identityFile).toEqual([
-      '/home/testuser/.ssh/id_ed25519',
-      '/home/testuser/.ssh/id_rsa'
+      testHomePath('.ssh', 'id_ed25519'),
+      testHomePath('.ssh', 'id_rsa')
     ])
   })
 
@@ -417,13 +482,19 @@ describe('parseSshGOutput', () => {
   it('handles ~ expansion in identity file paths', () => {
     const output = 'hostname example.com\nidentityfile ~/custom_key\nport 22'
     const result = parseSshGOutput(output)
-    expect(result.identityFile).toEqual(['/home/testuser/custom_key'])
+    expect(result.identityFile).toEqual([testHomePath('custom_key')])
+  })
+
+  it('handles Windows-style ~ expansion in identity file paths', () => {
+    const output = 'hostname example.com\nidentityfile ~\\.ssh\\custom_key\nport 22'
+    const result = parseSshGOutput(output)
+    expect(result.identityFile).toEqual([testHomePath('.ssh', 'custom_key')])
   })
 
   it('parses identityagent with ~ expansion', () => {
     const output = 'hostname example.com\nidentityagent ~/.1password/agent.sock\nport 22'
     const result = parseSshGOutput(output)
-    expect(result.identityAgent).toBe('/home/testuser/.1password/agent.sock')
+    expect(result.identityAgent).toBe(testHomePath('.1password', 'agent.sock'))
   })
 
   it('preserves identityagent none so auth can disable agent fallback', () => {
