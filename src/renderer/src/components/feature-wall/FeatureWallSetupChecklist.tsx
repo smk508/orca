@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from 'react'
-import { ArrowUpRight, Check } from 'lucide-react'
+import { Check } from 'lucide-react'
 import type {
   FeatureWallSetupStep,
   FeatureWallSetupStepId
@@ -8,7 +8,6 @@ import { getFeatureWallSetupStepsForSection } from '../../../../shared/feature-w
 import { cn } from '@/lib/utils'
 import type { FeatureWallSetupProgress } from './feature-wall-setup-progress'
 import { usePrefersReducedMotion } from './feature-wall-modal-helpers'
-import { TasksAnimatedVisual } from './TasksAnimatedVisual'
 import { AgentCapabilitiesSetupAction } from './AgentCapabilitiesSetupAction'
 import {
   AddReposAction,
@@ -16,9 +15,7 @@ import {
   TwoAgentsAction,
   WorkspacesAction
 } from './FeatureWallSetupWorkflowActions'
-import { SetupStepPreview } from './SetupStepPreview'
-import { Button } from '@/components/ui/button'
-import { GitHubRow, LinearRow } from '../onboarding/IntegrationsStep'
+import { ConnectIntegrationsList } from './ConnectIntegrationsList'
 import { AgentStep } from '../onboarding/AgentStep'
 import { NotificationStep } from '../onboarding/NotificationStep'
 import { useAppStore } from '@/store'
@@ -126,7 +123,7 @@ function SelectedStepAction(props: FeatureWallSetupChecklistProps): React.JSX.El
     return <WorkspacesAction reducedMotion={reducedMotion} done={activeDone} />
   }
   if (activeStep.id === 'task-sources') {
-    return <TaskSourcesAction reducedMotion={reducedMotion} />
+    return <TaskSourcesAction />
   }
   if (activeStep.id === 'agent-capabilities') {
     return (
@@ -187,30 +184,20 @@ function NotificationAction(): React.JSX.Element {
   )
 }
 
-function TaskSourcesAction(props: { reducedMotion: boolean }): React.JSX.Element {
-  const closeModal = useAppStore((s) => s.closeModal)
-  const openTaskPage = useAppStore((s) => s.openTaskPage)
+function TaskSourcesAction(): React.JSX.Element {
+  const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
+  const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
+  const checkLinearConnection = useAppStore((s) => s.checkLinearConnection)
+
+  useEffect(() => {
+    void refreshPreflightStatus()
+    void checkJiraConnection()
+    void checkLinearConnection()
+  }, [refreshPreflightStatus, checkJiraConnection, checkLinearConnection])
+
   return (
     <div className="space-y-5">
-      <div className="grid gap-3 xl:grid-cols-2">
-        <GitHubRow compact />
-        <LinearRow compact />
-      </div>
-      <Button
-        type="button"
-        size="sm"
-        className="w-fit gap-2"
-        onClick={() => {
-          closeModal()
-          openTaskPage()
-        }}
-      >
-        <ArrowUpRight className="size-3.5" />
-        See tasks
-      </Button>
-      <SetupStepPreview className="mx-auto h-[220px] w-full max-w-[480px]">
-        <TasksAnimatedVisual reducedMotion={props.reducedMotion} />
-      </SetupStepPreview>
+      <ConnectIntegrationsList />
     </div>
   )
 }
