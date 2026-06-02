@@ -237,29 +237,27 @@ export function RepoStep({
           disabled={disabled}
           onClick={onOpenFolder}
         >
-          <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-            <div className="flex min-w-0 items-center gap-4">
-              <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-muted text-foreground">
-                <FolderOpen className="size-5" />
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-muted text-foreground">
+              <FolderOpen className="size-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-base font-semibold text-foreground">Open a folder</div>
+              <div className="mt-0.5 text-[13px] text-muted-foreground">
+                Choose any local directory, git repo or not.
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-base font-semibold text-foreground">Open a folder</div>
-                <div className="mt-0.5 text-[13px] text-muted-foreground">
-                  Choose any local directory, git repo or not.
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <Button asChild size="lg" className="pointer-events-none min-w-32 px-8">
+                  <span>Browse...</span>
+                </Button>
+                <div className="flex w-fit max-w-full items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-[12px] text-muted-foreground">
+                  <span className="grid size-6 shrink-0 place-items-center rounded-md border border-border bg-background text-foreground">
+                    <Lightbulb className="size-3.5" />
+                  </span>
+                  <span>Want to import many repos at once? Select the parent folder.</span>
                 </div>
               </div>
             </div>
-            <div className="flex justify-start md:justify-center">
-              <Button asChild size="lg" className="pointer-events-none h-11 min-w-36 px-10">
-                <span>Browse...</span>
-              </Button>
-            </div>
-          </div>
-          <div className="ml-[3.75rem] mt-3 flex w-fit max-w-[calc(100%-3.75rem)] items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-[12px] text-muted-foreground">
-            <span className="grid size-6 shrink-0 place-items-center rounded-md border border-border bg-background text-foreground">
-              <Lightbulb className="size-3.5" />
-            </span>
-            <span>Want to import many repos at once? Select the parent folder.</span>
           </div>
         </button>
       )}
