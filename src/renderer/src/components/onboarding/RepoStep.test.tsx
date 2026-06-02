@@ -51,6 +51,7 @@ describe('RepoStep', () => {
 
     expect(html).toContain('md:grid-cols-[minmax(0,1fr)_auto]')
     expect(html).toContain('ml-[3.75rem] mt-3')
+    expect(html).toContain('w-fit max-w-[calc(100%-3.75rem)]')
     expect(html).toContain('bg-primary text-primary-foreground')
     expect(html).toContain('h-11 min-w-36 px-10')
     expect(html).toContain('Browse...')

@@ -255,7 +255,7 @@ export function RepoStep({
               </Button>
             </div>
           </div>
-          <div className="ml-[3.75rem] mt-3 flex items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-[12px] text-muted-foreground">
+          <div className="ml-[3.75rem] mt-3 flex w-fit max-w-[calc(100%-3.75rem)] items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-[12px] text-muted-foreground">
             <span className="grid size-6 shrink-0 place-items-center rounded-md border border-border bg-background text-foreground">
               <Lightbulb className="size-3.5" />
             </span>
