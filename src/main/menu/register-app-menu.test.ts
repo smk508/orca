@@ -225,8 +225,8 @@ describe('registerAppMenu', () => {
     expect(helpLabels).toEqual([
       'Report Crash...',
       undefined,
-      'Getting Started with Orca',
-      'Explore Orca'
+      'Explore Orca',
+      'Getting Started with Orca'
     ])
   })
 

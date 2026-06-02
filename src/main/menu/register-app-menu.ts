@@ -290,8 +290,8 @@ function buildAndApplyMenu(options: RegisterAppMenuOptions): void {
     submenu: [
       crashReportItem,
       { type: 'separator' },
-      setupGuideItem,
       featureTourItem,
+      setupGuideItem,
       ...(isMac
         ? []
         : ([
