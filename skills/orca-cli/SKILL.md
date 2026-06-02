@@ -36,19 +36,6 @@ orca status --json
 
 Prefer `--json` for agent-driven calls. If the CLI is missing, say so explicitly instead of inspecting source files first.
 
-## Remote Runtimes / SSH
-
-Use a saved environment or pairing code when the target Orca runtime is remote, paired, or SSH-backed:
-
-```bash
-orca environment list --json
-orca environment add --name <name> --pairing-code <code> --json
-orca status --environment <name> --json
-orca worktree ps --environment <name> --json
-```
-
-`--environment <selector>`, `--pairing-code <code>`, `ORCA_ENVIRONMENT`, and `ORCA_PAIRING_CODE` target a non-local runtime. Do not assume the local app/runtime is right for SSH or paired-client tasks.
-
 ## Worktrees
 
 An Orca worktree/workspace is Orca's tracked view of a repo checkout, its metadata, terminals, browser tabs, and UI state.
