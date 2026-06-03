@@ -38,12 +38,7 @@ function ProviderShell(props: {
   children: React.ReactNode
 }): React.JSX.Element {
   return (
-    <article
-      className={cn(
-        'overflow-hidden rounded-xl border border-border',
-        props.connected ? 'bg-muted/30' : 'bg-card'
-      )}
-    >
+    <article className="overflow-hidden rounded-xl border border-border bg-card">
       <button
         type="button"
         onClick={props.onToggle}
