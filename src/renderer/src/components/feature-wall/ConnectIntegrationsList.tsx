@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ChevronRight, ExternalLink, Github, Gitlab, Terminal } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ChevronRight, ExternalLink, Terminal } from 'lucide-react'
 import { LinearIcon } from '@/components/icons/LinearIcon'
 import { JiraIcon } from '@/components/icons/JiraIcon'
 import { Button } from '@/components/ui/button'
@@ -10,9 +10,18 @@ import type { IntegrationStatusTone } from '@/components/integration-status-pill
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
 import { OnboardingInlineCommandTerminal } from '../onboarding/OnboardingInlineCommandTerminal'
+import {
+  CLI_PROVIDERS,
+  type CliAuthProviderId,
+  type CliProviderConfig
+} from './connect-integrations-provider-config'
+import {
+  getProviderRuntimeContextKey,
+  hasRemoteProviderRuntime
+} from '@/lib/provider-runtime-context'
 
 type ProviderId = 'github' | 'gitlab' | 'linear' | 'jira'
-type CliState = 'checking' | 'connected' | 'not-installed' | 'not-authenticated'
+type CliState = 'checking' | 'connected' | 'not-installed' | 'not-authenticated' | 'unavailable'
 
 // Presentational shell: one calm accordion row per task source. The header
 // (icon + name + copy + chevron) toggles; the status pill is non-interactive.
@@ -24,6 +33,7 @@ function ProviderShell(props: {
   statusLabel: string
   connected: boolean
   open: boolean
+  disabled?: boolean
   onToggle: () => void
   children: React.ReactNode
 }): React.JSX.Element {
@@ -38,7 +48,8 @@ function ProviderShell(props: {
         type="button"
         onClick={props.onToggle}
         aria-expanded={props.open}
-        className="flex w-full items-center gap-3.5 px-4 py-3.5 text-left hover:bg-accent/40"
+        disabled={props.disabled}
+        className="flex w-full items-center gap-3.5 px-4 py-3.5 text-left hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
       >
         <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-foreground">
           {props.icon}
@@ -66,53 +77,99 @@ function ProviderShell(props: {
   )
 }
 
-function GitHubProviderRow(props: { open: boolean; onToggle: () => void }): React.JSX.Element {
+function CliProviderRow(props: {
+  config: CliProviderConfig
+  open: boolean
+  disabled?: boolean
+  onToggle: () => void
+  onAuthTerminalOpenChange: (open: boolean) => void
+}): React.JSX.Element {
+  const { config, onAuthTerminalOpenChange } = props
   const preflightStatus = useAppStore((s) => s.preflightStatus)
+  const preflightStatusChecked = useAppStore((s) => s.preflightStatusChecked)
   const preflightStatusLoading = useAppStore((s) => s.preflightStatusLoading)
   const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
   const [terminalOpen, setTerminalOpen] = useState(false)
+  const cliStatus = preflightStatus?.[config.statusKey]
 
   const state: CliState = preflightStatusLoading
     ? 'checking'
-    : !preflightStatus
-      ? 'checking'
-      : !preflightStatus.gh.installed
+    : !preflightStatus || !cliStatus
+      ? preflightStatusChecked
+        ? 'unavailable'
+        : 'checking'
+      : !cliStatus.installed
         ? 'not-installed'
-        : preflightStatus.gh.authenticated
+        : cliStatus.authenticated
           ? 'connected'
           : 'not-authenticated'
   const connected = state === 'connected'
+  const terminalShouldClose = terminalOpen && (state === 'connected' || state === 'not-installed')
+  useEffect(() => {
+    if (!terminalShouldClose) {
+      return
+    }
+    // oxlint-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Why: auth terminal closes when CLI state proves the flow completed or cannot continue.
+    setTerminalOpen(false)
+    onAuthTerminalOpenChange(false)
+  }, [onAuthTerminalOpenChange, terminalShouldClose])
+
+  const handleRefresh = (): void => {
+    setTerminalOpen(false)
+    onAuthTerminalOpenChange(false)
+    void refreshPreflightStatus({ force: true })
+  }
+  const handleStartAuth = (): void => {
+    setTerminalOpen(true)
+    onAuthTerminalOpenChange(true)
+  }
 
   return (
     <ProviderShell
-      icon={<Github className="size-5" />}
-      name="GitHub"
-      copy="Pull requests, issues, and checks via the gh CLI."
+      icon={config.icon}
+      name={config.name}
+      copy={config.copy}
       tone={connected ? 'connected' : state === 'checking' ? 'neutral' : 'attention'}
       statusLabel={
         connected
           ? 'Connected'
           : state === 'checking'
             ? 'Checking…'
-            : state === 'not-installed'
-              ? 'CLI not installed'
-              : 'Sign-in needed'
+            : state === 'unavailable'
+              ? 'Unavailable'
+              : state === 'not-installed'
+                ? 'CLI not installed'
+                : 'Sign-in needed'
       }
       connected={connected}
       open={props.open}
+      disabled={props.disabled}
       onToggle={props.onToggle}
     >
       {connected ? (
         <div className="space-y-3">
           <p className="text-[13px] leading-relaxed text-muted-foreground">
-            Authenticated through the <span className="font-mono text-xs">gh</span> CLI. Orca reuses
-            your existing login — nothing to enter here.
+            {config.connectedCopy}
           </p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refreshPreflightStatus({ force: true })}
-          >
+          <Button variant="outline" size="sm" onClick={handleRefresh}>
+            Re-check
+          </Button>
+        </div>
+      ) : state === 'checking' ? (
+        <div className="space-y-3">
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
+            Checking your {config.name} CLI status before showing setup actions.
+          </p>
+          <Button variant="ghost" size="sm" onClick={handleRefresh}>
+            Re-check
+          </Button>
+        </div>
+      ) : state === 'unavailable' ? (
+        <div className="space-y-3">
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
+            {config.name} CLI status is not available in this runtime yet.
+          </p>
+          <Button variant="ghost" size="sm" onClick={handleRefresh}>
             Re-check
           </Button>
         </div>
@@ -120,12 +177,13 @@ function GitHubProviderRow(props: { open: boolean; onToggle: () => void }): Reac
         <div className="space-y-3">
           {state === 'not-installed' ? (
             <p className="text-[13px] leading-relaxed text-muted-foreground">
-              Install the GitHub CLI to start work from issues and pull requests.
+              {config.installCopy}
             </p>
           ) : (
             <p className="text-[13px] leading-relaxed text-muted-foreground">
-              The <span className="font-mono text-xs">gh</span> CLI is installed but not signed in.
-              Run <span className="font-mono text-xs">gh auth login</span>, then re-check.
+              The <span className="font-mono text-xs">{config.cliName}</span> CLI is installed but
+              not signed in. Run <span className="font-mono text-xs">{config.command}</span>, then
+              re-check.
             </p>
           )}
           <div className="flex flex-wrap items-center gap-2">
@@ -133,37 +191,37 @@ function GitHubProviderRow(props: { open: boolean; onToggle: () => void }): Reac
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.api.shell.openUrl('https://cli.github.com')}
+                onClick={() => window.api.shell.openUrl(config.installUrl)}
               >
                 <ExternalLink className="size-3.5" />
-                Install gh
+                {config.installLabel}
               </Button>
             ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={terminalOpen}
-                onClick={() => setTerminalOpen(true)}
-              >
+              <Button variant="outline" size="sm" disabled={terminalOpen} onClick={handleStartAuth}>
                 <Terminal className="size-3.5" />
                 {terminalOpen ? 'Signing in' : 'Sign in'}
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void refreshPreflightStatus({ force: true })}
-            >
+            <Button variant="ghost" size="sm" onClick={handleRefresh}>
               Re-check
             </Button>
           </div>
-          {state === 'not-authenticated' && terminalOpen ? (
-            <OnboardingInlineCommandTerminal
-              command="gh auth login"
-              title="GitHub setup"
-              ariaLabel="GitHub sign in command"
-              description="Press Enter to run GitHub CLI auth. Re-check GitHub after the browser or device flow finishes."
-            />
+          {terminalOpen && state !== 'not-installed' ? (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Finish this auth flow or use Re-check before switching providers.
+              </p>
+              <OnboardingInlineCommandTerminal
+                command={config.command}
+                title={`${config.name} setup`}
+                ariaLabel={`${config.name} sign in command`}
+                description={`Press Enter to run ${config.command}. Re-check ${config.name} after the browser or device flow finishes.`}
+                onTerminalExit={() => {
+                  setTerminalOpen(false)
+                  onAuthTerminalOpenChange(false)
+                }}
+              />
+            </div>
           ) : null}
         </div>
       )}
@@ -171,120 +229,21 @@ function GitHubProviderRow(props: { open: boolean; onToggle: () => void }): Reac
   )
 }
 
-function GitLabProviderRow(props: { open: boolean; onToggle: () => void }): React.JSX.Element {
-  const preflightStatus = useAppStore((s) => s.preflightStatus)
-  const preflightStatusLoading = useAppStore((s) => s.preflightStatusLoading)
-  const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
-  const [terminalOpen, setTerminalOpen] = useState(false)
-
-  const state: CliState = preflightStatusLoading
-    ? 'checking'
-    : !preflightStatus?.glab
-      ? !preflightStatus
-        ? 'checking'
-        : 'not-installed'
-      : !preflightStatus.glab.installed
-        ? 'not-installed'
-        : preflightStatus.glab.authenticated
-          ? 'connected'
-          : 'not-authenticated'
-  const connected = state === 'connected'
-
-  return (
-    <ProviderShell
-      icon={<Gitlab className="size-5" />}
-      name="GitLab"
-      copy="Merge requests, issues, todos, and pipelines via the glab CLI."
-      tone={connected ? 'connected' : state === 'checking' ? 'neutral' : 'attention'}
-      statusLabel={
-        connected
-          ? 'Connected'
-          : state === 'checking'
-            ? 'Checking…'
-            : state === 'not-installed'
-              ? 'CLI not installed'
-              : 'Sign-in needed'
-      }
-      connected={connected}
-      open={props.open}
-      onToggle={props.onToggle}
-    >
-      {connected ? (
-        <div className="space-y-3">
-          <p className="text-[13px] leading-relaxed text-muted-foreground">
-            Authenticated through the <span className="font-mono text-xs">glab</span> CLI.
-          </p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refreshPreflightStatus({ force: true })}
-          >
-            Re-check
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {state === 'not-installed' ? (
-            <p className="text-[13px] leading-relaxed text-muted-foreground">
-              Install the GitLab CLI to enable merge requests, issues, and pipelines.
-            </p>
-          ) : (
-            <p className="text-[13px] leading-relaxed text-muted-foreground">
-              The <span className="font-mono text-xs">glab</span> CLI is installed but not signed
-              in. Run <span className="font-mono text-xs">glab auth login</span>, then re-check.
-            </p>
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            {state === 'not-installed' ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  window.api.shell.openUrl('https://gitlab.com/gitlab-org/cli#installation')
-                }
-              >
-                <ExternalLink className="size-3.5" />
-                Install glab
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={terminalOpen}
-                onClick={() => setTerminalOpen(true)}
-              >
-                <Terminal className="size-3.5" />
-                {terminalOpen ? 'Signing in' : 'Sign in'}
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void refreshPreflightStatus({ force: true })}
-            >
-              Re-check
-            </Button>
-          </div>
-          {state === 'not-authenticated' && terminalOpen ? (
-            <OnboardingInlineCommandTerminal
-              command="glab auth login"
-              title="GitLab setup"
-              ariaLabel="GitLab sign in command"
-              description="Press Enter to run GitLab CLI auth. Re-check GitLab after the browser or device flow finishes."
-            />
-          ) : null}
-        </div>
-      )}
-    </ProviderShell>
-  )
-}
-
-function LinearProviderRow(props: { open: boolean; onToggle: () => void }): React.JSX.Element {
+function LinearProviderRow(props: {
+  open: boolean
+  disabled?: boolean
+  onToggle: () => void
+}): React.JSX.Element {
   const linearStatus = useAppStore((s) => s.linearStatus)
+  const linearStatusChecked = useAppStore((s) => s.linearStatusChecked)
+  const linearStatusContextKey = useAppStore((s) => s.linearStatusContextKey)
   const checkLinearConnection = useAppStore((s) => s.checkLinearConnection)
+  const settings = useAppStore((s) => s.settings)
   const [dialogOpen, setDialogOpen] = useState(false)
 
-  const connected = linearStatus.connected
+  const contextMatches = linearStatusContextKey === getProviderRuntimeContextKey(settings)
+  const connected = contextMatches && linearStatus.connected
+  const checking = !contextMatches || !linearStatusChecked
   const workspaceCount = linearStatus.workspaces?.length ?? (connected ? 1 : 0)
 
   return (
@@ -292,23 +251,27 @@ function LinearProviderRow(props: { open: boolean; onToggle: () => void }): Reac
       icon={<LinearIcon className="size-5" />}
       name="Linear"
       copy="Browse issues by team and start workspaces from them."
-      tone={connected ? 'connected' : 'attention'}
-      statusLabel={connected ? 'Connected' : 'Not connected'}
+      tone={connected ? 'connected' : checking ? 'neutral' : 'attention'}
+      statusLabel={connected ? 'Connected' : checking ? 'Checking…' : 'Not connected'}
       connected={connected}
       open={props.open}
+      disabled={props.disabled}
       onToggle={props.onToggle}
     >
       <div className="space-y-3">
         <p className="text-[13px] leading-relaxed text-muted-foreground">
           {connected
             ? `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'} linked. Add another workspace or replace a restricted key any time.`
-            : 'Add access with a Personal API key from your Linear settings. Full-access keys can see every team the key owner can reach.'}
+            : checking
+              ? 'Checking your Linear connection before showing setup actions.'
+              : 'Add access with a Personal API key from your Linear settings. Full-access keys can see every team the key owner can reach.'}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant={connected ? 'outline' : 'default'}
             size="sm"
             onClick={() => setDialogOpen(true)}
+            disabled={checking}
           >
             {connected ? 'Add workspace access' : 'Add Linear access'}
           </Button>
@@ -331,13 +294,24 @@ function LinearProviderRow(props: { open: boolean; onToggle: () => void }): Reac
   )
 }
 
-function JiraProviderRow(props: { open: boolean; onToggle: () => void }): React.JSX.Element {
+function JiraProviderRow(props: {
+  open: boolean
+  disabled?: boolean
+  onToggle: () => void
+}): React.JSX.Element {
   const jiraStatus = useAppStore((s) => s.jiraStatus)
   const jiraStatusChecked = useAppStore((s) => s.jiraStatusChecked)
+  const jiraStatusContextKey = useAppStore((s) => s.jiraStatusContextKey)
   const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
+  const settings = useAppStore((s) => s.settings)
   const [dialogOpen, setDialogOpen] = useState(false)
 
-  const connected = jiraStatus.connected
+  const contextMatches = jiraStatusContextKey === getProviderRuntimeContextKey(settings)
+  const connected = contextMatches && jiraStatus.connected
+  const checking = !contextMatches || !jiraStatusChecked
+  const credentialCopy = hasRemoteProviderRuntime(settings)
+    ? 'Connect a Jira Cloud site with your Atlassian email and an API token. Credentials are sent to the selected remote runtime and stored there with runtime-supported encryption.'
+    : 'Connect a Jira Cloud site with your Atlassian email and an API token. Credentials are stored locally and encrypted when local runtime storage supports it.'
   const siteCount = jiraStatus.sites?.length ?? (connected ? 1 : 0)
 
   return (
@@ -345,26 +319,31 @@ function JiraProviderRow(props: { open: boolean; onToggle: () => void }): React.
       icon={<JiraIcon className="size-5" />}
       name="Jira"
       copy="Browse, create, and start work from Jira Cloud issues."
-      tone={connected ? 'connected' : !jiraStatusChecked ? 'neutral' : 'attention'}
-      statusLabel={connected ? 'Connected' : !jiraStatusChecked ? 'Checking…' : 'Not connected'}
+      tone={connected ? 'connected' : checking ? 'neutral' : 'attention'}
+      statusLabel={connected ? 'Connected' : checking ? 'Checking…' : 'Not connected'}
       connected={connected}
       open={props.open}
+      disabled={props.disabled}
       onToggle={props.onToggle}
     >
       <div className="space-y-3">
         <p className="text-[13px] leading-relaxed text-muted-foreground">
           {connected
             ? `${siteCount} site${siteCount === 1 ? '' : 's'} connected. Add another site any time.`
-            : 'Connect a Jira Cloud site with your Atlassian email and an API token. Credentials are encrypted in your OS keychain.'}
+            : checking
+              ? 'Checking your Jira connection before showing setup actions.'
+              : credentialCopy}
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant={connected ? 'outline' : 'default'}
-            size="sm"
-            onClick={() => setDialogOpen(true)}
-          >
-            {connected ? 'Add Jira site' : 'Connect Jira'}
-          </Button>
+          {!checking ? (
+            <Button
+              variant={connected ? 'outline' : 'default'}
+              size="sm"
+              onClick={() => setDialogOpen(true)}
+            >
+              {connected ? 'Add Jira site' : 'Connect Jira'}
+            </Button>
+          ) : null}
           {!connected ? (
             <Button variant="ghost" size="sm" onClick={() => void checkJiraConnection()}>
               Re-check
@@ -387,15 +366,47 @@ function JiraProviderRow(props: { open: boolean; onToggle: () => void }): React.
 // and Jira. One row open at a time so provider-specific setup stays focused.
 export function ConnectIntegrationsList(): React.JSX.Element {
   const [openProvider, setOpenProvider] = useState<ProviderId | null>(null)
-  const toggle = (id: ProviderId): void =>
+  const [activeAuthProvider, setActiveAuthProvider] = useState<CliAuthProviderId | null>(null)
+  const toggle = (id: ProviderId): void => {
+    if (activeAuthProvider) {
+      setOpenProvider(activeAuthProvider)
+      return
+    }
     setOpenProvider((current) => (current === id ? null : id))
+  }
 
   return (
     <div className="space-y-2.5">
-      <GitHubProviderRow open={openProvider === 'github'} onToggle={() => toggle('github')} />
-      <GitLabProviderRow open={openProvider === 'gitlab'} onToggle={() => toggle('gitlab')} />
-      <LinearProviderRow open={openProvider === 'linear'} onToggle={() => toggle('linear')} />
-      <JiraProviderRow open={openProvider === 'jira'} onToggle={() => toggle('jira')} />
+      <CliProviderRow
+        config={CLI_PROVIDERS.github}
+        open={openProvider === 'github'}
+        disabled={activeAuthProvider !== null && activeAuthProvider !== 'github'}
+        onToggle={() => toggle('github')}
+        onAuthTerminalOpenChange={(open) => {
+          setOpenProvider('github')
+          setActiveAuthProvider(open ? 'github' : null)
+        }}
+      />
+      <CliProviderRow
+        config={CLI_PROVIDERS.gitlab}
+        open={openProvider === 'gitlab'}
+        disabled={activeAuthProvider !== null && activeAuthProvider !== 'gitlab'}
+        onToggle={() => toggle('gitlab')}
+        onAuthTerminalOpenChange={(open) => {
+          setOpenProvider('gitlab')
+          setActiveAuthProvider(open ? 'gitlab' : null)
+        }}
+      />
+      <LinearProviderRow
+        open={openProvider === 'linear'}
+        onToggle={() => toggle('linear')}
+        disabled={activeAuthProvider !== null}
+      />
+      <JiraProviderRow
+        open={openProvider === 'jira'}
+        onToggle={() => toggle('jira')}
+        disabled={activeAuthProvider !== null}
+      />
     </div>
   )
 }

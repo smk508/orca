@@ -3,6 +3,7 @@ import { useAppStore } from '@/store'
 import { isGitRepoKind } from '../../../../shared/repo-kind'
 import { checkRuntimeHooks } from '@/runtime/runtime-hooks-client'
 import { hasEffectiveSetupCommand } from '@/lib/setup-script-status'
+import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
 import {
   COMPUTER_USE_SKILL_NAME,
   ORCA_CLI_SKILL_NAME,
@@ -45,7 +46,12 @@ export function useSetupGuideProgress(
   const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
   const linearStatus = useAppStore((s) => s.linearStatus)
   const linearStatusChecked = useAppStore((s) => s.linearStatusChecked)
+  const linearStatusContextKey = useAppStore((s) => s.linearStatusContextKey)
   const checkLinearConnection = useAppStore((s) => s.checkLinearConnection)
+  const jiraStatus = useAppStore((s) => s.jiraStatus)
+  const jiraStatusChecked = useAppStore((s) => s.jiraStatusChecked)
+  const jiraStatusContextKey = useAppStore((s) => s.jiraStatusContextKey)
+  const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
   const repos = useAppStore((s) => s.repos)
   const activeRepoId = useAppStore((s) => s.activeRepoId)
   const [hasSetupScript, setHasSetupScript] = useState(false)
@@ -69,6 +75,9 @@ export function useSetupGuideProgress(
       sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
     }
   )
+  const providerRuntimeContextKey = getProviderRuntimeContextKey(settings)
+  const linearStatusCurrent = linearStatusContextKey === providerRuntimeContextKey
+  const jiraStatusCurrent = jiraStatusContextKey === providerRuntimeContextKey
 
   useEffect(() => {
     if (!shouldRefreshCoreState) {
@@ -77,12 +86,19 @@ export function useSetupGuideProgress(
     if (!preflightStatusChecked) {
       void refreshPreflightStatus()
     }
-    if (!linearStatusChecked) {
+    if (!linearStatusCurrent || !linearStatusChecked) {
       void checkLinearConnection()
     }
+    if (!jiraStatusCurrent || !jiraStatusChecked) {
+      void checkJiraConnection()
+    }
   }, [
+    checkJiraConnection,
     checkLinearConnection,
+    linearStatusCurrent,
     linearStatusChecked,
+    jiraStatusCurrent,
+    jiraStatusChecked,
     preflightStatusChecked,
     refreshPreflightStatus,
     shouldRefreshCoreState
@@ -127,13 +143,16 @@ export function useSetupGuideProgress(
       return
     }
     const permissionState = getComputerUsePermissionSetupState(status)
+    // oxlint-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Why: async permission checks update setup progress after external OS state changes.
     setComputerUsePermissionsReady(permissionState.ready)
     setComputerUseUnavailable(permissionState.unavailable)
   }, [])
 
   useEffect(() => {
     if (!shouldRefreshCoreState || !computerUseSkillInstalled) {
+      // oxlint-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Why: unavailable setup-guide steps must clear stale permission readiness.
       setComputerUsePermissionsReady(false)
+      // oxlint-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Why: unavailable setup-guide steps must clear stale permission warnings.
       setComputerUseUnavailable(false)
       return
     }
@@ -141,6 +160,7 @@ export function useSetupGuideProgress(
     const refreshComputerUsePermissions = (): void => {
       void readComputerUsePermissions(() => stale)
     }
+    // oxlint-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Why: refresh the setup checklist when the permission step becomes active.
     refreshComputerUsePermissions()
     const handleFocus = (): void => {
       void refreshComputerUsePermissions()
@@ -164,7 +184,8 @@ export function useSetupGuideProgress(
   const hasConnectedTaskSource =
     (preflightStatus?.gh.installed === true && preflightStatus.gh.authenticated === true) ||
     (preflightStatus?.glab?.installed === true && preflightStatus.glab.authenticated === true) ||
-    linearStatus.connected === true
+    (linearStatusCurrent && linearStatus.connected === true) ||
+    (jiraStatusCurrent && jiraStatus.connected === true)
   const gitRepoCount = useMemo(() => repos.filter(isGitRepoKind).length, [repos])
 
   return useMemo(

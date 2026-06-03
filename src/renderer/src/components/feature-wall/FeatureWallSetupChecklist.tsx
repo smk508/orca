@@ -20,6 +20,7 @@ import { AgentStep } from '../onboarding/AgentStep'
 import { NotificationStep } from '../onboarding/NotificationStep'
 import { useAppStore } from '@/store'
 import type { TuiAgent } from '../../../../shared/types'
+import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
 
 type FeatureWallSetupChecklistProps = {
   activeStep: FeatureWallSetupStep | null
@@ -188,12 +189,19 @@ function TaskSourcesAction(): React.JSX.Element {
   const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
   const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
   const checkLinearConnection = useAppStore((s) => s.checkLinearConnection)
+  const settings = useAppStore((s) => s.settings)
+  const providerRuntimeContextKey = getProviderRuntimeContextKey(settings)
 
   useEffect(() => {
     void refreshPreflightStatus()
     void checkJiraConnection()
     void checkLinearConnection()
-  }, [refreshPreflightStatus, checkJiraConnection, checkLinearConnection])
+  }, [
+    refreshPreflightStatus,
+    checkJiraConnection,
+    checkLinearConnection,
+    providerRuntimeContextKey
+  ])
 
   return (
     <div className="space-y-5">

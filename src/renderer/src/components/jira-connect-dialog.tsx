@@ -14,6 +14,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { hasRemoteProviderRuntime } from '@/lib/provider-runtime-context'
 
 type JiraConnectDialogProps = {
   open: boolean
@@ -36,6 +37,7 @@ export function JiraConnectDialog({
   contentClassName
 }: JiraConnectDialogProps): React.JSX.Element {
   const connectJira = useAppStore((s) => s.connectJira)
+  const settings = useAppStore((s) => s.settings)
   const mountedRef = useMountedRef()
   const siteUrlId = useId()
   const emailId = useId()
@@ -53,6 +55,9 @@ export function JiraConnectDialog({
     Boolean(email.trim()) &&
     Boolean(apiToken.trim()) &&
     connectState !== 'connecting'
+  const credentialStorageCopy = hasRemoteProviderRuntime(settings)
+    ? 'Your token is sent to the selected remote runtime and stored there with runtime-supported encryption.'
+    : 'Your token is stored locally and encrypted when local runtime storage supports it.'
 
   const clearErrorOnEdit = (): void => {
     if (connectState === 'error') {
@@ -109,12 +114,6 @@ export function JiraConnectDialog({
       <DialogContent
         overlayClassName={overlayClassName}
         className={cn('sm:max-w-md', contentClassName)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && canSubmit) {
-            event.preventDefault()
-            void handleConnect()
-          }
-        }}
       >
         <DialogHeader className="gap-3">
           <DialogTitle className="leading-tight">Connect Jira site</DialogTitle>
@@ -122,101 +121,110 @@ export function JiraConnectDialog({
             Use a Jira Cloud site URL, Atlassian email, and API token to browse issues.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div className="space-y-2">
-            <Label htmlFor={siteUrlId} className="text-xs">
-              Jira Cloud site URL
-            </Label>
-            <Input
-              id={siteUrlId}
-              autoFocus
-              placeholder="https://example.atlassian.net"
-              value={siteUrl}
-              onChange={(event) => {
-                setSiteUrl(event.target.value)
-                clearErrorOnEdit()
-              }}
-              disabled={connectState === 'connecting'}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={emailId} className="text-xs">
-              Atlassian email
-            </Label>
-            <Input
-              id={emailId}
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(event) => {
-                setEmail(event.target.value)
-                clearErrorOnEdit()
-              }}
-              disabled={connectState === 'connecting'}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={tokenId} className="text-xs">
-              API token
-            </Label>
-            <Input
-              id={tokenId}
-              type="password"
-              placeholder="Atlassian API token"
-              value={apiToken}
-              onChange={(event) => {
-                setApiToken(event.target.value)
-                clearErrorOnEdit()
-              }}
-              disabled={connectState === 'connecting'}
-              aria-invalid={connectState === 'error'}
-              aria-describedby={connectState === 'error' ? errorId : undefined}
-            />
-          </div>
-          {connectState === 'error' && connectError ? (
-            <p id={errorId} className="text-xs text-destructive">
-              {connectError}
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void handleConnect()
+          }}
+        >
+          <div className="flex flex-col gap-3">
+            <div className="space-y-2">
+              <Label htmlFor={siteUrlId} className="text-xs">
+                Jira Cloud site URL
+              </Label>
+              <Input
+                id={siteUrlId}
+                autoFocus
+                placeholder="https://example.atlassian.net"
+                value={siteUrl}
+                onChange={(event) => {
+                  setSiteUrl(event.target.value)
+                  clearErrorOnEdit()
+                }}
+                disabled={connectState === 'connecting'}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={emailId} className="text-xs">
+                Atlassian email
+              </Label>
+              <Input
+                id={emailId}
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(event) => {
+                  setEmail(event.target.value)
+                  clearErrorOnEdit()
+                }}
+                disabled={connectState === 'connecting'}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={tokenId} className="text-xs">
+                API token
+              </Label>
+              <Input
+                id={tokenId}
+                type="password"
+                placeholder="Atlassian API token"
+                value={apiToken}
+                onChange={(event) => {
+                  setApiToken(event.target.value)
+                  clearErrorOnEdit()
+                }}
+                disabled={connectState === 'connecting'}
+                aria-invalid={connectState === 'error'}
+                aria-describedby={connectState === 'error' ? errorId : undefined}
+              />
+            </div>
+            {connectState === 'error' && connectError ? (
+              <p id={errorId} className="text-xs text-destructive">
+                {connectError}
+              </p>
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              Create a token in{' '}
+              <button
+                type="button"
+                className="text-primary underline-offset-2 hover:underline"
+                onClick={() =>
+                  window.api.shell.openUrl(
+                    'https://id.atlassian.com/manage-profile/security/api-tokens'
+                  )
+                }
+              >
+                Atlassian account settings
+              </button>
+              .
             </p>
-          ) : null}
-          <p className="text-xs text-muted-foreground">
-            Create a token in{' '}
-            <button
+            <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
+              <Lock className="size-3 shrink-0" />
+              {credentialStorageCopy}
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
               type="button"
-              className="text-primary underline-offset-2 hover:underline"
-              onClick={() =>
-                window.api.shell.openUrl(
-                  'https://id.atlassian.com/manage-profile/security/api-tokens'
-                )
-              }
+              variant="ghost"
+              onClick={() => onOpenChange(false)}
+              disabled={connectState === 'connecting'}
             >
-              Atlassian account settings
-            </button>
-            .
-          </p>
-          <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
-            <Lock className="size-3 shrink-0" />
-            Your token is encrypted via the OS keychain and stored locally.
-          </p>
-        </div>
-        <DialogFooter>
-          <Button
-            variant="ghost"
-            onClick={() => onOpenChange(false)}
-            disabled={connectState === 'connecting'}
-          >
-            Cancel
-          </Button>
-          <Button onClick={() => void handleConnect()} disabled={!canSubmit}>
-            {connectState === 'connecting' ? (
-              <>
-                <LoaderCircle className="size-4 animate-spin" />
-                Verifying…
-              </>
-            ) : (
-              'Connect'
-            )}
-          </Button>
-        </DialogFooter>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!canSubmit}>
+              {connectState === 'connecting' ? (
+                <>
+                  <LoaderCircle className="size-4 animate-spin" />
+                  Verifying…
+                </>
+              ) : (
+                'Connect'
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
