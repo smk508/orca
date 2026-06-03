@@ -44,6 +44,7 @@ import {
 } from './menu/register-app-menu'
 import { checkForUpdatesFromMenu, isQuittingForUpdate } from './updater'
 import {
+  configureElectronNetworkCompatibility,
   configureDevUserDataPath,
   configureOrcaUserDataPathEnv,
   enableMainProcessGpuFeatures,
@@ -55,6 +56,10 @@ import {
   patchPackagedProcessPath,
   shouldInstallManagedHooks
 } from './startup/configure-process'
+import {
+  shouldSuppressDevEducation,
+  suppressDevEducationForStore
+} from './startup/dev-education-suppression'
 import { maybeRedirectAppImageCliLaunch } from './startup/appimage-cli-redirect'
 import { startFirstWindowStartupServices } from './startup/first-window-startup-services'
 import { getDevInstanceIdentity } from './startup/dev-instance-identity'
@@ -109,6 +114,10 @@ import {
   shouldRecoverRendererAfterProcessGone,
   type ExpectedTeardownScope
 } from './crash-reporting/process-gone-classification'
+import {
+  buildProcessGoneCrashDetails,
+  buildSuppressedProcessGoneBreadcrumbData
+} from './crash-reporting/process-gone-diagnostics'
 import { getProcessGoneDedupeKey, processGoneDedupe } from './crash-reporting/process-gone-dedupe'
 import {
   advanceSyntheticTitleSpinnerEntries,
@@ -366,6 +375,7 @@ if (hasSingleInstanceLock) {
     packaged: app.isPackaged,
     platform: process.platform
   })
+  configureElectronNetworkCompatibility()
   enableMainProcessGpuFeatures()
 }
 
@@ -539,6 +549,7 @@ function openMainWindow(): BrowserWindow {
     {
       onBeforeRelaunch: () => {
         isQuitting = true
+        store?.flush()
       }
     }
   )
@@ -573,6 +584,7 @@ function openMainWindow(): BrowserWindow {
     // replay-loop through lastStatusByPaneKey runs only on deliberate
     // window recreations instead of stacking on top of stale listeners.
     agentHookServer.setListener(null)
+    agentHookServer.setPaneStatusClearListener(null)
     setMigrationUnsupportedPtyListener(null)
     // Why: any running synthesized-title spinner timer would fire into a
     // destroyed webContents; stop it here instead of deferring to per-pane
@@ -622,6 +634,12 @@ function openMainWindow(): BrowserWindow {
       }
     }
   )
+  agentHookServer.setPaneStatusClearListener((paneKey) => {
+    if (mainWindow?.isDestroyed()) {
+      return
+    }
+    mainWindow?.webContents.send('agentStatus:clear', { paneKey })
+  })
   setMigrationUnsupportedPtyListener((event) => {
     if (mainWindow?.isDestroyed()) {
       return
@@ -677,18 +695,23 @@ function recordProcessGoneCrash(
       expectedTeardown: getExpectedTeardownScope(webContentsId)
     })
   ) {
-    recordCrashBreadcrumb('process_gone_suppressed', {
-      source,
-      processType,
-      reason,
-      exitCode
-    })
+    recordCrashBreadcrumb(
+      'process_gone_suppressed',
+      buildSuppressedProcessGoneBreadcrumbData({
+        source,
+        processType,
+        reason,
+        exitCode,
+        details
+      })
+    )
     return
   }
   const key = getProcessGoneDedupeKey(processType, reason, exitCode)
   if (!processGoneDedupe.shouldRecord(key)) {
     return
   }
+  const crashDetails = buildProcessGoneCrashDetails(details)
   const span = startSpan('electron.process_gone', {
     attributes: {
       'crash.source': source,
@@ -701,7 +724,7 @@ function recordProcessGoneCrash(
       arch: process.arch,
       electronVersion: process.versions.electron,
       chromeVersion: process.versions.chrome,
-      details,
+      details: crashDetails,
       breadcrumbs: getCrashBreadcrumbSnapshot()
     }
   })
@@ -720,7 +743,7 @@ function recordProcessGoneCrash(
       arch: process.arch,
       electronVersion: process.versions.electron,
       chromeVersion: process.versions.chrome,
-      details,
+      details: crashDetails,
       // Why: breadcrumbs stay memory-only during normal operation. Persist a
       // snapshot only after Electron reports a crash-like process exit.
       breadcrumbs: getCrashBreadcrumbSnapshot()
@@ -1035,6 +1058,9 @@ app.whenReady().then(async () => {
   }
 
   store = new Store()
+  if (shouldSuppressDevEducation({ isDev: is.dev })) {
+    suppressDevEducationForStore(store)
+  }
   try {
     // Why: Dock/Launchpad launches do not inherit shell proxy env vars, so the
     // persisted proxy must be applied before any app-owned network fetchers run.

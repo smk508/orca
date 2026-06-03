@@ -4,7 +4,6 @@ as a unit instead of being scattered across modules. */
 import { app, safeStorage } from 'electron'
 import {
   readFileSync,
-  writeFileSync,
   mkdirSync,
   existsSync,
   renameSync,
@@ -13,7 +12,7 @@ import {
   statSync,
   realpathSync
 } from 'fs'
-import { writeFile, rename, mkdir, rm, copyFile } from 'fs/promises'
+import { rename, mkdir, rm, copyFile } from 'fs/promises'
 import { join, dirname, isAbsolute, resolve, sep } from 'path'
 import { homedir } from 'os'
 import { randomUUID } from 'node:crypto'
@@ -70,6 +69,7 @@ import {
   ONBOARDING_FINAL_STEP
 } from '../shared/constants'
 import { parseWorkspaceSession } from '../shared/workspace-session-schema'
+import { writeUtf8FileInChunks, writeUtf8FileInChunksSync } from '../shared/utf8-file-writer'
 import { toRelaySshPtyId } from './providers/ssh-pty-id'
 import {
   isTerminalLeafId,
@@ -599,8 +599,24 @@ function readLegacySidekickFlag(parsed: PersistedState | undefined): boolean | u
   return (parsed?.settings as { experimentalSidekick?: boolean } | undefined)?.experimentalSidekick
 }
 
+function sanitizeRepoUpstream(value: unknown): Repo['upstream'] | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (value === null) {
+    return null
+  }
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+  const candidate = value as { owner?: unknown; repo?: unknown }
+  const owner = typeof candidate.owner === 'string' ? candidate.owner.trim() : ''
+  const repo = typeof candidate.repo === 'string' ? candidate.repo.trim() : ''
+  return owner && repo ? { owner, repo } : undefined
+}
+
 function sanitizeRepoUpdatesForPersistence<
-  T extends Partial<Pick<Repo, 'badgeColor' | 'repoIcon' | 'worktreeBasePath'>>
+  T extends Partial<Pick<Repo, 'badgeColor' | 'repoIcon' | 'upstream' | 'worktreeBasePath'>>
 >(updates: T): T {
   const sanitized = { ...updates }
   if ('badgeColor' in sanitized) {
@@ -617,6 +633,15 @@ function sanitizeRepoUpdatesForPersistence<
       delete sanitized.repoIcon
     } else {
       sanitized.repoIcon = repoIcon
+    }
+  }
+  // Why: `null` is a valid "not a fork" marker; only drop malformed shapes.
+  if ('upstream' in sanitized) {
+    const upstream = sanitizeRepoUpstream(sanitized.upstream)
+    if (upstream === undefined) {
+      delete sanitized.upstream
+    } else {
+      sanitized.upstream = upstream
     }
   }
   if ('worktreeBasePath' in sanitized && sanitized.worktreeBasePath !== undefined) {
@@ -1560,7 +1585,7 @@ export class Store {
         const raw = readFileSync(path, 'utf-8')
         JSON.parse(raw)
         mkdirSync(dirname(dataFile), { recursive: true })
-        writeFileSync(dataFile, raw, 'utf-8')
+        writeUtf8FileInChunksSync(dataFile, raw)
         console.warn(`[persistence] Recovered state from backup slot ${i}: ${path}`)
         return true
       } catch (err) {
@@ -2162,7 +2187,7 @@ export class Store {
     // multi-megabyte orphan behind. Successful rename consumes the tmp file.
     let renamed = false
     try {
-      await writeFile(tmpFile, JSON.stringify(stateToSave, null, 2), 'utf-8')
+      await writeUtf8FileInChunks(tmpFile, JSON.stringify(stateToSave, null, 2))
       // Why: if flush() ran while this async write was in-flight, it bumped
       // writeGeneration and already wrote the latest state synchronously.
       // Renaming this stale tmp file would overwrite the fresh data.
@@ -2212,12 +2237,12 @@ export class Store {
       }
     }
 
-    // Why: mirror the async path — on any failure between writeFileSync and
+    // Why: mirror the async path — on any failure between writing and
     // renameSync, remove the tmp file so crashes during shutdown don't leak
     // orphans into userData.
     let renamed = false
     try {
-      writeFileSync(tmpFile, JSON.stringify(stateToSave, null, 2), 'utf-8')
+      writeUtf8FileInChunksSync(tmpFile, JSON.stringify(stateToSave, null, 2))
       renameSync(tmpFile, dataFile)
       renamed = true
     } finally {
@@ -2423,6 +2448,7 @@ export class Store {
         | 'displayName'
         | 'badgeColor'
         | 'repoIcon'
+        | 'upstream'
         | 'hookSettings'
         | 'worktreeBaseRef'
         | 'worktreeBasePath'
@@ -2504,8 +2530,9 @@ export class Store {
   }
 
   private hydrateRepo(repo: Repo): Repo {
-    const { repoIcon: rawRepoIcon, ...repoWithoutIcon } = repo
+    const { repoIcon: rawRepoIcon, upstream: rawUpstream, ...repoWithoutIcon } = repo
     const repoIcon = sanitizeRepoIcon(rawRepoIcon)
+    const upstream = sanitizeRepoUpstream(rawUpstream)
     const gitUsername = isFolderRepo(repo)
       ? ''
       : (this.gitUsernameCache.get(repo.path) ??
@@ -2518,6 +2545,7 @@ export class Store {
     return {
       ...repoWithoutIcon,
       ...(repoIcon !== undefined ? { repoIcon } : {}),
+      ...(upstream !== undefined ? { upstream } : {}),
       kind: isFolderRepo(repo) ? 'folder' : 'git',
       gitUsername,
       hookSettings: {

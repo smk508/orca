@@ -43,6 +43,7 @@ import { isFolderRepo } from '../../../../shared/repo-kind'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
+import { DetachedHeadBadge } from '@/components/DetachedHeadBadge'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -181,6 +182,7 @@ import {
 import type { SourceControlAiOperation } from '../../../../shared/source-control-ai-types'
 import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../shared/commit-message-host-key'
 import { getRuntimeGitScope } from '@/runtime/runtime-git-client'
+import { getWorktreeGitIdentityDisplay } from '@/lib/worktree-git-identity-display'
 import { getRepositorySourceControlAiSectionId } from '@/components/settings/repository-settings-targets'
 import {
   getCommitFailureDialogWorktreeKey,
@@ -1310,7 +1312,9 @@ function SourceControlInner(): React.JSX.Element {
 
   const isFolder = activeRepo ? isFolderRepo(activeRepo) : false
   const worktreePath = activeWorktree?.path ?? null
-  const branchName = activeWorktree?.branch.replace(/^refs\/heads\//, '') ?? 'HEAD'
+  const gitIdentityDisplay = activeWorktree ? getWorktreeGitIdentityDisplay(activeWorktree) : null
+  const detachedHeadDisplay = gitIdentityDisplay?.kind === 'detached' ? gitIdentityDisplay : null
+  const branchName = gitIdentityDisplay?.kind === 'branch' ? gitIdentityDisplay.branchName : ''
   const sourceControlAiDiscoveryHostKey = useMemo(
     () =>
       getCommitMessageModelDiscoveryHostKeyForScope(
@@ -4016,9 +4020,31 @@ function SourceControlInner(): React.JSX.Element {
       if (paths.length === 0) {
         return
       }
+      if (area === 'untracked') {
+        // Why: untracked deletes are intentionally one-click in Source Control;
+        // git.discard still enforces path safety in the active provider.
+        void handleRevertAllInArea(area, paths)
+        return
+      }
       setPendingDiscard({ kind: 'area', area, paths })
     },
-    [activeWorktreeId, grouped, isExecutingBulk, worktreePath]
+    [activeWorktreeId, grouped, handleRevertAllInArea, isExecutingBulk, worktreePath]
+  )
+
+  const requestDiscardPaths = useCallback(
+    (area: DiscardAllArea, paths: readonly string[]): void => {
+      if (paths.length === 0) {
+        return
+      }
+      if (area === 'untracked') {
+        // Why: untracked deletes are intentionally one-click in Source Control;
+        // git.discard still enforces path safety in the active provider.
+        void handleRevertAllInArea(area, paths)
+        return
+      }
+      setPendingDiscard({ kind: 'area', area, paths })
+    },
+    [handleRevertAllInArea]
   )
 
   const requestDiscardEntry = useCallback(
@@ -4026,9 +4052,15 @@ function SourceControlInner(): React.JSX.Element {
       if (!worktreePath || !activeWorktreeId || isExecutingBulk) {
         return
       }
+      if (entry.area === 'untracked') {
+        // Why: untracked deletes are intentionally one-click in Source Control;
+        // git.discard still enforces path safety in the active provider.
+        void handleDiscard(entry.path)
+        return
+      }
       setPendingDiscard({ kind: 'entry', entry })
     },
-    [activeWorktreeId, isExecutingBulk, worktreePath]
+    [activeWorktreeId, handleDiscard, isExecutingBulk, worktreePath]
   )
 
   const confirmPendingDiscard = useCallback((): void => {
@@ -4097,6 +4129,12 @@ function SourceControlInner(): React.JSX.Element {
             </div>
           )}
         </div>
+
+        {detachedHeadDisplay && (
+          <div className="border-b border-border px-3 py-2">
+            <DetachedHeadBadge display={detachedHeadDisplay} side="bottom" />
+          </div>
+        )}
 
         {scope === 'all' && shouldShowCompareSummary(branchSummary) && (
           <div className="border-b border-border px-3 py-2">
@@ -4562,13 +4600,7 @@ function SourceControlInner(): React.JSX.Element {
                                   isExecutingBulk={isExecutingBulk}
                                   isCollapsed={collapsedTreeDirs.has(node.key)}
                                   onToggle={() => toggleTreeDir(node.key)}
-                                  onRequestDiscardPaths={(discardArea, paths) =>
-                                    setPendingDiscard({
-                                      kind: 'area',
-                                      area: discardArea,
-                                      paths
-                                    })
-                                  }
+                                  onRequestDiscardPaths={requestDiscardPaths}
                                   onStagePaths={handleStageAllPaths}
                                   onUnstagePaths={handleUnstagePaths}
                                 />
@@ -6210,10 +6242,10 @@ function DiffCommentsInlineList({
 
 function conflictAbortButtonVariant(
   conflictOperation: GitConflictOperation
-): 'ghost' | 'destructive' {
+): 'outline' | 'destructive' {
   // Why: aborting a rebase is the escape hatch for this state, so it should
-  // match the quiet conflict-review action instead of reading as a red danger path.
-  return conflictOperation === 'rebase' ? 'ghost' : 'destructive'
+  // match the quiet outline conflict-review action instead of reading as red.
+  return conflictOperation === 'rebase' ? 'outline' : 'destructive'
 }
 
 export function ConflictSummaryCard({
@@ -6274,7 +6306,7 @@ export function ConflictSummaryCard({
         </Button>
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
           className="mt-1.5 h-7 w-full text-xs"
           onClick={onReview}

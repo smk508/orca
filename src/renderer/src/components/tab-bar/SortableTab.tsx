@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSortable } from '@dnd-kit/sortable'
 import { X, Minimize2, Columns2, Rows2, Pin, PinOff } from 'lucide-react'
 import { ShellIcon } from './shell-icons'
+import { AgentIcon } from '@/lib/agent-catalog'
 import { stripLeadingAgentTitleDecoration } from '@/lib/agent-title-decoration'
 import { useTabAgent } from '@/lib/use-tab-agent'
 import {
@@ -20,11 +21,10 @@ import { useAppStore } from '../../store'
 import {
   ACTIVE_TAB_INDICATOR_CLASSES,
   getDropIndicatorClasses,
+  getTabRootStateClasses,
   type DropIndicator
 } from './drop-indicator'
 import { preventMiddleButtonDefault } from './middle-button-default-guard'
-import { TerminalTabAgentIcon } from './TerminalTabAgentIcon'
-import { useTerminalTabAgentActivity } from './use-terminal-tab-agent-activity'
 
 type SortableTabProps = {
   tab: TerminalTab
@@ -94,8 +94,6 @@ export default function SortableTab({
   // Why: foreground process and hook status make the tab icon reflect the
   // coding harness currently running in the pane, not just the launch command.
   const tabAgent = useTabAgent(tab)
-  const tabAgentActivity = useTerminalTabAgentActivity(tab)
-  const showWorkingAgentBadge = tabAgentActivity === 'working'
 
   // Why: when a provider icon is already shown, stripping the agent's own
   // leading status glyph keeps the tab from presenting two icons for one agent.
@@ -117,8 +115,9 @@ export default function SortableTab({
   const [menuPoint, setMenuPoint] = useState({ x: 0, y: 0 })
   const [isEditing, setIsEditing] = useState(false)
   // Why: single source of truth for the unread-activity visual treatment —
-  // drives the amber wash and completion markers below. Kept as one derived
-  // boolean so the visual cues can never drift out of sync.
+  // drives BOTH the amber wash overlay and the bell icon swap below. Kept as
+  // one derived boolean so the two visual cues can never drift out of sync
+  // (e.g. showing the bell without the wash, or vice versa).
   const showActivityAffordance = hasUnreadActivity && !isEditing
   const [renameValue, setRenameValue] = useState('')
   const renameFocusFrameRef = useRef<number | null>(null)
@@ -220,9 +219,7 @@ export default function SortableTab({
       // tab still reads as "selected + has activity". The wash is
       // rendered as an absolutely-positioned child below so the ::after
       // pseudo-element stays free for the drop indicator.
-      className={`group relative flex items-center h-full px-1.5 text-xs cursor-pointer select-none shrink-0 outline-none focus:outline-none focus-visible:outline-none border-t ${hasTabsToRight ? 'border-r' : ''} border-border bg-card ${getDropIndicatorClasses(dropIndicator ?? null)} ${
-        isActive ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-      }`}
+      className={`group relative flex items-center h-full px-1.5 text-xs cursor-pointer select-none shrink-0 outline-none focus:outline-none focus-visible:outline-none border-t ${hasTabsToRight ? 'border-r' : ''} border-border ${getDropIndicatorClasses(dropIndicator ?? null)} ${getTabRootStateClasses(isActive)}`}
       onDoubleClick={(e) => {
         if (isEditing) {
           return
@@ -271,21 +268,24 @@ export default function SortableTab({
         // clicks reaching the underlying tab handlers.
         <span aria-hidden className="pointer-events-none absolute inset-0 bg-amber-500/10" />
       )}
-      {showActivityAffordance && !tabAgent ? (
-        // Why: non-agent tabs still need a leading activity marker; agent tabs
-        // keep provider identity and show this same signal as an icon overlay.
+      {showActivityAffordance ? (
+        // Why: the activity marker sits to the LEFT of the tab title using
+        // Orca's filled bell glyph (amber-500 with a subtle drop shadow)
+        // so it matches the worktree-level bell in the sidebar — keeping
+        // every "needs your attention" surface in Orca consistent.
         <span data-testid="tab-activity-bell" className="inline-flex shrink-0">
           <FilledBellIcon className="w-3 h-3 mr-1 text-amber-500 drop-shadow-sm" />
         </span>
       ) : tabAgent ? (
         // Why: coding-agent tabs should read as Claude/Codex/etc. while the
         // harness is running; plain shells keep the generic terminal tile.
-        <TerminalTabAgentIcon
-          agent={tabAgent}
-          isActive={isActive}
-          showWorkingBadge={showWorkingAgentBadge}
-          showDoneBadge={showActivityAffordance && !showWorkingAgentBadge}
-        />
+        <span
+          className={`mr-1 inline-flex shrink-0 ${isActive ? '' : 'opacity-70'}`}
+          data-agent-icon={tabAgent}
+          aria-hidden
+        >
+          <AgentIcon agent={tabAgent} size={12} />
+        </span>
       ) : (
         // Why: ShellIcon renders a colored brand-style tile for PowerShell,
         // CMD, Git Bash, and WSL so Windows users can distinguish shells at a glance.

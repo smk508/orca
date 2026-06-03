@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- Why: this store is the single main-process owner for Claude usage persistence, scan gating, and query semantics. Keeping those policy decisions together avoids split-brain range/scope logic across multiple files. */
 import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'fs'
 import { dirname, join } from 'path'
 import type {
   ClaudeUsageBreakdownKind,
@@ -10,10 +10,12 @@ import type {
   ClaudeUsageScanState,
   ClaudeUsageScope,
   ClaudeUsageSessionRow,
+  ClaudeUsageSnapshot,
   ClaudeUsageSummary
 } from '../../shared/claude-usage-types'
 import type { AutomationRunUsage } from '../../shared/automations-types'
 import type { Store } from '../persistence'
+import { writeUtf8FileInChunksSync } from '../../shared/utf8-file-writer'
 import { loadKnownUsageWorktreesByRepo, type UsageWorktreeRef } from '../usage-worktree-metadata'
 import type { ClaudeUsagePersistedState } from './types'
 import { createWorktreeRefs, getSessionProjectLabel, scanClaudeUsageFiles } from './scanner'
@@ -345,7 +347,7 @@ export class ClaudeUsageStore {
     // atomic temp-file pattern as the main store so a crash or concurrent write
     // cannot leave a truncated analytics file as the common failure mode.
     const tmpFile = `${usageFile}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
-    writeFileSync(tmpFile, JSON.stringify(this.state, null, 2), 'utf-8')
+    writeUtf8FileInChunksSync(tmpFile, JSON.stringify(this.state, null, 2))
     renameSync(tmpFile, usageFile)
   }
 
@@ -360,6 +362,21 @@ export class ClaudeUsageStore {
       ...this.state.scanState,
       isScanning: this.scanPromise !== null,
       hasAnyClaudeData: this.state.sessions.length > 0 || this.state.dailyAggregates.length > 0
+    }
+  }
+
+  getSnapshot(
+    scope: ClaudeUsageScope,
+    range: ClaudeUsageRange,
+    recentSessionLimit = 10
+  ): ClaudeUsageSnapshot {
+    return {
+      scanState: this.getScanState(),
+      summary: this.buildSummary(scope, range),
+      daily: this.buildDaily(scope, range),
+      modelBreakdown: this.buildBreakdown(scope, range, 'model'),
+      projectBreakdown: this.buildBreakdown(scope, range, 'project'),
+      recentSessions: this.buildRecentSessions(scope, range, recentSessionLimit)
     }
   }
 
@@ -417,6 +434,10 @@ export class ClaudeUsageStore {
 
   async getSummary(scope: ClaudeUsageScope, range: ClaudeUsageRange): Promise<ClaudeUsageSummary> {
     await this.refresh(false)
+    return this.buildSummary(scope, range)
+  }
+
+  private buildSummary(scope: ClaudeUsageScope, range: ClaudeUsageRange): ClaudeUsageSummary {
     const filteredDaily = this.getFilteredDaily(scope, range)
     const filteredSessions = this.getFilteredSessions(scope, range)
 
@@ -491,6 +512,10 @@ export class ClaudeUsageStore {
     range: ClaudeUsageRange
   ): Promise<ClaudeUsageDailyPoint[]> {
     await this.refresh(false)
+    return this.buildDaily(scope, range)
+  }
+
+  private buildDaily(scope: ClaudeUsageScope, range: ClaudeUsageRange): ClaudeUsageDailyPoint[] {
     const byDay = new Map<string, ClaudeUsageDailyPoint>()
     for (const row of this.getFilteredDaily(scope, range)) {
       const existing = byDay.get(row.day) ?? {
@@ -515,6 +540,14 @@ export class ClaudeUsageStore {
     kind: ClaudeUsageBreakdownKind
   ): Promise<ClaudeUsageBreakdownRow[]> {
     await this.refresh(false)
+    return this.buildBreakdown(scope, range, kind)
+  }
+
+  private buildBreakdown(
+    scope: ClaudeUsageScope,
+    range: ClaudeUsageRange,
+    kind: ClaudeUsageBreakdownKind
+  ): ClaudeUsageBreakdownRow[] {
     const rows = new Map<string, ClaudeUsageBreakdownRow>()
     const filteredDaily = this.getFilteredDaily(scope, range)
     const filteredSessions = this.getFilteredSessions(scope, range)
@@ -591,6 +624,14 @@ export class ClaudeUsageStore {
     limit = 12
   ): Promise<ClaudeUsageSessionRow[]> {
     await this.refresh(false)
+    return this.buildRecentSessions(scope, range, limit)
+  }
+
+  private buildRecentSessions(
+    scope: ClaudeUsageScope,
+    range: ClaudeUsageRange,
+    limit = 12
+  ): ClaudeUsageSessionRow[] {
     return this.getFilteredSessions(scope, range)
       .slice(0, limit)
       .map((session) => {

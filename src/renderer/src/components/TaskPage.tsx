@@ -36,8 +36,7 @@ import {
   X,
   FolderKanban,
   Tag,
-  UserRound,
-  AlertTriangle
+  UserRound
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -89,6 +88,7 @@ import { LinearScopeSelector } from '@/components/linear-scope-selector'
 import RepoBadgeLabel from '@/components/repo/RepoBadgeLabel'
 import IssueSourceIndicator, { sameGitHubOwnerRepo } from '@/components/github/IssueSourceIndicator'
 import IssueSourceSelector, { issueSourceChipClass } from '@/components/github/IssueSourceSelector'
+import { LinearPriorityIcon } from '@/components/linear-priority-icon'
 import { reconcileLinearTeamSelection } from '@/components/task-page-linear-team-selection'
 import { useConfirmationDialog } from '@/components/confirmation-dialog'
 import {
@@ -138,6 +138,7 @@ import {
 import type { LinkedWorkItemSummary } from '@/lib/new-workspace'
 import { buildLinearIssueLinkedWorkItem } from '@/lib/linear-linked-work-item'
 import { isGitRepoKind } from '../../../shared/repo-kind'
+import { getLinearIssueWorkspaceName } from '../../../shared/workspace-name'
 import {
   buildTaskPageRepoSourceState,
   deriveTaskPageGitHubWorkItemsFetchOptions,
@@ -188,9 +189,9 @@ import type {
   TaskViewPresetId
 } from '../../../shared/types'
 import {
-  LINEAR_PLAIN_ISSUE_LIST_MAX,
-  clampLinearPlainIssueListLimit
-} from '../../../shared/linear-issue-list-limits'
+  LINEAR_ISSUE_LIST_MAX,
+  clampLinearIssueListLimit
+} from '../../../shared/linear-issue-read-limits'
 import { shouldSuppressEnterSubmit } from '@/lib/new-workspace-enter-guard'
 import { useContextualTour } from '@/components/contextual-tours/use-contextual-tour'
 import { getScreenSubmitShortcutLabel, isScreenSubmitShortcut } from '@/lib/screen-submit-shortcut'
@@ -305,16 +306,6 @@ const SOURCE_OPTIONS: SourceOption[] = [
     label: 'Jira',
     Icon: ({ className }) => <JiraIcon className={className} />
   }
-]
-
-type LinearPresetId = 'assigned' | 'created' | 'all' | 'completed'
-type LinearPreset = { id: LinearPresetId; label: string }
-
-const LINEAR_PRESETS: LinearPreset[] = [
-  { id: 'all', label: 'All' },
-  { id: 'assigned', label: 'My Issues' },
-  { id: 'created', label: 'Created' },
-  { id: 'completed', label: 'Completed' }
 ]
 
 type JiraPresetId = 'assigned' | 'reported' | 'all' | 'done'
@@ -752,23 +743,23 @@ function groupLinearIssues(
 }
 
 function getLinearIssueGridTemplate(visibleProperties: ReadonlySet<LinearDisplayProperty>): string {
-  const columns = ['96px', 'minmax(180px,1.4fr)']
-  if (visibleProperties.has('state')) {
-    columns.push('140px')
-  }
-  if (visibleProperties.has('priority')) {
-    columns.push('92px')
-  }
-  if (visibleProperties.has('assignee')) {
-    columns.push('150px')
+  const columns = ['96px', 'minmax(240px,1.55fr)']
+  if (visibleProperties.has('labels')) {
+    columns.push('minmax(168px,0.9fr)')
   }
   if (visibleProperties.has('team')) {
-    columns.push('160px')
+    columns.push('minmax(172px,0.9fr)')
+  }
+  if (visibleProperties.has('state')) {
+    columns.push('138px')
+  }
+  if (visibleProperties.has('assignee')) {
+    columns.push('64px')
   }
   if (visibleProperties.has('updated')) {
-    columns.push('100px')
+    columns.push('104px')
   }
-  columns.push('72px')
+  columns.push('64px')
   return columns.join(' ')
 }
 
@@ -3144,12 +3135,15 @@ export default function TaskPage(): React.JSX.Element {
   const [linearMode, setLinearMode] = useState<LinearMode>('issues')
   const [linearIssues, setLinearIssues] = useState<LinearIssue[]>([])
   const [linearIssueLimit, setLinearIssueLimit] = useState(LINEAR_ITEM_LIMIT)
+  const [linearIssuePage, setLinearIssuePage] = useState(0)
+  const [linearIssueLoadingTargetPage, setLinearIssueLoadingTargetPage] = useState<number | null>(
+    null
+  )
   const [linearIssuesHasMore, setLinearIssuesHasMore] = useState(false)
   const [linearLoading, setLinearLoading] = useState(false)
   const [linearError, setLinearError] = useState<string | null>(null)
   const [linearSearchInput, setLinearSearchInput] = useState('')
   const [appliedLinearSearch, setAppliedLinearSearch] = useState('')
-  const [activeLinearPreset, setActiveLinearPreset] = useState<LinearPresetId>('all')
   const [linearViewMode, setLinearViewMode] = useState<LinearViewMode>('list')
   const [linearGroupBy, setLinearGroupBy] = useState<LinearGroupBy>('none')
   const [linearOrderBy, setLinearOrderBy] = useState<LinearOrderBy>('priority')
@@ -3176,6 +3170,11 @@ export default function TaskPage(): React.JSX.Element {
   const [linearProjectIssuesResult, setLinearProjectIssuesResult] = useState<
     LinearCollectionResult<LinearIssue>
   >({ items: [] })
+  const [linearProjectIssueLimit, setLinearProjectIssueLimit] = useState(LINEAR_ITEM_LIMIT)
+  const [linearProjectIssuePage, setLinearProjectIssuePage] = useState(0)
+  const [linearProjectIssueLoadingTargetPage, setLinearProjectIssueLoadingTargetPage] = useState<
+    number | null
+  >(null)
   const [linearProjectIssuesLoading, setLinearProjectIssuesLoading] = useState(false)
   const [linearProjectIssuesError, setLinearProjectIssuesError] = useState<string | null>(null)
   const [linearCustomViewModel, setLinearCustomViewModel] = useState<LinearCustomViewModel>('issue')
@@ -3191,6 +3190,10 @@ export default function TaskPage(): React.JSX.Element {
   const [linearCustomViewIssuesResult, setLinearCustomViewIssuesResult] = useState<
     LinearCollectionResult<LinearIssue>
   >({ items: [] })
+  const [linearCustomViewIssueLimit, setLinearCustomViewIssueLimit] = useState(LINEAR_ITEM_LIMIT)
+  const [linearCustomViewIssuePage, setLinearCustomViewIssuePage] = useState(0)
+  const [linearCustomViewIssueLoadingTargetPage, setLinearCustomViewIssueLoadingTargetPage] =
+    useState<number | null>(null)
   const [linearCustomViewProjectsResult, setLinearCustomViewProjectsResult] = useState<
     LinearCollectionResult<LinearProjectSummary>
   >({ items: [] })
@@ -3224,7 +3227,13 @@ export default function TaskPage(): React.JSX.Element {
       setSelectedLinearCustomView(null)
       setLinearProjectParentView(null)
       setLinearProjectIssuesResult({ items: [] })
+      setLinearProjectIssueLimit(LINEAR_ITEM_LIMIT)
+      setLinearProjectIssuePage(0)
+      setLinearProjectIssueLoadingTargetPage(null)
       setLinearCustomViewIssuesResult({ items: [] })
+      setLinearCustomViewIssueLimit(LINEAR_ITEM_LIMIT)
+      setLinearCustomViewIssuePage(0)
+      setLinearCustomViewIssueLoadingTargetPage(null)
       setLinearCustomViewProjectsResult({ items: [] })
       setLinearMode(mode)
       setTaskResumeState({ linearMode: mode, linearContext: undefined })
@@ -3248,7 +3257,13 @@ export default function TaskPage(): React.JSX.Element {
         setLinearCustomViewProjectsResult({ items: [] })
       }
       setLinearProjectIssuesResult({ items: [] })
+      setLinearProjectIssueLimit(LINEAR_ITEM_LIMIT)
+      setLinearProjectIssuePage(0)
+      setLinearProjectIssueLoadingTargetPage(null)
       setLinearCustomViewIssuesResult({ items: [] })
+      setLinearCustomViewIssueLimit(LINEAR_ITEM_LIMIT)
+      setLinearCustomViewIssuePage(0)
+      setLinearCustomViewIssueLoadingTargetPage(null)
       setSelectedLinearProject(project)
       setLinearProjectTab('overview')
       setLinearMode('projects')
@@ -3271,7 +3286,13 @@ export default function TaskPage(): React.JSX.Element {
       setSelectedLinearProjectDetail(null)
       setLinearProjectParentView(null)
       setLinearProjectIssuesResult({ items: [] })
+      setLinearProjectIssueLimit(LINEAR_ITEM_LIMIT)
+      setLinearProjectIssuePage(0)
+      setLinearProjectIssueLoadingTargetPage(null)
       setLinearCustomViewIssuesResult({ items: [] })
+      setLinearCustomViewIssueLimit(LINEAR_ITEM_LIMIT)
+      setLinearCustomViewIssuePage(0)
+      setLinearCustomViewIssueLoadingTargetPage(null)
       setLinearCustomViewProjectsResult({ items: [] })
       setSelectedLinearCustomView(view)
       setLinearMode('views')
@@ -3327,10 +3348,8 @@ export default function TaskPage(): React.JSX.Element {
       setActiveTaskPreset(presetId)
     }
 
-    const linearPreset = taskResumeState?.linearPreset ?? 'all'
     const linearQuery = taskResumeState?.linearQuery ?? ''
     setLinearMode(taskResumeState?.linearMode ?? 'issues')
-    setActiveLinearPreset(linearPreset)
     setLinearSearchInput(linearQuery)
     setAppliedLinearSearch(linearQuery)
 
@@ -3725,15 +3744,42 @@ export default function TaskPage(): React.JSX.Element {
     !activeLinearIssueContextLabel &&
     appliedLinearSearch.trim().length === 0 &&
     linearIssuesHasMore &&
-    linearIssueLimit < LINEAR_PLAIN_ISSUE_LIST_MAX
-  const handleLoadMoreLinearIssues = useCallback(() => {
-    setLinearIssueLimit((limit) =>
-      Math.min(
-        clampLinearPlainIssueListLimit(limit) + LINEAR_ITEM_LIMIT,
-        LINEAR_PLAIN_ISSUE_LIST_MAX
-      )
-    )
-  }, [])
+    linearIssueLimit < LINEAR_ISSUE_LIST_MAX
+  const canLoadMoreLinearProjectIssues =
+    selectedLinearProject !== null &&
+    linearProjectTab === 'issues' &&
+    Boolean(linearProjectIssuesResult.hasMore) &&
+    linearProjectIssueLimit < LINEAR_ISSUE_LIST_MAX
+  const canLoadMoreLinearCustomViewIssues =
+    selectedLinearCustomView?.model === 'issue' &&
+    Boolean(linearCustomViewIssuesResult.hasMore) &&
+    linearCustomViewIssueLimit < LINEAR_ISSUE_LIST_MAX
+  const activeLinearIssuePage =
+    selectedLinearProject && linearProjectTab === 'issues'
+      ? linearProjectIssuePage
+      : selectedLinearCustomView?.model === 'issue'
+        ? linearCustomViewIssuePage
+        : linearIssuePage
+  const activeLinearIssueLoadingTargetPage =
+    selectedLinearProject && linearProjectTab === 'issues'
+      ? linearProjectIssueLoadingTargetPage
+      : selectedLinearCustomView?.model === 'issue'
+        ? linearCustomViewIssueLoadingTargetPage
+        : linearIssueLoadingTargetPage
+  const activeLinearIssueCanLoadMore =
+    selectedLinearProject && linearProjectTab === 'issues'
+      ? canLoadMoreLinearProjectIssues
+      : selectedLinearCustomView?.model === 'issue'
+        ? canLoadMoreLinearCustomViewIssues
+        : canLoadMorePlainLinearIssues
+  const activeLinearIssueCanRequestMore =
+    activeLinearIssueCanLoadMore && !activeLinearIssueHasCollectionError
+  const activeLinearIssueLimit =
+    selectedLinearProject && linearProjectTab === 'issues'
+      ? linearProjectIssueLimit
+      : selectedLinearCustomView?.model === 'issue'
+        ? linearCustomViewIssueLimit
+        : linearIssueLimit
 
   const displayedLinearIssues = useMemo(
     () =>
@@ -3819,6 +3865,147 @@ export default function TaskPage(): React.JSX.Element {
     return displayedLinearIssues.filter((issue) => linearTeamSelection.has(issue.team.id))
   }, [activeLinearIssueContextLabel, displayedLinearIssues, linearTeamSelection])
 
+  const orderedLinearIssues = useMemo(
+    () => [...filteredLinearIssues].sort((a, b) => compareLinearIssues(a, b, linearOrderBy)),
+    [filteredLinearIssues, linearOrderBy]
+  )
+  const loadedLinearIssuePages = Math.max(
+    1,
+    Math.ceil(orderedLinearIssues.length / LINEAR_ITEM_LIMIT)
+  )
+  const linearIssueTotalPages =
+    orderedLinearIssues.length === 0
+      ? 1
+      : loadedLinearIssuePages + (activeLinearIssueCanRequestMore ? 1 : 0)
+  const visibleLinearIssuePage = Math.min(
+    activeLinearIssuePage,
+    Math.max(0, loadedLinearIssuePages - 1)
+  )
+  const pagedLinearIssues = useMemo(() => {
+    const start = visibleLinearIssuePage * LINEAR_ITEM_LIMIT
+    return orderedLinearIssues.slice(start, start + LINEAR_ITEM_LIMIT)
+  }, [orderedLinearIssues, visibleLinearIssuePage])
+  const showLinearIssuePagination =
+    orderedLinearIssues.length > 0 &&
+    !activeLinearIssueError &&
+    linearIssueTotalPages > 1 &&
+    !(activeLinearIssueLoading && activeLinearIssues.length === 0)
+
+  const setActiveLinearIssuePage = useCallback(
+    (page: number) => {
+      if (selectedLinearProject && linearProjectTab === 'issues') {
+        setLinearProjectIssuePage(page)
+      } else if (selectedLinearCustomView?.model === 'issue') {
+        setLinearCustomViewIssuePage(page)
+      } else {
+        setLinearIssuePage(page)
+      }
+    },
+    [linearProjectTab, selectedLinearCustomView?.model, selectedLinearProject]
+  )
+
+  const setActiveLinearIssueLoadingTargetPage = useCallback(
+    (page: number | null) => {
+      if (selectedLinearProject && linearProjectTab === 'issues') {
+        setLinearProjectIssueLoadingTargetPage(page)
+      } else if (selectedLinearCustomView?.model === 'issue') {
+        setLinearCustomViewIssueLoadingTargetPage(page)
+      } else {
+        setLinearIssueLoadingTargetPage(page)
+      }
+    },
+    [linearProjectTab, selectedLinearCustomView?.model, selectedLinearProject]
+  )
+
+  const ensureActiveLinearIssueLimit = useCallback(
+    (targetLimit: number) => {
+      const nextLimit = Math.min(clampLinearIssueListLimit(targetLimit), LINEAR_ISSUE_LIST_MAX)
+      if (selectedLinearProject && linearProjectTab === 'issues') {
+        setLinearProjectIssueLimit((limit) => Math.max(limit, nextLimit))
+      } else if (selectedLinearCustomView?.model === 'issue') {
+        setLinearCustomViewIssueLimit((limit) => Math.max(limit, nextLimit))
+      } else {
+        setLinearIssueLimit((limit) => Math.max(limit, nextLimit))
+      }
+    },
+    [linearProjectTab, selectedLinearCustomView?.model, selectedLinearProject]
+  )
+
+  const handleLinearIssuePageChange = useCallback(
+    (page: number) => {
+      if (page < loadedLinearIssuePages) {
+        setActiveLinearIssuePage(page)
+        setActiveLinearIssueLoadingTargetPage(null)
+        return
+      }
+
+      // Why: unlike GitHub's cursor pages, Linear reads are cached as an
+      // expanded prefix. Jumping to a new page first expands the prefix, then
+      // commits the page when the fetch returns enough rows.
+      setActiveLinearIssueLoadingTargetPage(page)
+      ensureActiveLinearIssueLimit((page + 1) * LINEAR_ITEM_LIMIT)
+    },
+    [
+      ensureActiveLinearIssueLimit,
+      loadedLinearIssuePages,
+      setActiveLinearIssueLoadingTargetPage,
+      setActiveLinearIssuePage
+    ]
+  )
+
+  const showLinearEmptyFilteredLoadMore =
+    orderedLinearIssues.length === 0 && !activeLinearIssueError && activeLinearIssueCanRequestMore
+  const handleLinearEmptyFilteredLoadMore = useCallback(() => {
+    setActiveLinearIssueLoadingTargetPage(null)
+    ensureActiveLinearIssueLimit(activeLinearIssueLimit + LINEAR_ITEM_LIMIT)
+  }, [activeLinearIssueLimit, ensureActiveLinearIssueLimit, setActiveLinearIssueLoadingTargetPage])
+
+  useEffect(() => {
+    if (activeLinearIssueLoading || activeLinearIssueLoadingTargetPage === null) {
+      return
+    }
+
+    const maxLoadedPage = Math.max(0, loadedLinearIssuePages - 1)
+    const targetPageLoaded = activeLinearIssueLoadingTargetPage <= maxLoadedPage
+    const targetPageCannotLoad =
+      !activeLinearIssueCanRequestMore || activeLinearIssueLimit >= LINEAR_ISSUE_LIST_MAX
+    if (targetPageLoaded || targetPageCannotLoad) {
+      setActiveLinearIssuePage(Math.min(activeLinearIssueLoadingTargetPage, maxLoadedPage))
+      setActiveLinearIssueLoadingTargetPage(null)
+      return
+    }
+
+    // Why: Linear can return more backend rows without immediately filling the
+    // next visible page after local team filtering. Keep expanding the prefix
+    // until the requested page exists or Linear reports exhaustion.
+    ensureActiveLinearIssueLimit(activeLinearIssueLimit + LINEAR_ITEM_LIMIT)
+  }, [
+    activeLinearIssueCanRequestMore,
+    activeLinearIssueHasCollectionError,
+    activeLinearIssueLimit,
+    activeLinearIssueLoading,
+    activeLinearIssueLoadingTargetPage,
+    ensureActiveLinearIssueLimit,
+    loadedLinearIssuePages,
+    setActiveLinearIssueLoadingTargetPage,
+    setActiveLinearIssuePage
+  ])
+
+  useEffect(() => {
+    if (
+      activeLinearIssueLoadingTargetPage !== null ||
+      activeLinearIssuePage <= visibleLinearIssuePage
+    ) {
+      return
+    }
+    setActiveLinearIssuePage(visibleLinearIssuePage)
+  }, [
+    activeLinearIssueLoadingTargetPage,
+    activeLinearIssuePage,
+    setActiveLinearIssuePage,
+    visibleLinearIssuePage
+  ])
+
   const selectedLinearTeamForExternalLink = useMemo(() => {
     if (linearTeamSelection.size !== 1) {
       return null
@@ -3860,8 +4047,8 @@ export default function TaskPage(): React.JSX.Element {
     [linearIssueGridTemplate]
   )
   const linearIssueSections = useMemo(
-    () => groupLinearIssues(filteredLinearIssues, linearGroupBy, linearOrderBy),
-    [filteredLinearIssues, linearGroupBy, linearOrderBy]
+    () => groupLinearIssues(pagedLinearIssues, linearGroupBy, linearOrderBy),
+    [pagedLinearIssues, linearGroupBy, linearOrderBy]
   )
   const linearIssueListRows = useMemo<LinearIssueListRow[]>(
     () =>
@@ -3885,11 +4072,11 @@ export default function TaskPage(): React.JSX.Element {
   const linearBoardSections = useMemo(
     () =>
       groupLinearIssues(
-        filteredLinearIssues,
+        pagedLinearIssues,
         linearGroupBy === 'none' ? 'status' : linearGroupBy,
         linearOrderBy
       ),
-    [filteredLinearIssues, linearGroupBy, linearOrderBy]
+    [pagedLinearIssues, linearGroupBy, linearOrderBy]
   )
   const linearStatusBoardEnabled = linearGroupBy === 'none' || linearGroupBy === 'status'
 
@@ -5454,8 +5641,9 @@ export default function TaskPage(): React.JSX.Element {
 
   useEffect(() => {
     setLinearIssueLimit(LINEAR_ITEM_LIMIT)
+    setLinearIssuePage(0)
+    setLinearIssueLoadingTargetPage(null)
   }, [
-    activeLinearPreset,
     appliedLinearSearch,
     linearMode,
     selectedLinearCustomView?.id,
@@ -5485,11 +5673,11 @@ export default function TaskPage(): React.JSX.Element {
     setLinearError(null)
 
     const trimmed = appliedLinearSearch.trim()
-    const effectiveLinearIssueLimit = clampLinearPlainIssueListLimit(linearIssueLimit)
+    const effectiveLinearIssueLimit = clampLinearIssueListLimit(linearIssueLimit)
     const readArgs =
       trimmed.length > 0
         ? ({ kind: 'search', query: trimmed, limit: LINEAR_ITEM_LIMIT } as const)
-        : ({ kind: 'list', filter: activeLinearPreset, limit: effectiveLinearIssueLimit } as const)
+        : ({ kind: 'list', filter: 'all', limit: effectiveLinearIssueLimit } as const)
     const cachedResult = getCachedLinearIssues(readArgs)
     if (readArgs.kind === 'search') {
       setLinearIssuesHasMore(false)
@@ -5500,14 +5688,14 @@ export default function TaskPage(): React.JSX.Element {
       const collection = cachedResult as LinearCollectionResult<LinearIssue>
       setLinearIssues(collection.items)
       setLinearIssuesHasMore(
-        Boolean(collection.hasMore) && effectiveLinearIssueLimit < LINEAR_PLAIN_ISSUE_LIST_MAX
+        Boolean(collection.hasMore) && effectiveLinearIssueLimit < LINEAR_ISSUE_LIST_MAX
       )
     }
 
     const requestSignature =
       trimmed.length > 0
         ? `${selectedLinearWorkspaceId ?? 'default'}::search::${trimmed}::${LINEAR_ITEM_LIMIT}`
-        : `${selectedLinearWorkspaceId ?? 'default'}::list::${activeLinearPreset}::${effectiveLinearIssueLimit}`
+        : `${selectedLinearWorkspaceId ?? 'default'}::list::all::${effectiveLinearIssueLimit}`
     const previousRequest = lastLinearRequestRef.current
     const forceRefresh =
       linearRefreshNonce > 0 &&
@@ -5560,7 +5748,7 @@ export default function TaskPage(): React.JSX.Element {
         } else {
           const collection = result as LinearCollectionResult<LinearIssue>
           setLinearIssuesHasMore(
-            Boolean(collection.hasMore) && effectiveLinearIssueLimit < LINEAR_PLAIN_ISSUE_LIST_MAX
+            Boolean(collection.hasMore) && effectiveLinearIssueLimit < LINEAR_ISSUE_LIST_MAX
           )
           setLinearIssues((current) =>
             shouldProbeOnLanding
@@ -5594,7 +5782,6 @@ export default function TaskPage(): React.JSX.Element {
     linearConnected,
     selectedLinearWorkspaceId,
     appliedLinearSearch,
-    activeLinearPreset,
     linearIssueLimit,
     linearRefreshNonce,
     taskResumeApplied,
@@ -5704,10 +5891,11 @@ export default function TaskPage(): React.JSX.Element {
     let cancelled = false
     setLinearProjectIssuesLoading(true)
     setLinearProjectIssuesError(null)
+    const effectiveLimit = clampLinearIssueListLimit(linearProjectIssueLimit)
     void listLinearProjectIssues(
       selectedLinearProject.id,
       selectedLinearProject.workspaceId,
-      LINEAR_ITEM_LIMIT,
+      effectiveLimit,
       { force: linearRefreshNonce > 0 }
     )
       .then((result) => {
@@ -5727,7 +5915,13 @@ export default function TaskPage(): React.JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [linearProjectTab, linearRefreshNonce, listLinearProjectIssues, selectedLinearProject])
+  }, [
+    linearProjectIssueLimit,
+    linearProjectTab,
+    linearRefreshNonce,
+    listLinearProjectIssues,
+    selectedLinearProject
+  ])
 
   useEffect(() => {
     if (!taskResumeApplied || taskSource !== 'linear' || linearMode !== 'views') {
@@ -5784,12 +5978,13 @@ export default function TaskPage(): React.JSX.Element {
     let cancelled = false
     setLinearCustomViewContentsLoading(true)
     setLinearCustomViewContentsError(null)
+    const issueLimit = clampLinearIssueListLimit(linearCustomViewIssueLimit)
     const request =
       selectedLinearCustomView.model === 'issue'
         ? listLinearCustomViewIssues(
             selectedLinearCustomView.id,
             selectedLinearCustomView.workspaceId,
-            LINEAR_ITEM_LIMIT,
+            issueLimit,
             { force: linearRefreshNonce > 0 }
           )
         : listLinearCustomViewProjects(
@@ -5823,6 +6018,7 @@ export default function TaskPage(): React.JSX.Element {
     }
   }, [
     linearRefreshNonce,
+    linearCustomViewIssueLimit,
     listLinearCustomViewIssues,
     listLinearCustomViewProjects,
     selectedLinearCustomView
@@ -5976,7 +6172,7 @@ export default function TaskPage(): React.JSX.Element {
       const linkedWorkItem = buildLinearIssueLinkedWorkItem(issue, renderedText)
       openModal('new-workspace-composer', {
         linkedWorkItem,
-        prefilledName: getLinkedWorkItemSuggestedName(issue),
+        prefilledName: getLinearIssueWorkspaceName(issue),
         telemetrySource: 'sidebar'
       })
     },
@@ -6668,85 +6864,53 @@ export default function TaskPage(): React.JSX.Element {
                     </div>
 
                     {linearMode === 'issues' ? (
-                      <>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {LINEAR_PRESETS.map((preset) => {
-                            const active = !linearSearchInput && activeLinearPreset === preset.id
-                            return (
-                              <button
-                                key={preset.id}
-                                type="button"
-                                onClick={() => {
-                                  setLinearSearchInput('')
-                                  setAppliedLinearSearch('')
-                                  setActiveLinearPreset(preset.id)
-                                  setTaskResumeState({
-                                    linearPreset: preset.id,
-                                    linearQuery: '',
-                                    linearMode: 'issues'
-                                  })
-                                  setLinearRefreshNonce((n) => n + 1)
-                                }}
-                                className={cn(
-                                  'rounded-md border px-2 py-1 text-xs transition',
-                                  active
-                                    ? 'border-border/50 bg-foreground/90 text-background backdrop-blur-md'
-                                    : 'border-border/50 bg-transparent text-foreground hover:bg-muted/50'
-                                )}
-                              >
-                                {preset.label}
-                              </button>
-                            )
-                          })}
-                        </div>
-                        <div className="mt-3 flex min-w-0 items-center gap-3">
-                          <div className="relative min-w-0 flex-1 basis-64">
-                            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                            <Input
-                              value={linearSearchInput}
-                              onChange={(e) => setLinearSearchInput(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  if (
-                                    shouldSuppressEnterSubmit(
-                                      {
-                                        isComposing: e.nativeEvent.isComposing,
-                                        shiftKey: e.shiftKey
-                                      },
-                                      false
-                                    )
-                                  ) {
-                                    return
-                                  }
-                                  e.preventDefault()
-                                  const trimmed = linearSearchInput.trim()
-                                  setLinearSearchInput(trimmed)
-                                  setAppliedLinearSearch(trimmed)
-                                  setTaskResumeState({ linearQuery: trimmed, linearMode: 'issues' })
-                                  setLinearRefreshNonce((n) => n + 1)
+                      <div className="mt-3 flex min-w-0 items-center gap-3">
+                        <div className="relative min-w-0 flex-1 basis-64">
+                          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                          <Input
+                            value={linearSearchInput}
+                            onChange={(e) => setLinearSearchInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                if (
+                                  shouldSuppressEnterSubmit(
+                                    {
+                                      isComposing: e.nativeEvent.isComposing,
+                                      shiftKey: e.shiftKey
+                                    },
+                                    false
+                                  )
+                                ) {
+                                  return
                                 }
+                                e.preventDefault()
+                                const trimmed = linearSearchInput.trim()
+                                setLinearSearchInput(trimmed)
+                                setAppliedLinearSearch(trimmed)
+                                setTaskResumeState({ linearQuery: trimmed, linearMode: 'issues' })
+                                setLinearRefreshNonce((n) => n + 1)
+                              }
+                            }}
+                            placeholder="Search Linear issues..."
+                            className="h-8 rounded-md border-border/50 bg-background pl-8 pr-8 text-xs"
+                          />
+                          {linearSearchInput ? (
+                            <button
+                              type="button"
+                              aria-label="Clear search"
+                              onClick={() => {
+                                setLinearSearchInput('')
+                                setAppliedLinearSearch('')
+                                setTaskResumeState({ linearQuery: '', linearMode: 'issues' })
+                                setLinearRefreshNonce((n) => n + 1)
                               }}
-                              placeholder="Search Linear issues..."
-                              className="h-8 rounded-md border-border/50 bg-background pl-8 pr-8 text-xs"
-                            />
-                            {linearSearchInput ? (
-                              <button
-                                type="button"
-                                aria-label="Clear search"
-                                onClick={() => {
-                                  setLinearSearchInput('')
-                                  setAppliedLinearSearch('')
-                                  setTaskResumeState({ linearQuery: '', linearMode: 'issues' })
-                                  setLinearRefreshNonce((n) => n + 1)
-                                }}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition hover:text-foreground"
-                              >
-                                <X className="size-4" />
-                              </button>
-                            ) : null}
-                          </div>
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition hover:text-foreground"
+                            >
+                              <X className="size-4" />
+                            </button>
+                          ) : null}
                         </div>
-                      </>
+                      </div>
                     ) : linearMode === 'projects' && !selectedLinearProject ? (
                       <div className="mt-3 flex min-w-0 items-center gap-3">
                         <div className="relative min-w-0 flex-1 basis-64">
@@ -8356,7 +8520,7 @@ export default function TaskPage(): React.JSX.Element {
                     </DropdownMenuContent>
                   </DropdownMenu>
                   <div className="text-[11px] text-muted-foreground">
-                    {filteredLinearIssues.length} shown
+                    {pagedLinearIssues.length} shown
                   </div>
                 </div>
               </div>
@@ -8368,10 +8532,12 @@ export default function TaskPage(): React.JSX.Element {
                 >
                   <span>Key</span>
                   <span>Issue</span>
-                  {effectiveLinearDisplayProperties.has('state') ? <span>Status</span> : null}
-                  {effectiveLinearDisplayProperties.has('priority') ? <span>Priority</span> : null}
-                  {effectiveLinearDisplayProperties.has('assignee') ? <span>Assignee</span> : null}
+                  {effectiveLinearDisplayProperties.has('labels') ? <span>Labels</span> : null}
                   {effectiveLinearDisplayProperties.has('team') ? <span>Team</span> : null}
+                  {effectiveLinearDisplayProperties.has('state') ? <span>Status</span> : null}
+                  {effectiveLinearDisplayProperties.has('assignee') ? (
+                    <span className="text-center">Assignee</span>
+                  ) : null}
                   {effectiveLinearDisplayProperties.has('updated') ? <span>Updated</span> : null}
                   <span />
                 </div>
@@ -8511,8 +8677,14 @@ export default function TaskPage(): React.JSX.Element {
                               >
                                 <div className="flex min-w-0 items-start justify-between gap-2">
                                   <div className="min-w-0">
-                                    <div className="font-mono text-[11px] text-muted-foreground">
-                                      {issue.identifier}
+                                    <div className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                                      {effectiveLinearDisplayProperties.has('priority') ? (
+                                        <LinearPriorityIcon
+                                          priority={issue.priority}
+                                          className="size-3.5"
+                                        />
+                                      ) : null}
+                                      <span className="truncate">{issue.identifier}</span>
                                     </div>
                                     <h3 className="mt-1 line-clamp-2 text-[13px] font-medium leading-snug text-foreground">
                                       {issue.title}
@@ -8547,9 +8719,6 @@ export default function TaskPage(): React.JSX.Element {
                                 <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                                   {effectiveLinearDisplayProperties.has('state') ? (
                                     <LinearStateCell issue={issue} className="px-1.5 py-0.5" />
-                                  ) : null}
-                                  {effectiveLinearDisplayProperties.has('priority') ? (
-                                    <span>{getLinearPriorityLabel(issue.priority)}</span>
                                   ) : null}
                                   {effectiveLinearDisplayProperties.has('assignee') ? (
                                     <span>{issue.assignee?.displayName ?? 'Unassigned'}</span>
@@ -8638,12 +8807,17 @@ export default function TaskPage(): React.JSX.Element {
                           )}
                           style={linearIssueGridStyle}
                         >
-                          <span className="block truncate font-mono text-[12px] text-muted-foreground max-lg:!hidden">
-                            {issue.identifier}
-                          </span>
+                          <div className="flex min-w-0 items-center gap-2 max-lg:!hidden">
+                            <span className="min-w-0 truncate font-mono text-[12px] text-muted-foreground">
+                              {issue.identifier}
+                            </span>
+                          </div>
 
                           <div className="min-w-0">
                             <div className="flex min-w-0 items-center gap-2">
+                              {effectiveLinearDisplayProperties.has('priority') ? (
+                                <LinearPriorityIcon priority={issue.priority} />
+                              ) : null}
                               <span className="shrink-0 font-mono text-[11px] text-muted-foreground lg:hidden">
                                 {issue.identifier}
                               </span>
@@ -8654,11 +8828,6 @@ export default function TaskPage(): React.JSX.Element {
                             <div className="mt-1 flex min-w-0 items-center gap-1.5 lg:!hidden">
                               {effectiveLinearDisplayProperties.has('state') ? (
                                 <LinearStateCell issue={issue} className="px-1.5 py-0.5" />
-                              ) : null}
-                              {effectiveLinearDisplayProperties.has('priority') ? (
-                                <span className="shrink-0 text-[11px] text-muted-foreground">
-                                  {getLinearPriorityLabel(issue.priority)}
-                                </span>
                               ) : null}
                               {effectiveLinearDisplayProperties.has('assignee') ? (
                                 <span className="min-w-0 truncate text-[11px] text-muted-foreground">
@@ -8671,24 +8840,31 @@ export default function TaskPage(): React.JSX.Element {
                                 </span>
                               ) : null}
                             </div>
-                            {effectiveLinearDisplayProperties.has('labels') ? (
-                              <div className="mt-1 flex min-w-0 items-center gap-1 max-lg:!hidden">
-                                {labels.map((label) => (
-                                  <span
-                                    key={label}
-                                    className="max-w-[140px] truncate rounded-full border border-border/50 bg-muted/35 px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                                  >
-                                    {label}
-                                  </span>
-                                ))}
-                                {issue.labels.length > labels.length ? (
-                                  <span className="text-[10px] text-muted-foreground">
-                                    +{issue.labels.length - labels.length}
-                                  </span>
-                                ) : null}
-                              </div>
-                            ) : null}
                           </div>
+
+                          {effectiveLinearDisplayProperties.has('labels') ? (
+                            <div className="flex min-w-0 items-center gap-1 max-lg:!hidden">
+                              {labels.map((label) => (
+                                <span
+                                  key={label}
+                                  className="max-w-[150px] truncate rounded-full border border-border/50 bg-muted/35 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                                >
+                                  {label}
+                                </span>
+                              ))}
+                              {issue.labels.length > labels.length ? (
+                                <span className="text-[11px] text-muted-foreground">
+                                  +{issue.labels.length - labels.length}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+
+                          {effectiveLinearDisplayProperties.has('team') ? (
+                            <div className="block min-w-0 text-[12px] text-muted-foreground max-lg:!hidden">
+                              <div className="truncate">{teamLabel}</div>
+                            </div>
+                          ) : null}
 
                           {effectiveLinearDisplayProperties.has('state') ? (
                             <div className="flex min-w-0 max-lg:!hidden">
@@ -8696,34 +8872,29 @@ export default function TaskPage(): React.JSX.Element {
                             </div>
                           ) : null}
 
-                          {effectiveLinearDisplayProperties.has('priority') ? (
-                            <span className="block truncate text-[12px] text-muted-foreground max-lg:!hidden">
-                              {getLinearPriorityLabel(issue.priority)}
-                            </span>
-                          ) : null}
-
                           {effectiveLinearDisplayProperties.has('assignee') ? (
-                            <div className="flex min-w-0 items-center gap-2 text-[12px] text-muted-foreground max-lg:!hidden">
-                              {issue.assignee?.avatarUrl ? (
-                                <img
-                                  src={issue.assignee.avatarUrl}
-                                  alt={issue.assignee.displayName}
-                                  className="size-5 shrink-0 rounded-full"
-                                />
-                              ) : (
-                                <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-border/50 bg-muted/40 text-[10px]">
-                                  {issue.assignee?.displayName?.slice(0, 1) ?? '-'}
-                                </span>
-                              )}
-                              <span className="truncate">
-                                {issue.assignee?.displayName ?? 'Unassigned'}
-                              </span>
-                            </div>
-                          ) : null}
-
-                          {effectiveLinearDisplayProperties.has('team') ? (
-                            <div className="block min-w-0 text-[12px] text-muted-foreground max-lg:!hidden">
-                              <div className="truncate">{teamLabel}</div>
+                            <div className="flex min-w-0 justify-center max-lg:!hidden">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div
+                                    className="flex size-5 shrink-0 items-center justify-center rounded-full border border-border/50 bg-muted/40 text-[10px] text-muted-foreground"
+                                    aria-label={issue.assignee?.displayName ?? 'Unassigned'}
+                                  >
+                                    {issue.assignee?.avatarUrl ? (
+                                      <img
+                                        src={issue.assignee.avatarUrl}
+                                        alt={issue.assignee.displayName}
+                                        className="size-5 rounded-full"
+                                      />
+                                    ) : (
+                                      (issue.assignee?.displayName?.slice(0, 1) ?? '-')
+                                    )}
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom" sideOffset={6}>
+                                  {issue.assignee?.displayName ?? 'Unassigned'}
+                                </TooltipContent>
+                              </Tooltip>
                             </div>
                           ) : null}
 
@@ -8786,27 +8957,70 @@ export default function TaskPage(): React.JSX.Element {
                 )}
               </div>
               {selectedLinearProject && linearProjectTab === 'issues' ? (
-                <LinearCollectionNotice
-                  errors={linearProjectIssuesResult.errors}
-                  hasMore={linearProjectIssuesResult.hasMore}
-                  count={linearProjectIssuesResult.items.length}
-                  label="project issues"
-                />
+                <>
+                  <LinearCollectionNotice
+                    errors={linearProjectIssuesResult.errors}
+                    hasMore={showLinearEmptyFilteredLoadMore}
+                    count={linearProjectIssuesResult.items.length}
+                    label="project issues"
+                    onLoadMore={handleLinearEmptyFilteredLoadMore}
+                    loading={activeLinearIssueLoading}
+                    loadMoreLabel="Fetch more"
+                  />
+                  {showLinearIssuePagination ? (
+                    <div className="flex-none border-t border-border/50 bg-muted/50">
+                      <PaginationBar
+                        currentPage={visibleLinearIssuePage}
+                        totalPages={linearIssueTotalPages}
+                        loadingTarget={activeLinearIssueLoadingTargetPage}
+                        onPageChange={handleLinearIssuePageChange}
+                      />
+                    </div>
+                  ) : null}
+                </>
               ) : selectedLinearCustomView?.model === 'issue' ? (
-                <LinearCollectionNotice
-                  errors={linearCustomViewIssuesResult.errors}
-                  hasMore={linearCustomViewIssuesResult.hasMore}
-                  count={linearCustomViewIssuesResult.items.length}
-                  label="view issues"
-                />
+                <>
+                  <LinearCollectionNotice
+                    errors={linearCustomViewIssuesResult.errors}
+                    hasMore={showLinearEmptyFilteredLoadMore}
+                    count={linearCustomViewIssuesResult.items.length}
+                    label="view issues"
+                    onLoadMore={handleLinearEmptyFilteredLoadMore}
+                    loading={activeLinearIssueLoading}
+                    loadMoreLabel="Fetch more"
+                  />
+                  {showLinearIssuePagination ? (
+                    <div className="flex-none border-t border-border/50 bg-muted/50">
+                      <PaginationBar
+                        currentPage={visibleLinearIssuePage}
+                        totalPages={linearIssueTotalPages}
+                        loadingTarget={activeLinearIssueLoadingTargetPage}
+                        onPageChange={handleLinearIssuePageChange}
+                      />
+                    </div>
+                  ) : null}
+                </>
               ) : (
-                <LinearCollectionNotice
-                  hasMore={canLoadMorePlainLinearIssues}
-                  count={linearIssues.length}
-                  label="issues"
-                  onLoadMore={handleLoadMoreLinearIssues}
-                  loading={linearLoading}
-                />
+                <>
+                  <LinearCollectionNotice
+                    hasMore={showLinearEmptyFilteredLoadMore}
+                    count={linearIssues.length}
+                    label="issues"
+                    onLoadMore={handleLinearEmptyFilteredLoadMore}
+                    loading={activeLinearIssueLoading}
+                    loadMoreLabel="Fetch more"
+                  />
+                  {showLinearIssuePagination ? (
+                    <div className="flex-none border-t border-border/50 bg-muted/50">
+                      <PaginationBar
+                        currentPage={visibleLinearIssuePage}
+                        totalPages={linearIssueTotalPages}
+                        loadingTarget={activeLinearIssueLoadingTargetPage}
+                        onPageChange={handleLinearIssuePageChange}
+                      />
+                    </div>
+                  ) : null}
+                </>
               )}
             </div>
           )}
@@ -9273,19 +9487,7 @@ export default function TaskPage(): React.JSX.Element {
                     disabled={newLinearIssueSubmitting}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs border border-border/80 bg-muted/15 hover:bg-muted/50 active:bg-muted transition-colors text-foreground/80 cursor-pointer disabled:opacity-50"
                   >
-                    <AlertTriangle
-                      className={`size-3.5 ${
-                        newLinearIssuePriority === 1
-                          ? 'text-rose-500'
-                          : newLinearIssuePriority === 2
-                            ? 'text-amber-500'
-                            : newLinearIssuePriority === 3
-                              ? 'text-yellow-500 font-medium'
-                              : newLinearIssuePriority === 4
-                                ? 'text-blue-400'
-                                : 'text-muted-foreground/70'
-                      }`}
-                    />
+                    <LinearPriorityIcon priority={newLinearIssuePriority} className="size-3.5" />
                     <span>
                       {newLinearIssuePriority === 1
                         ? 'Urgent'
@@ -9322,19 +9524,7 @@ export default function TaskPage(): React.JSX.Element {
                       }`}
                     >
                       <div className="flex items-center gap-2">
-                        <AlertTriangle
-                          className={`size-3.5 ${
-                            p.val === 1
-                              ? 'text-rose-500'
-                              : p.val === 2
-                                ? 'text-amber-500'
-                                : p.val === 3
-                                  ? 'text-yellow-500'
-                                  : p.val === 4
-                                    ? 'text-blue-400'
-                                    : 'text-muted-foreground/50'
-                          }`}
-                        />
+                        <LinearPriorityIcon priority={p.val} className="size-3.5" />
                         <span>{p.label}</span>
                       </div>
                       {newLinearIssuePriority === p.val && (

@@ -148,7 +148,7 @@ describe('buildNewWorkspaceShortcutModalData', () => {
     } as never)
 
     expect(data.telemetrySource).toBe('shortcut')
-    expect(data.prefilledName).toBe('fix-linear-context-handoff')
+    expect(data.prefilledName).toBe('eng-123-fix-linear-context-handoff')
     expect(data.linkedWorkItem).toMatchObject({
       type: 'issue',
       number: 0,
@@ -1078,7 +1078,12 @@ describe('useIpcEvents updater integration', () => {
             leafId?: string
             splitFromLeafId?: string
             splitDirection?: 'horizontal' | 'vertical'
-            splitTelemetrySource?: 'contextual_tour' | 'keyboard' | 'context_menu' | 'command' | 'unknown'
+            splitTelemetrySource?:
+              | 'contextual_tour'
+              | 'keyboard'
+              | 'context_menu'
+              | 'command'
+              | 'unknown'
           }) => void)
         | null
     } = { current: null }
@@ -1190,7 +1195,12 @@ describe('useIpcEvents updater integration', () => {
               leafId?: string
               splitFromLeafId?: string
               splitDirection?: 'horizontal' | 'vertical'
-              splitTelemetrySource?: 'contextual_tour' | 'keyboard' | 'context_menu' | 'command' | 'unknown'
+              splitTelemetrySource?:
+                | 'contextual_tour'
+                | 'keyboard'
+                | 'context_menu'
+                | 'command'
+                | 'unknown'
             }) => void
           ) => {
             createTerminalListenerRef.current = listener
@@ -2501,6 +2511,15 @@ describe('useIpcEvents agent status snapshot integration', () => {
     toolInput?: string
     lastAssistantMessage?: string
     interrupted?: boolean
+    terminalHandle?: string
+    orchestration?: {
+      taskId?: string
+      dispatchId?: string
+      parentTerminalHandle?: string
+      parentPaneKey?: string
+      coordinatorHandle?: string
+      orchestrationRunId?: string
+    }
     connectionId?: string | null
     receivedAt: number
     stateStartedAt: number
@@ -2572,6 +2591,7 @@ describe('useIpcEvents agent status snapshot integration', () => {
 
   function buildWindowApi(args: {
     onSet: (cb: (data: AgentStatusSetData) => void) => () => void
+    onClear?: (cb: (data: { paneKey: string }) => void) => () => void
     getSnapshot?: () => Promise<AgentStatusSetData[]>
     drop?: (paneKey: string) => void
     remoteWorkspace?: Record<string, unknown>
@@ -2671,6 +2691,7 @@ describe('useIpcEvents agent status snapshot integration', () => {
         },
         agentStatus: {
           onSet: args.onSet,
+          onClear: args.onClear ?? vi.fn(() => () => {}),
           getSnapshot: args.getSnapshot ?? vi.fn(() => Promise.resolve([])),
           drop: args.drop ?? vi.fn()
         },
@@ -3092,6 +3113,157 @@ describe('useIpcEvents agent status snapshot integration', () => {
       { updatedAt: 1_700_000_000_200, stateStartedAt: 1_699_999_999_100 },
       expectWorktreeRouting('wt-1')
     )
+  })
+
+  it('clears a worktree-attributed live row when main reports pane teardown', async () => {
+    const setAgentStatus = vi.fn()
+    const removeAgentStatus = vi.fn()
+    const onSetListenerRef: { current: ((data: AgentStatusSetData) => void) | null } = {
+      current: null
+    }
+    const onClearListenerRef: { current: ((data: { paneKey: string }) => void) | null } = {
+      current: null
+    }
+
+    const storeState: StoreLike = buildStoreState({
+      setAgentStatus,
+      removeAgentStatus,
+      workspaceSessionReady: true,
+      settings: { terminalFontSize: 13, notifications: { enabled: false } },
+      repos: [{ id: 'repo-1', connectionId: null }],
+      worktreesByRepo: { 'repo-1': [{ id: 'wt-1', repoId: 'repo-1' }] },
+      tabsByWorktree: { 'wt-1': [] },
+      terminalLayoutsByTabId: {},
+      agentStatusByPaneKey: {
+        [FUTURE_PANE_KEY]: {
+          state: 'working',
+          prompt: 'hidden worker',
+          agentType: 'codex',
+          updatedAt: 1_700_000_000_200,
+          stateStartedAt: 1_700_000_000_000,
+          paneKey: FUTURE_PANE_KEY,
+          worktreeId: 'wt-1',
+          stateHistory: []
+        }
+      }
+    })
+
+    stubReactSyncEffect()
+    vi.doMock('../store', () => ({
+      useAppStore: {
+        subscribe: vi.fn(() => () => {}),
+        getState: () => storeState
+      }
+    }))
+    stubAuxiliaryModules()
+    vi.stubGlobal(
+      'window',
+      buildWindowApi({
+        onSet: (cb) => {
+          onSetListenerRef.current = cb
+          return () => {}
+        },
+        onClear: (cb) => {
+          onClearListenerRef.current = cb
+          return () => {}
+        }
+      })
+    )
+
+    const { useIpcEvents } = await import('./useIpcEvents')
+
+    useIpcEvents()
+    await Promise.resolve()
+
+    if (typeof onSetListenerRef.current !== 'function') {
+      throw new Error('Expected agentStatus.onSet listener to be registered')
+    }
+    if (typeof onClearListenerRef.current !== 'function') {
+      throw new Error('Expected agentStatus.onClear listener to be registered')
+    }
+
+    onSetListenerRef.current({
+      paneKey: FUTURE_PANE_KEY,
+      state: 'working',
+      prompt: 'hidden worker',
+      agentType: 'codex',
+      worktreeId: 'wt-1',
+      receivedAt: 1_700_000_000_200,
+      stateStartedAt: 1_700_000_000_000,
+      orchestration: {
+        parentPaneKey: 'parent-tab:11111111-1111-4111-8111-111111111111'
+      }
+    })
+
+    expect(setAgentStatus).toHaveBeenCalledTimes(1)
+    expect(setAgentStatus).toHaveBeenCalledWith(
+      FUTURE_PANE_KEY,
+      expect.objectContaining({ state: 'working', prompt: 'hidden worker', agentType: 'codex' }),
+      undefined,
+      { updatedAt: 1_700_000_000_200, stateStartedAt: 1_700_000_000_000 },
+      expectWorktreeRouting('wt-1')
+    )
+
+    onClearListenerRef.current({ paneKey: FUTURE_PANE_KEY })
+
+    expect(removeAgentStatus).toHaveBeenCalledTimes(1)
+    expect(removeAgentStatus).toHaveBeenCalledWith(FUTURE_PANE_KEY)
+  })
+
+  it('keeps a completed worktree-attributed row when main reports pane teardown', async () => {
+    const removeAgentStatus = vi.fn()
+    const onClearListenerRef: { current: ((data: { paneKey: string }) => void) | null } = {
+      current: null
+    }
+
+    const storeState: StoreLike = buildStoreState({
+      removeAgentStatus,
+      workspaceSessionReady: true,
+      agentStatusByPaneKey: {
+        [FUTURE_PANE_KEY]: {
+          state: 'done',
+          prompt: 'hidden worker',
+          agentType: 'codex',
+          updatedAt: 1_700_000_000_200,
+          stateStartedAt: 1_700_000_000_000,
+          paneKey: FUTURE_PANE_KEY,
+          worktreeId: 'wt-1',
+          stateHistory: []
+        }
+      }
+    })
+
+    stubReactSyncEffect()
+    vi.doMock('../store', () => ({
+      useAppStore: {
+        subscribe: vi.fn(() => () => {}),
+        getState: () => storeState
+      }
+    }))
+    stubAuxiliaryModules()
+    vi.stubGlobal(
+      'window',
+      buildWindowApi({
+        onSet: () => () => {},
+        onClear: (cb) => {
+          onClearListenerRef.current = cb
+          return () => {}
+        }
+      })
+    )
+
+    const { useIpcEvents } = await import('./useIpcEvents')
+
+    useIpcEvents()
+    await Promise.resolve()
+
+    if (typeof onClearListenerRef.current !== 'function') {
+      throw new Error('Expected agentStatus.onClear listener to be registered')
+    }
+
+    onClearListenerRef.current({ paneKey: FUTURE_PANE_KEY })
+
+    expect(removeAgentStatus).not.toHaveBeenCalled()
   })
 
   it('does not retain a Cursor spinner terminal title when the hook reports done', async () => {
@@ -3991,6 +4163,140 @@ describe('useIpcEvents agent status snapshot integration', () => {
     await Promise.resolve()
 
     expect(setAgentStatus).not.toHaveBeenCalled()
+  })
+
+  it('silently discards stale worktree-attributed snapshots for unknown panes', async () => {
+    const setAgentStatus = vi.fn()
+    const getSnapshot = vi.fn(() =>
+      Promise.resolve([
+        {
+          paneKey: ORPHAN_PANE_KEY,
+          state: 'done' as const,
+          prompt: 'old copilot turn',
+          agentType: 'copilot',
+          worktreeId: 'wt-1',
+          receivedAt: 1_700_000_000_000,
+          stateStartedAt: 1_699_999_999_000
+        }
+      ])
+    )
+
+    const storeState: StoreLike = buildStoreState({
+      setAgentStatus,
+      repos: [{ id: 'repo-1', connectionId: null }],
+      worktreesByRepo: { 'repo-1': [{ id: 'wt-1', repoId: 'repo-1' }] },
+      tabsByWorktree: {
+        'wt-1': [{ id: 'tab-future', ptyId: 'pty-1', worktreeId: 'wt-1', title: 'Copilot' }]
+      },
+      terminalLayoutsByTabId: {
+        'tab-future': {
+          root: { type: 'leaf', leafId: FUTURE_LEAF_ID },
+          activeLeafId: FUTURE_LEAF_ID,
+          expandedLeafId: null
+        }
+      },
+      workspaceSessionReady: true
+    })
+
+    stubReactSyncEffect()
+    vi.doMock('../store', () => ({
+      useAppStore: {
+        subscribe: vi.fn(() => () => {}),
+        getState: () => storeState
+      }
+    }))
+    stubAuxiliaryModules()
+    vi.stubGlobal(
+      'window',
+      buildWindowApi({
+        getSnapshot,
+        onSet: () => () => {}
+      })
+    )
+
+    const { useIpcEvents } = await import('./useIpcEvents')
+
+    useIpcEvents()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(setAgentStatus).not.toHaveBeenCalled()
+  })
+
+  it('applies worktree-attributed child snapshots when runtime identity is present', async () => {
+    const setAgentStatus = vi.fn()
+    const getSnapshot = vi.fn(() =>
+      Promise.resolve([
+        {
+          paneKey: ORPHAN_PANE_KEY,
+          state: 'working' as const,
+          prompt: 'child task',
+          agentType: 'codex',
+          worktreeId: 'wt-1',
+          terminalHandle: 'term-child',
+          orchestration: {
+            taskId: 'task-child',
+            dispatchId: 'dispatch-child',
+            parentTerminalHandle: 'term-parent'
+          },
+          receivedAt: 1_700_000_000_000,
+          stateStartedAt: 1_699_999_999_000
+        }
+      ])
+    )
+
+    const storeState: StoreLike = buildStoreState({
+      setAgentStatus,
+      repos: [{ id: 'repo-1', connectionId: null }],
+      worktreesByRepo: { 'repo-1': [{ id: 'wt-1', repoId: 'repo-1' }] },
+      tabsByWorktree: {
+        'wt-1': [{ id: 'tab-future', ptyId: 'pty-1', worktreeId: 'wt-1', title: 'Codex' }]
+      },
+      terminalLayoutsByTabId: {
+        'tab-future': {
+          root: { type: 'leaf', leafId: FUTURE_LEAF_ID },
+          activeLeafId: FUTURE_LEAF_ID,
+          expandedLeafId: null
+        }
+      },
+      workspaceSessionReady: true
+    })
+
+    stubReactSyncEffect()
+    vi.doMock('../store', () => ({
+      useAppStore: {
+        subscribe: vi.fn(() => () => {}),
+        getState: () => storeState
+      }
+    }))
+    stubAuxiliaryModules()
+    vi.stubGlobal(
+      'window',
+      buildWindowApi({
+        getSnapshot,
+        onSet: () => () => {}
+      })
+    )
+
+    const { useIpcEvents } = await import('./useIpcEvents')
+
+    useIpcEvents()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(setAgentStatus).toHaveBeenCalledTimes(1)
+    expect(setAgentStatus).toHaveBeenCalledWith(
+      ORPHAN_PANE_KEY,
+      expect.objectContaining({
+        state: 'working',
+        prompt: 'child task',
+        agentType: 'codex',
+        orchestration: expect.objectContaining({ taskId: 'task-child' })
+      }),
+      undefined,
+      { updatedAt: 1_700_000_000_000, stateStartedAt: 1_699_999_999_000 },
+      expect.objectContaining({ worktreeId: 'wt-1', terminalHandle: 'term-child' })
+    )
   })
 
   it('silently discards valid paneKeys whose leaf is not in the current layout', async () => {
