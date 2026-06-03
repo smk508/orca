@@ -45,6 +45,7 @@ const ACTIVE_WORKTREE_TERMINAL_PREP_DELAY_MS = 300
 const ACTIVE_WORKTREE_TERMINAL_PREP_INPUT_QUIET_MS = 450
 const ACTIVE_WORKTREE_TERMINAL_PREP_IDLE_TIMEOUT_MS = 180
 const pendingActivationTerminalPrepCancels = new Map<string, () => void>()
+const detachedHeadAutoDerivedDisplayNames = new Map<string, string>()
 
 function countTerminalLayoutLeaves(node: TerminalPaneLayoutNode | null | undefined): number {
   if (!node) {
@@ -186,6 +187,7 @@ function areWorktreesEqual(current: Worktree[] | undefined, next: Worktree[]): b
       worktree.lastActivityAt === candidate.lastActivityAt &&
       worktree.workspaceStatus === candidate.workspaceStatus &&
       worktree.createdWithAgent === candidate.createdWithAgent &&
+      worktree.pendingFirstAgentMessageRename === candidate.pendingFirstAgentMessageRename &&
       worktree.baseRef === candidate.baseRef &&
       worktree.pushTarget?.remoteName === candidate.pushTarget?.remoteName &&
       worktree.pushTarget?.branchName === candidate.pushTarget?.branchName &&
@@ -655,6 +657,7 @@ function buildWorktreePurgeState(s: AppState, worktreeIds: string[]): Partial<Ap
     activeTabIdByWorktree: omitByWorktree(s.activeTabIdByWorktree),
     tabBarOrderByWorktree: omitByWorktree(s.tabBarOrderByWorktree),
     pendingReconnectTabByWorktree: omitByWorktree(s.pendingReconnectTabByWorktree),
+    sleptWorktreeIds: omitByWorktree(s.sleptWorktreeIds),
     rightSidebarTabByWorktree: omitByWorktree(s.rightSidebarTabByWorktree),
     // Split-tab / unified tab state
     unifiedTabsByWorktree: omitByWorktree(s.unifiedTabsByWorktree),
@@ -921,15 +924,28 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           return worktree
         }
         const nextHead = identity.head ?? worktree.head
-        const nextBranch = identity.branch ?? worktree.branch
+        const nextBranch = identity.branch === null ? '' : (identity.branch ?? worktree.branch)
         if (nextHead === worktree.head && nextBranch === worktree.branch) {
           return worktree
         }
         changed = true
         // Why: terminal branch switches only patch branch/head here; auto-derived
         // titles need the same branch derivation that full worktree listing uses.
-        const wasAutoDerived = worktree.displayName === branchName(worktree.branch)
-        const nextDisplayName = wasAutoDerived ? branchName(nextBranch) : worktree.displayName
+        const currentBranchName = branchName(worktree.branch)
+        const wasAutoDerived = worktree.displayName === currentBranchName
+        const wasDetachedAutoDerived =
+          worktree.branch === '' &&
+          nextBranch !== '' &&
+          detachedHeadAutoDerivedDisplayNames.get(worktreeId) === worktree.displayName
+        const nextDisplayName =
+          (wasAutoDerived || wasDetachedAutoDerived) && nextBranch
+            ? branchName(nextBranch)
+            : worktree.displayName
+        if (identity.branch === null && wasAutoDerived) {
+          detachedHeadAutoDerivedDisplayNames.set(worktreeId, worktree.displayName)
+        } else if (identity.branch !== undefined) {
+          detachedHeadAutoDerivedDisplayNames.delete(worktreeId)
+        }
         return { ...worktree, head: nextHead, branch: nextBranch, displayName: nextDisplayName }
       })
 
@@ -1001,7 +1017,8 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     workspaceStatus,
     linkedGitLabMR,
     linkedGitLabIssue,
-    startup
+    startup,
+    pendingFirstAgentMessageRename
   ) => {
     const retryableConflictPatterns = [
       /already exists locally/i,
@@ -1040,6 +1057,9 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
             ...(linkedPR !== undefined ? { linkedPR } : {}),
             ...(pushTarget ? { pushTarget } : {}),
             ...(createdWithAgent ? { createdWithAgent } : {}),
+            ...(pendingFirstAgentMessageRename === true && createdWithAgent
+              ? { pendingFirstAgentMessageRename: true }
+              : {}),
             ...(linkedLinearIssue !== undefined ? { linkedLinearIssue } : {}),
             ...(manualOrder !== undefined ? { manualOrder } : {}),
             ...(workspaceStatus !== undefined ? { workspaceStatus } : {}),
@@ -1066,6 +1086,9 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
                     ...(linkedPR !== undefined ? { linkedPR } : {}),
                     ...(pushTarget ? { pushTarget } : {}),
                     ...(createdWithAgent ? { createdWithAgent } : {}),
+                    ...(pendingFirstAgentMessageRename === true && createdWithAgent
+                      ? { pendingFirstAgentMessageRename: true }
+                      : {}),
                     ...(linkedLinearIssue !== undefined ? { linkedLinearIssue } : {}),
                     ...(manualOrder !== undefined ? { manualOrder } : {}),
                     ...(workspaceStatus !== undefined ? { workspaceStatus } : {}),
@@ -1312,6 +1335,14 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
                 return next
               })()
             : s.lastVisitedAtByWorktreeId
+        const nextSleptWorktreeIds =
+          worktreeId in s.sleptWorktreeIds
+            ? (() => {
+                const next = { ...s.sleptWorktreeIds }
+                delete next[worktreeId]
+                return next
+              })()
+            : s.sleptWorktreeIds
         return {
           worktreesByRepo: next,
           worktreeLineageById: nextLineage,
@@ -1370,6 +1401,7 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
           activeTabType: removedActiveWorktree || activeFileCleared ? 'terminal' : s.activeTabType,
           everActivatedWorktreeIds: nextEverActivatedWorktreeIds,
           lastVisitedAtByWorktreeId: nextLastVisitedAtByWorktreeId,
+          sleptWorktreeIds: nextSleptWorktreeIds,
           sortEpoch: s.sortEpoch + 1
         }
       })
@@ -1506,10 +1538,12 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     const targetEnriched = resolvedPushTarget
       ? { ...updates, pushTarget: resolvedPushTarget }
       : updates
-    const enriched =
-      'comment' in targetEnriched
-        ? { ...targetEnriched, lastActivityAt: Date.now() }
+    const renameCleared =
+      'displayName' in targetEnriched
+        ? { ...targetEnriched, pendingFirstAgentMessageRename: false }
         : targetEnriched
+    const enriched =
+      'comment' in renameCleared ? { ...renameCleared, lastActivityAt: Date.now() } : renameCleared
 
     let didApply = false
     set((s) => {
@@ -1664,6 +1698,31 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         }
       })
     )
+  },
+
+  setWorktreesPinnedAndReveal: (worktreeIds, isPinned) => {
+    // Skip worktrees already in the target state so a no-op toggle doesn't
+    // scroll the viewport away from where the user is.
+    const updates = new Map<string, Partial<WorktreeMeta>>()
+    let revealWorktreeId: string | null = null
+    for (const worktreeId of worktreeIds) {
+      const current = get().getKnownWorktreeById(worktreeId)
+      if (!current || current.isPinned === isPinned) {
+        continue
+      }
+      updates.set(worktreeId, { isPinned })
+      if (revealWorktreeId === null) {
+        revealWorktreeId = worktreeId
+      }
+    }
+    if (revealWorktreeId === null) {
+      return
+    }
+    // updateWorktreesMeta applies its store update synchronously (only the
+    // persistence is async), so the reveal below resolves against a render
+    // where the row already sits in its new section.
+    void get().updateWorktreesMeta(updates)
+    get().revealWorktreeInSidebar(revealWorktreeId, { behavior: 'smooth', highlight: true })
   },
 
   markWorktreeUnread: (worktreeId) => {
@@ -2131,32 +2190,89 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
         tabs.every((tab) => !tabHasLivePty(s.ptyIdsByTabId, tab.id))
       const isFirstActivation = worktreeId != null && !s.everActivatedWorktreeIds.has(worktreeId)
       const shouldTagTabs = worktreeId != null && tabs.length > 0 && isFirstActivation
+      // Why: when every PTY for the worktree's tabs is dead, the existing
+      // (hidden) TerminalPane wraps a dead transport. Once activeWorktreeId
+      // commits, that pane becomes visible and accepts keystrokes that the
+      // dead transport silently drops. Bump generation in the SAME set() so
+      // React/Zustand commit activation and the remount key in one render —
+      // no visible-but-dead-transport window. First-activation tagging
+      // (shouldTagTabs without allDead) does not remount panes and stays on
+      // the deferred path below.
       shouldPrepareTerminalTabs = Boolean(
-        worktreeId && tabs.length > 0 && (allDead || shouldTagTabs)
+        worktreeId && tabs.length > 0 && shouldTagTabs && !allDead
       )
       shouldTagTerminalTabs = shouldTagTabs
       const nextEverActivated = isFirstActivation
         ? new Set([...s.everActivatedWorktreeIds, worktreeId!])
         : s.everActivatedWorktreeIds
+      const nextSleptWorktreeIds =
+        worktreeId in s.sleptWorktreeIds
+          ? (() => {
+              const next = { ...s.sleptWorktreeIds }
+              delete next[worktreeId]
+              return next
+            })()
+          : s.sleptWorktreeIds
       const nextWorktrees = shouldClearUnread
         ? applyWorktreeUpdates(s.worktreesByRepo, worktreeId, metaUpdates)
         : s.worktreesByRepo
       const nextDetectedWorktrees = shouldClearUnread
         ? applyDetectedWorktreeUpdates(s.detectedWorktreesByRepo, worktreeId, metaUpdates)
         : s.detectedWorktreesByRepo
+      const tabsByWorktreeUpdate =
+        allDead && worktreeId != null
+          ? {
+              tabsByWorktree: {
+                ...s.tabsByWorktree,
+                [worktreeId]: tabs.map((tab) => ({
+                  ...tab,
+                  generation: (tab.generation ?? 0) + 1,
+                  pendingActivationSpawn: getActivationSpawnSuppression(
+                    s.terminalLayoutsByTabId[tab.id]
+                  )
+                }))
+              }
+            }
+          : {}
+
+      const nextActiveTabTypeByWorktree =
+        s.activeTabTypeByWorktree[worktreeId] === activeTabType
+          ? s.activeTabTypeByWorktree
+          : { ...s.activeTabTypeByWorktree, [worktreeId]: activeTabType }
+      const hasStateChange =
+        s.activeWorktreeId !== worktreeId ||
+        s.activeFileId !== activeFileId ||
+        s.activeBrowserTabId !== activeBrowserTabId ||
+        s.activeTabType !== activeTabType ||
+        s.activeTabId !== activeTabId ||
+        nextActiveTabTypeByWorktree !== s.activeTabTypeByWorktree ||
+        nextEverActivated !== s.everActivatedWorktreeIds ||
+        nextSleptWorktreeIds !== s.sleptWorktreeIds ||
+        nextWorktrees !== s.worktreesByRepo ||
+        nextDetectedWorktrees !== s.detectedWorktreesByRepo
+      if (!hasStateChange) {
+        // Why: repeated activation of the already-active worktree can come from
+        // clicks, IPC, and automation restore paths. Preserve the root Zustand
+        // reference so session persistence/runtime sync do not fan out on a no-op.
+        return s
+      }
 
       return {
         activeWorktreeId: worktreeId,
         activeFileId,
         activeBrowserTabId,
         activeTabType,
-        activeTabTypeByWorktree: { ...s.activeTabTypeByWorktree, [worktreeId]: activeTabType },
+        activeTabTypeByWorktree: nextActiveTabTypeByWorktree,
         activeTabId,
         everActivatedWorktreeIds: nextEverActivated,
+        ...(nextSleptWorktreeIds !== s.sleptWorktreeIds
+          ? { sleptWorktreeIds: nextSleptWorktreeIds }
+          : {}),
         ...(nextWorktrees !== s.worktreesByRepo ? { worktreesByRepo: nextWorktrees } : {}),
         ...(nextDetectedWorktrees !== s.detectedWorktreesByRepo
           ? { detectedWorktreesByRepo: nextDetectedWorktrees }
-          : {})
+          : {}),
+        ...tabsByWorktreeUpdate
       }
     })
 

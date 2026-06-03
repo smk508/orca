@@ -37,7 +37,8 @@ export function normalizeAgentActivityDisplayMode(value: unknown): AgentActivity
 
 // Why: the onboarding wizard's last step index. Centralized so backfill,
 // clamps, and UI step references all agree on the same upper bound.
-export const ONBOARDING_FINAL_STEP = 7
+export const ONBOARDING_FINAL_STEP = 5
+export const ONBOARDING_FLOW_VERSION = 2
 
 export const ORCA_BROWSER_PARTITION = 'persist:orca-browser'
 // Why: blank browser tabs must start from an inert guest URL that does not
@@ -134,6 +135,7 @@ export function getDefaultNotificationSettings(): NotificationSettings {
 
 export function getDefaultOnboardingState(): OnboardingState {
   return {
+    flowVersion: ONBOARDING_FLOW_VERSION,
     closedAt: null,
     outcome: null,
     lastCompletedStep: -1,
@@ -229,6 +231,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     terminalScrollbackBytes: 10_000_000,
     httpProxyUrl: '',
     httpProxyBypassRules: '',
+    electronHttp1CompatibilityMode: false,
     openLinksInApp: true,
     openInApplications: [],
     rightSidebarOpenByDefault: true,
@@ -265,6 +268,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     defaultTaskViewPreset: 'all',
     defaultTaskSource: 'github',
     visibleTaskProviders: [...TASK_PROVIDERS],
+    visibleTaskProvidersDefaultedForJira: true,
     defaultRepoSelection: null,
     defaultLinearTeamSelection: null,
     opencodeSessionCookie: '',
@@ -409,9 +413,11 @@ export function getDefaultUIState(): PersistedUIState {
     trustedOrcaHooks: {},
     setupScriptPromptDismissedRepoIds: [],
     acknowledgedAgentsByPaneKey: {},
+    setupGuideSidebarDismissed: false,
     workspaceCleanup: { dismissals: {} },
     featureTipsSeenIds: [],
-    featureInteractions: {}
+    featureInteractions: {},
+    contextualToursSeenIds: []
   }
 }
 

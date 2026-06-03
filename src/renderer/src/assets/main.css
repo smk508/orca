@@ -77,6 +77,9 @@
   --color-terminal-pane-title-on-light-input-bg: var(--terminal-pane-title-on-light-input-bg);
   --color-terminal-pane-title-on-light-separator: var(--terminal-pane-title-on-light-separator);
   --color-ai-action-accent: var(--ai-action-accent);
+  --color-status-success: var(--status-success);
+  --color-status-success-background: var(--status-success-background);
+  --color-status-success-border: var(--status-success-border);
   --color-git-graph-ref: var(--git-graph-ref);
   --color-git-graph-remote-ref: var(--git-graph-remote-ref);
   --color-git-graph-base-ref: var(--git-graph-base-ref);
@@ -126,6 +129,9 @@
   --ring: #a1a1a1;
   --terminal-pane-locate: var(--color-blue-600);
   --ai-action-accent: var(--color-violet-500);
+  --status-success: #15803d;
+  --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
+  --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
   --chart-1: var(--color-blue-300);
   --chart-2: var(--color-blue-500);
   --chart-3: var(--color-blue-600);
@@ -196,6 +202,9 @@
   --ring: #737373;
   --terminal-pane-locate: var(--color-blue-400);
   --ai-action-accent: var(--color-violet-400);
+  --status-success: #86efac;
+  --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
+  --status-success-border: color-mix(in srgb, var(--status-success) 25%, transparent);
   --chart-1: var(--color-blue-300);
   --chart-2: var(--color-blue-500);
   --chart-3: var(--color-blue-600);
@@ -1999,6 +2008,43 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   }
 }
 
+.orca-contextual-tour-target-rings {
+  border-radius: 9999px;
+  pointer-events: none;
+}
+
+.orca-contextual-tour-target-rings::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border: 1px solid color-mix(in srgb, var(--ring) 72%, transparent);
+  border-radius: inherit;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 18%, transparent);
+  opacity: 0;
+  transform-origin: center;
+  animation: contextual-tour-target-ring 1.8s ease-out infinite;
+}
+
+@keyframes contextual-tour-target-ring {
+  0% {
+    opacity: 0.72;
+    transform: scale(0.68);
+  }
+  72%,
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orca-contextual-tour-target-rings::before {
+    animation: none;
+    opacity: 0.72;
+    transform: scale(1.28);
+  }
+}
+
 .feature-tour-copy-slide {
   position: absolute;
   inset: 0;
@@ -2615,14 +2661,6 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
     0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
-/* Avatar Column */
-.orca-diff-comment-avatar-col {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
 /* Content Column */
 .orca-diff-comment-content-col {
   flex: 1 1 auto;
@@ -2714,37 +2752,6 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   flex-shrink: 0;
 }
 
-/* Avatar design */
-.orca-diff-comment-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
-  object-fit: cover;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-.orca-diff-comment-avatar-fallback,
-.orca-diff-comment-avatar-local {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: color-mix(in srgb, var(--primary) 8%, var(--muted));
-  border: 1px solid color-mix(in srgb, var(--primary) 20%, transparent);
-  color: var(--primary);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.orca-diff-comment-avatar-local {
-  background: color-mix(in srgb, var(--foreground) 6%, var(--muted));
-  border-color: color-mix(in srgb, var(--foreground) 12%, transparent);
-  color: var(--muted-foreground);
-}
-
 /* Quote/Reference block: Warm, gorgeous Notion-like callout */
 .orca-diff-comment-quote {
   display: flex;
@@ -2794,8 +2801,6 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   box-shadow:
     0 10px 32px rgba(0, 0, 0, 0.12),
     0 4px 12px rgba(0, 0, 0, 0.08);
-  display: flex;
-  gap: 12px;
 }
 
 .dark .orca-diff-comment-popover {
@@ -2836,13 +2841,18 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
 }
 
 .dark .orca-diff-comment-popover-textarea {
-  border-color: color-mix(in srgb, var(--foreground) 16%, var(--border));
+  border-color: color-mix(in srgb, var(--foreground) 10%, var(--border));
   background: color-mix(in srgb, var(--foreground) 3%, var(--editor-surface));
 }
 
 .orca-diff-comment-popover-textarea:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 15%, transparent);
+  border-color: color-mix(in srgb, var(--ring) 70%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 18%, transparent);
+}
+
+.dark .orca-diff-comment-popover-textarea:focus {
+  border-color: color-mix(in srgb, var(--ring) 70%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 12%, transparent);
 }
 
 .orca-diff-comment-popover-textarea::-webkit-scrollbar {
@@ -2865,4 +2875,54 @@ html.onboarding-tour-start-transition::view-transition-new(root) {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+/* Why: a tour panel must read as elevated above the chrome it is teaching about
+   without resorting to color. A 1px inner top highlight plus the documented
+   floating shadow keeps it above the surface in both light and dark modes. */
+.orca-contextual-tour-panel {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--foreground) 4%, var(--popover)) 0%,
+    var(--popover) 12%
+  );
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--foreground) 10%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.dark .orca-contextual-tour-panel {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--foreground) 4%, var(--popover)) 0%,
+    var(--popover) 14%
+  );
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--foreground) 5%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+/* Why: a tour panel must read as elevated above the chrome it is teaching about
+   without resorting to color. A 1px inner top highlight plus the documented
+   floating shadow keeps it above the surface in both light and dark modes. */
+.orca-contextual-tour-panel {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--foreground) 4%, var(--popover)) 0%,
+    var(--popover) 12%
+  );
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--foreground) 10%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.dark .orca-contextual-tour-panel {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--foreground) 4%, var(--popover)) 0%,
+    var(--popover) 14%
+  );
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--foreground) 5%, transparent),
+    0 10px 24px rgba(0, 0, 0, 0.18);
 }

@@ -13,6 +13,7 @@ import type { WorkspaceCleanupUIState } from './workspace-cleanup'
 import type { GitLabProjectSettings } from './gitlab-types'
 import type { TaskProvider } from './task-providers'
 import type { FeatureTipId } from './feature-tips'
+import type { ContextualTourId } from './contextual-tours'
 import type { FeatureInteractionState } from './feature-interactions'
 import type { GitBranchChangeStatus } from './git-status-types'
 import type { KeybindingOverrides, TerminalShortcutPolicy } from './keybindings'
@@ -82,6 +83,10 @@ export type Repo = {
   displayName: string
   badgeColor: string
   repoIcon?: RepoIcon | null
+  /** Set when the repo is a fork: the upstream/parent owner/repo. Drives the
+   *  default avatar (upstream owner, not the personal fork) and the fork
+   *  indicator. Absent = not a fork, or fork status not yet resolved. */
+  upstream?: GitHubRepositoryIdentity | null
   addedAt: number
   kind?: RepoKind
   gitUsername?: string
@@ -261,6 +266,9 @@ export type Worktree = {
    *  seed a replacement terminal if the user later reopens the worktree after
    *  closing every visible surface. */
   createdWithAgent?: TuiAgent
+  /** True while an auto-named workspace is waiting for the first agent message
+   *  to drive the branch/title rename. */
+  pendingFirstAgentMessageRename?: boolean
   sparseDirectories?: string[]
   sparseBaseRef?: string
   /** ID of the saved preset this worktree was created from, if any. Cleared
@@ -315,6 +323,8 @@ export type WorktreeMeta = {
   createdAt?: number
   /** See {@link Worktree.createdWithAgent}. Persisted to orca-data.json. */
   createdWithAgent?: TuiAgent
+  /** See {@link Worktree.pendingFirstAgentMessageRename}. */
+  pendingFirstAgentMessageRename?: boolean
   sparseDirectories?: string[]
   sparseBaseRef?: string
   sparsePresetId?: string
@@ -652,6 +662,8 @@ export type PersistedOpenFile = {
   language: string
   isPreview?: boolean
   runtimeEnvironmentId?: string | null
+  /** Unsaved editor buffer captured for hot exit; presence restores the tab dirty. */
+  dirtyDraftContent?: string
 }
 
 export type WorkspaceSessionState = {
@@ -709,6 +721,9 @@ export type WorkspaceSessionState = {
    *  considered. Persisted so closing all tabs and re-opening the workspace
    *  does not recreate the template. */
   defaultTerminalTabsAppliedByWorktreeId?: Record<string, true>
+  /** Worktrees the user explicitly slept. Inactive terminal state alone does
+   *  not imply sleep; a worktree only sleeps through the user sleep action. */
+  sleptWorktreeIds?: Record<string, true>
 }
 
 export type WorkspaceSessionPatch = Partial<WorkspaceSessionState>
@@ -1374,6 +1389,29 @@ export type {
   MRState
 } from './gitlab-types'
 
+export type {
+  JiraComment,
+  JiraConnectArgs,
+  JiraConnectionStatus,
+  JiraCreateField,
+  JiraCreateFieldAllowedValue,
+  JiraCreateIssueArgs,
+  JiraCreateIssueResult,
+  JiraIssue,
+  JiraIssueFilter,
+  JiraIssueType,
+  JiraIssueUpdate,
+  JiraMutationResult,
+  JiraPriority,
+  JiraProject,
+  JiraSite,
+  JiraSiteSelection,
+  JiraStatus,
+  JiraTransition,
+  JiraUser,
+  JiraViewer
+} from './jira-types'
+
 /**
  * GitHub API rate-limit buckets surfaced in the TaskPage header so users can
  * see remaining budget before they hit the wall. `core` = REST (5000/hr),
@@ -1556,6 +1594,9 @@ export type CreateWorktreeArgs = {
   manualOrder?: number
   /** Agent selected in the create surface. Omitted for blank-shell creates. */
   createdWithAgent?: TuiAgent
+  /** Set when the renderer knows this auto-generated branch should be renamed
+   *  from the first agent message. */
+  pendingFirstAgentMessageRename?: boolean
   /** Telemetry-only: which UI surface initiated this create. Threaded from
    *  the renderer entry point so main can emit `workspace_created` with the
    *  correct `source`. `unknown` is a valid wire value — an unrecognized
@@ -1999,6 +2040,9 @@ export type GlobalSettings = {
   httpProxyUrl?: string
   /** Optional semicolon/comma/newline-separated bypass rules for httpProxyUrl. */
   httpProxyBypassRules?: string
+  /** Why: corporate TLS-intercepting proxies can break Electron HTTP/2 downloads;
+   *  this opt-in compatibility mode applies Chromium's process-wide HTTP/1.1 switch. */
+  electronHttp1CompatibilityMode?: boolean
   /** Why: opening arbitrary links inside Orca uses an isolated guest browser surface.
    *  The setting stays opt-in so existing workflows continue to use the system browser
    *  until the user explicitly wants worktree-scoped in-app browsing. */
@@ -2102,6 +2146,9 @@ export type GlobalSettings = {
    *  list hides unused providers from Tasks chrome and sidebar shortcuts while
    *  leaving the chosen default source stable when it is still visible. */
   visibleTaskProviders: TaskProvider[]
+  /** Why: one-shot migration guard so Jira becomes visible for existing
+   *  profiles once, without re-adding it after a later deliberate opt-out. */
+  visibleTaskProvidersDefaultedForJira: boolean
   /** Why: persists the user's repo selection in the cross-repo tasks view.
    *  `null` means sticky-all — every eligible repo is selected, including
    *  repos added in future sessions, so the "All repos" label stays
@@ -2303,6 +2350,7 @@ export type NotificationEventSource = 'agent-task-complete' | 'terminal-bell' | 
 
 export type NotificationDispatchRequest = {
   source: NotificationEventSource
+  notificationId?: string
   /** Why: useful for fast native failures, but macOS can still drop notifications after 'show'. */
   requireDisplayConfirmation?: boolean
   worktreeId?: string
@@ -2332,6 +2380,10 @@ export type NotificationDispatchResult = {
     | 'cooldown'
     | 'not-supported'
     | 'not-displayed'
+}
+
+export type NotificationDismissResult = {
+  dismissed: number
 }
 
 export type NotificationSoundResult = {
@@ -2382,6 +2434,9 @@ export type OnboardingChecklistState = {
 }
 
 export type OnboardingState = {
+  // Why: numeric step meanings can change when pages are removed; persisted
+  // state needs a version marker so migration does not re-run on new progress.
+  flowVersion: number
   closedAt: number | null
   outcome: OnboardingOutcome | null
   // Sentinel `-1` = not started; `1..5` = highest wizard step the user
@@ -2443,6 +2498,8 @@ export type TaskResumeState = {
     workspaceId: LinearConcreteWorkspaceId
     model?: LinearCustomViewModel
   }
+  jiraPreset?: 'assigned' | 'reported' | 'all' | 'done'
+  jiraQuery?: string
 }
 
 export type RightSidebarTab = 'explorer' | 'search' | 'source-control' | 'checks' | 'ports'
@@ -2514,6 +2571,9 @@ export type PersistedUIState = {
    *  stateStartedAt that beats the old ack via the existing comparison in
    *  WorktreeCardAgents. Renderer-owned, written through ui:set. */
   acknowledgedAgentsByPaneKey?: Record<string, number>
+  /** User-hidden sidebar entry for the setup guide. The Help menu remains
+   *  available so this is a reversible declutter preference, not completion. */
+  setupGuideSidebarDismissed?: boolean
   /** URL to navigate to when a new browser tab is opened. Null means blank tab.
    *  Phase 3 will expand this to a full BrowserSessionProfile per workspace. */
   browserDefaultUrl?: string | null
@@ -2605,6 +2665,12 @@ export type PersistedUIState = {
   /** Local product-state facts: feature ids the user has actually used.
    *  Used by education surfaces to avoid teaching already-discovered features. */
   featureInteractions?: FeatureInteractionState
+  /** Contextual tours already surfaced to the user. Unknown ids are ignored
+   *  during hydration so downgrade/upgrade cycles remain forward-compatible. */
+  contextualToursSeenIds?: ContextualTourId[]
+  /** Whether this profile may receive automatic contextual tours from this
+   *  rollout. Missing means the renderer has not classified the profile yet. */
+  contextualToursAutoEligible?: boolean
 }
 
 export const PET_SIZE_MIN = 60

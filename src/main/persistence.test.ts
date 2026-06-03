@@ -25,6 +25,7 @@ import type {
 } from '../shared/types'
 import { isTerminalLeafId, makePaneKey } from '../shared/stable-pane-id'
 import { MAX_BROWSER_HISTORY_ENTRIES } from '../shared/workspace-session-browser-history'
+import { ONBOARDING_FLOW_VERSION } from '../shared/constants'
 
 // Shared mutable state so the electron mock can reference a per-test directory
 const testState = { dir: '' }
@@ -264,7 +265,7 @@ describe('Store', () => {
     expect(settings.terminalUseSeparateLightTheme).toBe(true)
     expect(settings.rightSidebarOpenByDefault).toBe(true)
     expect(settings.showTasksButton).toBe(true)
-    expect(settings.visibleTaskProviders).toEqual(['github', 'gitlab', 'linear'])
+    expect(settings.visibleTaskProviders).toEqual(['github', 'gitlab', 'linear', 'jira'])
     expect(settings.openInApplications).toEqual([])
     expect(settings.experimentalActivity).toBe(false)
     expect(settings.experimentalActivityDefaultedOffForAllUsers).toBe(true)
@@ -285,6 +286,69 @@ describe('Store', () => {
     expect(ui.lastActiveRepoId).toBeNull()
     expect(ui.dismissedUpdateVersion).toBeNull()
     expect(ui.lastUpdateCheckAt).toBeNull()
+  })
+
+  it.each([
+    [4, 3],
+    [5, 4],
+    [6, 4],
+    [9, 4]
+  ])(
+    'migrates legacy open onboarding progress %i before applying the current step bound',
+    async (legacyStep, expectedStep) => {
+      writeDataFile({
+        onboarding: {
+          closedAt: null,
+          outcome: null,
+          lastCompletedStep: legacyStep,
+          checklist: {}
+        }
+      })
+
+      const store = await createStore()
+      const onboarding = store.getOnboarding()
+
+      expect(onboarding.flowVersion).toBe(ONBOARDING_FLOW_VERSION)
+      expect(onboarding.lastCompletedStep).toBe(expectedStep)
+      expect(onboarding.closedAt).toBeNull()
+      expect(onboarding.outcome).toBeNull()
+    }
+  )
+
+  it('keeps current onboarding progress marked as the five-step flow', async () => {
+    writeDataFile({
+      onboarding: {
+        flowVersion: ONBOARDING_FLOW_VERSION,
+        closedAt: null,
+        outcome: null,
+        lastCompletedStep: 4,
+        checklist: {}
+      }
+    })
+
+    const store = await createStore()
+    const onboarding = store.getOnboarding()
+
+    expect(onboarding.flowVersion).toBe(ONBOARDING_FLOW_VERSION)
+    expect(onboarding.lastCompletedStep).toBe(4)
+  })
+
+  it('migrates legacy completed onboarding progress to the current final step', async () => {
+    writeDataFile({
+      onboarding: {
+        closedAt: 1,
+        outcome: 'completed',
+        lastCompletedStep: 7,
+        checklist: {}
+      }
+    })
+
+    const store = await createStore()
+    const onboarding = store.getOnboarding()
+
+    expect(onboarding.flowVersion).toBe(ONBOARDING_FLOW_VERSION)
+    expect(onboarding.outcome).toBe('completed')
+    expect(onboarding.lastCompletedStep).toBe(5)
   })
 
   it('preserves legacy none grouping as ungrouped workspaces', async () => {
@@ -860,7 +924,7 @@ describe('Store', () => {
     expect(store.getSettings().showGitIgnoredFiles).toBe(true)
     expect(store.getSettings().showTasksButton).toBe(true)
     expect(store.getSettings().combinedDiffFileTreeVisibleByDefault).toBe(false)
-    expect(store.getSettings().visibleTaskProviders).toEqual(['github', 'gitlab', 'linear'])
+    expect(store.getSettings().visibleTaskProviders).toEqual(['github', 'gitlab', 'linear', 'jira'])
     expect(store.getSettings().experimentalActivity).toBe(false)
     expect(store.getSettings().experimentalActivityDefaultedOffForAllUsers).toBe(true)
     expect(store.getSettings().experimentalTerminalAttention).toBe(false)
@@ -1018,6 +1082,24 @@ describe('Store', () => {
     })
 
     const store = await createStore()
+    expect(store.getSettings().visibleTaskProviders).toEqual(['gitlab', 'jira'])
+  })
+
+  it('preserves a deliberate Jira provider opt-out after migration', async () => {
+    writeDataFile({
+      schemaVersion: 1,
+      repos: [],
+      worktreeMeta: {},
+      settings: {
+        visibleTaskProviders: ['gitlab'],
+        visibleTaskProvidersDefaultedForJira: true
+      },
+      ui: {},
+      githubCache: { pr: {}, issue: {} },
+      workspaceSession: {}
+    })
+
+    const store = await createStore()
     expect(store.getSettings().visibleTaskProviders).toEqual(['gitlab'])
   })
 
@@ -1049,7 +1131,7 @@ describe('Store', () => {
 
     const store = await createStore()
     expect(store.getSettings().defaultTaskSource).toBe('github')
-    expect(store.getSettings().visibleTaskProviders).toEqual(['github', 'linear'])
+    expect(store.getSettings().visibleTaskProviders).toEqual(['github', 'linear', 'jira'])
   })
 
   it('normalizes invalid task provider defaults on load', async () => {
@@ -1057,7 +1139,7 @@ describe('Store', () => {
       schemaVersion: 1,
       repos: [],
       worktreeMeta: {},
-      settings: { visibleTaskProviders: ['gitlab'], defaultTaskSource: 'jira' as never },
+      settings: { visibleTaskProviders: ['gitlab'], defaultTaskSource: 'bitbucket' as never },
       ui: {},
       githubCache: { pr: {}, issue: {} },
       workspaceSession: {}
@@ -1065,7 +1147,7 @@ describe('Store', () => {
 
     const store = await createStore()
     expect(store.getSettings().defaultTaskSource).toBe('gitlab')
-    expect(store.getSettings().visibleTaskProviders).toEqual(['gitlab'])
+    expect(store.getSettings().visibleTaskProviders).toEqual(['gitlab', 'jira'])
   })
 
   it('normalizes persisted open-in applications on load', async () => {
@@ -1748,6 +1830,29 @@ describe('Store', () => {
     expect(store.getRepos()[0]!.repoIcon).toBeUndefined()
   })
 
+  it('updateRepo normalizes and persists repo upstream metadata', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+
+    const updated = store.updateRepo('r1', {
+      upstream: { owner: ' stablyai ', repo: ' orca ' }
+    })
+    expect(updated!.upstream).toEqual({ owner: 'stablyai', repo: 'orca' })
+
+    store.updateRepo('r1', { upstream: null })
+    store.flush()
+    const reloaded = await createStore()
+    expect(reloaded.getRepo('r1')!.upstream).toBeNull()
+  })
+
+  it('getRepo does not expose invalid persisted repo upstream metadata', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ upstream: { owner: '', repo: 42 } as never }))
+
+    expect(store.getRepo('r1')!.upstream).toBeUndefined()
+    expect(store.getRepos()[0]!.upstream).toBeUndefined()
+  })
+
   it('updateRepo returns null for nonexistent id', async () => {
     const store = await createStore()
     expect(store.updateRepo('nope', { displayName: 'x' })).toBeNull()
@@ -2393,6 +2498,19 @@ describe('Store', () => {
     })
   })
 
+  it('updateUI merges contextual tour seen ids instead of replacing stale snapshots', async () => {
+    const store = await createStore()
+
+    store.updateUI({
+      contextualToursSeenIds: ['browser']
+    })
+    store.updateUI({
+      contextualToursSeenIds: ['workspace-agent-sessions', 'unknown', 'browser'] as never
+    })
+
+    expect(store.getUI().contextualToursSeenIds).toEqual(['browser', 'workspace-agent-sessions'])
+  })
+
   it('normalizes malformed persisted feature discovery state on read', async () => {
     writeDataFile({
       schemaVersion: 1,
@@ -2401,6 +2519,7 @@ describe('Store', () => {
       settings: {},
       ui: {
         featureTipsSeenIds: ['voice-dictation', 'unknown-tip', 'voice-dictation'],
+        contextualToursSeenIds: ['tasks', 'unknown', 'tasks'] as never,
         featureInteractions: {
           tasks: { firstInteractedAt: 100 },
           automations: { firstInteractedAt: 150, interactionCount: 4 },
@@ -2415,6 +2534,7 @@ describe('Store', () => {
     const store = await createStore()
 
     expect(store.getUI().featureTipsSeenIds).toEqual(['voice-dictation'])
+    expect(store.getUI().contextualToursSeenIds).toEqual(['tasks'])
     expect(store.getUI().featureInteractions).toEqual({
       tasks: { firstInteractedAt: 100, interactionCount: 1 },
       automations: { firstInteractedAt: 150, interactionCount: 4 }

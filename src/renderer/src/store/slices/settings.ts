@@ -52,6 +52,7 @@ function runtimeScopedStateReset(): Partial<AppState> {
     sortEpoch: 0,
     everActivatedWorktreeIds: new Set<string>(),
     lastVisitedAtByWorktreeId: {},
+    sleptWorktreeIds: {},
     hasHydratedWorktreePurge: false,
     unifiedTabsByWorktree: {},
     groupsByWorktree: {},
@@ -123,6 +124,7 @@ function runtimeScopedStateReset(): Partial<AppState> {
     linearStatusChecked: false,
     linearIssueCache: {},
     linearSearchCache: {},
+    linearListCache: {},
     linearTeamCache: {},
     linearProjectCache: {},
     linearProjectDetailCache: {},
@@ -130,7 +132,11 @@ function runtimeScopedStateReset(): Partial<AppState> {
     linearCustomViewCache: {},
     linearCustomViewDetailCache: {},
     linearCustomViewIssueCache: {},
-    linearCustomViewProjectCache: {}
+    linearCustomViewProjectCache: {},
+    jiraStatus: { connected: false, viewer: null },
+    jiraStatusChecked: false,
+    jiraIssueCache: {},
+    jiraSearchCache: {}
   }
 }
 

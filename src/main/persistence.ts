@@ -67,6 +67,7 @@ import {
   getDefaultWorkspaceSession,
   normalizeAgentActivityDisplayMode,
   normalizeWorktreeCardProperties,
+  ONBOARDING_FLOW_VERSION,
   ONBOARDING_FINAL_STEP
 } from '../shared/constants'
 import { parseWorkspaceSession } from '../shared/workspace-session-schema'
@@ -94,6 +95,7 @@ import {
   normalizeFeatureInteractions,
   type FeatureInteractionId
 } from '../shared/feature-interactions'
+import { normalizeContextualTourIds } from '../shared/contextual-tours'
 import { normalizeFeatureTipIds } from '../shared/feature-tips'
 import {
   DEFAULT_WORKSPACE_STATUS_ID,
@@ -300,6 +302,17 @@ function mergeFeatureInteractions(
   return merged
 }
 
+function mergeContextualTourSeenIds(
+  current: PersistedState['ui']['contextualToursSeenIds'],
+  incoming: PersistedState['ui']['contextualToursSeenIds']
+): PersistedState['ui']['contextualToursSeenIds'] {
+  const merged = new Set(normalizeContextualTourIds(current))
+  for (const id of normalizeContextualTourIds(incoming)) {
+    merged.add(id)
+  }
+  return [...merged]
+}
+
 function normalizeSortBy(sortBy: unknown): PersistedState['ui']['sortBy'] {
   if (
     sortBy === 'smart' ||
@@ -472,8 +485,32 @@ function normalizeSshTarget(t: SshTarget): SshTarget {
 // merges over current state without wiping previously-true keys. Invalid
 // top-level fields are OMITTED (not coerced to fallbacks) so partial updates
 // don't clobber valid persisted state; the load-path caller spreads defaults.
+type SanitizeOnboardingUpdateOptions = {
+  migrateLegacyProgress?: boolean
+}
+
+function remapLegacyOnboardingLastCompletedStep(
+  lastCompletedStep: number,
+  raw: Record<string, unknown>
+): number {
+  if (raw.outcome === 'completed' && lastCompletedStep >= ONBOARDING_FINAL_STEP) {
+    return ONBOARDING_FINAL_STEP
+  }
+  if (lastCompletedStep === 4) {
+    return 3
+  }
+  if (lastCompletedStep === 5 || lastCompletedStep === 6) {
+    return 4
+  }
+  if (lastCompletedStep > 6) {
+    return 4
+  }
+  return lastCompletedStep
+}
+
 export function sanitizeOnboardingUpdate(
-  input: unknown
+  input: unknown,
+  options: SanitizeOnboardingUpdateOptions = {}
 ): Partial<Omit<OnboardingState, 'checklist'>> & { checklist?: Partial<OnboardingChecklistState> } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return {}
@@ -504,10 +541,24 @@ export function sanitizeOnboardingUpdate(
     }
     // else: omit.
   }
+  if ('flowVersion' in raw) {
+    const v = raw.flowVersion
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= ONBOARDING_FLOW_VERSION) {
+      out.flowVersion = v
+    }
+    // else: omit.
+  }
   if ('lastCompletedStep' in raw) {
     const v = raw.lastCompletedStep
-    if (typeof v === 'number' && Number.isInteger(v) && v >= -1 && v <= ONBOARDING_FINAL_STEP) {
-      out.lastCompletedStep = v
+    if (typeof v === 'number' && Number.isInteger(v) && v >= -1) {
+      const isLegacyFlow =
+        options.migrateLegacyProgress && raw.flowVersion !== ONBOARDING_FLOW_VERSION
+      // Why: removing two wizard pages changed numeric meanings. Migrate raw
+      // legacy disk values before the new final-step bound can drop them.
+      const normalized = isLegacyFlow ? remapLegacyOnboardingLastCompletedStep(v, raw) : v
+      if (normalized <= ONBOARDING_FINAL_STEP) {
+        out.lastCompletedStep = normalized
+      }
     }
     // else: omit.
   }
@@ -526,6 +577,9 @@ export function sanitizeOnboardingUpdate(
       }
       out.checklist = checklist
     }
+  }
+  if (options.migrateLegacyProgress) {
+    out.flowVersion = ONBOARDING_FLOW_VERSION
   }
   return out
 }
@@ -546,8 +600,24 @@ function readLegacySidekickFlag(parsed: PersistedState | undefined): boolean | u
   return (parsed?.settings as { experimentalSidekick?: boolean } | undefined)?.experimentalSidekick
 }
 
+function sanitizeRepoUpstream(value: unknown): Repo['upstream'] | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (value === null) {
+    return null
+  }
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+  const candidate = value as { owner?: unknown; repo?: unknown }
+  const owner = typeof candidate.owner === 'string' ? candidate.owner.trim() : ''
+  const repo = typeof candidate.repo === 'string' ? candidate.repo.trim() : ''
+  return owner && repo ? { owner, repo } : undefined
+}
+
 function sanitizeRepoUpdatesForPersistence<
-  T extends Partial<Pick<Repo, 'badgeColor' | 'repoIcon' | 'worktreeBasePath'>>
+  T extends Partial<Pick<Repo, 'badgeColor' | 'repoIcon' | 'upstream' | 'worktreeBasePath'>>
 >(updates: T): T {
   const sanitized = { ...updates }
   if ('badgeColor' in sanitized) {
@@ -564,6 +634,15 @@ function sanitizeRepoUpdatesForPersistence<
       delete sanitized.repoIcon
     } else {
       sanitized.repoIcon = repoIcon
+    }
+  }
+  // Why: `null` is a valid "not a fork" marker; only drop malformed shapes.
+  if ('upstream' in sanitized) {
+    const upstream = sanitizeRepoUpstream(sanitized.upstream)
+    if (upstream === undefined) {
+      delete sanitized.upstream
+    } else {
+      sanitized.upstream = upstream
     }
   }
   if ('worktreeBasePath' in sanitized && sanitized.worktreeBasePath !== undefined) {
@@ -1643,9 +1722,20 @@ export class Store {
         const migratedExperimentalActivity = experimentalActivityDefaultedOffForAllUsers
           ? (parsed.settings?.experimentalActivity ?? false)
           : false
-        const taskProviderSettings = normalizeTaskProviderSettings({
+        const rawTaskProviderSettings = normalizeTaskProviderSettings({
           visibleTaskProviders: parsed.settings?.visibleTaskProviders,
           defaultTaskSource: parsed.settings?.defaultTaskSource
+        })
+        const visibleTaskProvidersDefaultedForJira =
+          parsed.settings?.visibleTaskProvidersDefaultedForJira === true
+        const migratedVisibleTaskProviders = visibleTaskProvidersDefaultedForJira
+          ? rawTaskProviderSettings.visibleTaskProviders
+          : rawTaskProviderSettings.visibleTaskProviders.includes('jira')
+            ? rawTaskProviderSettings.visibleTaskProviders
+            : [...rawTaskProviderSettings.visibleTaskProviders, 'jira' as const]
+        const taskProviderSettings = normalizeTaskProviderSettings({
+          visibleTaskProviders: migratedVisibleTaskProviders,
+          defaultTaskSource: rawTaskProviderSettings.defaultTaskSource
         })
         const primarySelectionDefaultedForLinux =
           parsed.settings?.primarySelectionMiddleClickPasteDefaultedForLinux === true
@@ -1661,6 +1751,9 @@ export class Store {
         const stampPrimarySelectionTerminalDefaults =
           primarySelectionPlatformDefaultEnabled && !primarySelectionDefaultedForTerminalDefaults
         if (migratePrimarySelectionPlatformDefault || stampPrimarySelectionTerminalDefaults) {
+          this.loadNeedsSave = true
+        }
+        if (!visibleTaskProvidersDefaultedForJira) {
           this.loadNeedsSave = true
         }
         result = {
@@ -1701,6 +1794,7 @@ export class Store {
             ),
             defaultTaskSource: taskProviderSettings.defaultTaskSource,
             visibleTaskProviders: taskProviderSettings.visibleTaskProviders,
+            visibleTaskProvidersDefaultedForJira: true,
             terminalShortcutPolicy: normalizeTerminalShortcutPolicy(
               parsed.settings?.terminalShortcutPolicy
             ),
@@ -1922,7 +2016,9 @@ export class Store {
             // field on disk (string where number expected, unknown checklist
             // key) is dropped or coerced to the default rather than poisoning
             // in-memory state.
-            const sanitized = sanitizeOnboardingUpdate(parsed.onboarding)
+            const sanitized = sanitizeOnboardingUpdate(parsed.onboarding, {
+              migrateLegacyProgress: true
+            })
             return {
               ...defaults.onboarding,
               ...sanitized,
@@ -2353,6 +2449,7 @@ export class Store {
         | 'displayName'
         | 'badgeColor'
         | 'repoIcon'
+        | 'upstream'
         | 'hookSettings'
         | 'worktreeBaseRef'
         | 'worktreeFolderPath'
@@ -2453,8 +2550,14 @@ export class Store {
   }
 
   private hydrateRepo(repo: Repo): Repo {
-    const { repoIcon: rawRepoIcon, worktreeFolderPath, ...repoWithoutIcon } = repo
+    const {
+      repoIcon: rawRepoIcon,
+      upstream: rawUpstream,
+      worktreeFolderPath,
+      ...repoWithoutIcon
+    } = repo
     const repoIcon = sanitizeRepoIcon(rawRepoIcon)
+    const upstream = sanitizeRepoUpstream(rawUpstream)
     const gitUsername = isFolderRepo(repo)
       ? ''
       : (this.gitUsernameCache.get(repo.path) ??
@@ -2468,6 +2571,7 @@ export class Store {
       ...repoWithoutIcon,
       ...(repoIcon !== undefined ? { repoIcon } : {}),
       ...(!isFolderRepo(repo) && worktreeFolderPath ? { worktreeFolderPath } : {}),
+      ...(upstream !== undefined ? { upstream } : {}),
       kind: isFolderRepo(repo) ? 'folder' : 'git',
       gitUsername,
       hookSettings: {
@@ -2852,6 +2956,9 @@ export class Store {
       })
       sanitizedUpdates.defaultTaskSource = taskProviderSettings.defaultTaskSource
       sanitizedUpdates.visibleTaskProviders = taskProviderSettings.visibleTaskProviders
+      if ('visibleTaskProviders' in updates) {
+        sanitizedUpdates.visibleTaskProvidersDefaultedForJira = true
+      }
     }
     if ('openInApplications' in updates) {
       sanitizedUpdates.openInApplications = normalizeOpenInApplications(updates.openInApplications)
@@ -2941,6 +3048,7 @@ export class Store {
         this.state.ui?.showDotfilesByWorktree
       ),
       featureTipsSeenIds: normalizeFeatureTipIds(this.state.ui?.featureTipsSeenIds),
+      contextualToursSeenIds: normalizeContextualTourIds(this.state.ui?.contextualToursSeenIds),
       featureInteractions: normalizeFeatureInteractions(this.state.ui?.featureInteractions)
     }
   }
@@ -2985,6 +3093,15 @@ export class Store {
         updates.featureTipsSeenIds !== undefined
           ? normalizeFeatureTipIds(updates.featureTipsSeenIds)
           : normalizeFeatureTipIds(this.state.ui?.featureTipsSeenIds),
+      // Why: renderer and paired clients can mark different tours seen from
+      // stale UI snapshots; union them so completed tours stay suppressed.
+      contextualToursSeenIds:
+        updates.contextualToursSeenIds !== undefined
+          ? mergeContextualTourSeenIds(
+              this.state.ui?.contextualToursSeenIds,
+              updates.contextualToursSeenIds
+            )
+          : normalizeContextualTourIds(this.state.ui?.contextualToursSeenIds),
       // Why: runtime RPCs and the renderer can both record education state.
       // Merge instead of replacing so a stale renderer snapshot cannot erase
       // runtime-only feature interactions.

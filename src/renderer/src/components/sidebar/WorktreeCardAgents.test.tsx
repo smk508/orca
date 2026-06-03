@@ -420,8 +420,9 @@ describe('WorktreeCardAgents', () => {
     const markup = renderToStaticMarkup(<WorktreeCardAgents worktreeId="wt-1" />)
 
     expect(markup).toContain('aria-expanded="false"')
-    expect(markup).toContain('items-center gap-0.5')
-    expect(markup).not.toContain('-space-x-1')
+    expect(markup).toContain('-space-x-0.5')
+    expect(markup).toContain('inline-flex size-4 items-center justify-center')
+    expect(markup).toContain('width="13"')
     expect(markup).toContain('3 agents: 1 waiting, 1 working, 1 done')
     expect(markup).toContain('Expand 3 agents: 1 waiting, 1 working, 1 done')
     expect(markup).not.toContain('title="Codex waiting"')

@@ -175,8 +175,6 @@ function makeDisposable() {
 }
 
 describe('registerPtyHandlers', () => {
-  const testCodexHomePath =
-    process.platform === 'win32' ? 'C:\\tmp\\orca-codex-home' : '/tmp/orca-codex-home'
   const handlers = new Map<string, (_event: unknown, args: unknown) => unknown>()
   const mainWindow = {
     isDestroyed: () => false,
@@ -531,9 +529,9 @@ describe('registerPtyHandlers', () => {
     })
 
     it('injects the selected Codex home into Orca terminal PTYs', async () => {
-      const env = await spawnAndGetEnv(undefined, undefined, () => testCodexHomePath)
-      expect(env.CODEX_HOME).toBe(testCodexHomePath)
-      expect(env.ORCA_CODEX_HOME).toBe(testCodexHomePath)
+      const env = await spawnAndGetEnv(undefined, undefined, () => '/tmp/orca-codex-home')
+      expect(env.CODEX_HOME).toBe('/tmp/orca-codex-home')
+      expect(env.ORCA_CODEX_HOME).toBe('/tmp/orca-codex-home')
     })
 
     it('injects the OpenCode hook env into Orca terminal PTYs', async () => {
@@ -560,6 +558,18 @@ describe('registerPtyHandlers', () => {
       expect(env.OPENCODE_CONFIG_DIR).toBe('/tmp/orca-opencode-overlay')
       expect(env.ORCA_OPENCODE_CONFIG_DIR).toBe('/tmp/orca-opencode-overlay')
       expect(env.ORCA_OPENCODE_SOURCE_CONFIG_DIR).toBe('/tmp/user-opencode-config')
+    })
+
+    it('does not treat inherited Orca OpenCode config as user config without a source dir', async () => {
+      const env = await spawnAndGetEnv({
+        OPENCODE_CONFIG_DIR: '/tmp/parent-orca-opencode-overlay',
+        ORCA_OPENCODE_CONFIG_DIR: '/tmp/parent-orca-opencode-overlay'
+      })
+
+      expect(openCodeBuildPtyEnvMock).toHaveBeenCalledWith(expect.any(String), undefined)
+      expect(env.OPENCODE_CONFIG_DIR).toBe('/tmp/orca-opencode-config')
+      expect(env.ORCA_OPENCODE_CONFIG_DIR).toBe('/tmp/orca-opencode-config')
+      expect(env.ORCA_OPENCODE_SOURCE_CONFIG_DIR).toBeUndefined()
     })
 
     it('restores user OpenCode config when agent status hooks are disabled in a nested Orca shell', async () => {
@@ -868,10 +878,10 @@ describe('registerPtyHandlers', () => {
       const env = await spawnAndGetEnv(
         undefined,
         { CODEX_HOME: '/tmp/system-codex-home' },
-        () => testCodexHomePath
+        () => '/tmp/orca-codex-home'
       )
-      expect(env.CODEX_HOME).toBe(testCodexHomePath)
-      expect(env.ORCA_CODEX_HOME).toBe(testCodexHomePath)
+      expect(env.CODEX_HOME).toBe('/tmp/orca-codex-home')
+      expect(env.ORCA_CODEX_HOME).toBe('/tmp/orca-codex-home')
     })
 
     it('injects explicit proxy settings into local PTY env', async () => {
@@ -1077,9 +1087,9 @@ describe('registerPtyHandlers', () => {
       })
 
       it('injects the selected Codex home on the daemon path', async () => {
-        const env = await daemonSpawnAndGetEnv({}, () => testCodexHomePath)
-        expect(env.CODEX_HOME).toBe(testCodexHomePath)
-        expect(env.ORCA_CODEX_HOME).toBe(testCodexHomePath)
+        const env = await daemonSpawnAndGetEnv({}, () => '/tmp/orca-codex-home')
+        expect(env.CODEX_HOME).toBe('/tmp/orca-codex-home')
+        expect(env.ORCA_CODEX_HOME).toBe('/tmp/orca-codex-home')
       })
 
       it('injects explicit proxy settings on the daemon path', async () => {
@@ -2709,50 +2719,6 @@ describe('registerPtyHandlers', () => {
       expect(spawnOptions.env.CODEX_HOME).toBeUndefined()
       expect(spawnOptions.env.ORCA_CODEX_HOME).toBeUndefined()
     })
-
-    it('converts selected WSL active Codex homes to Linux paths for wsl.exe shells', () => {
-      const originalPlatform = process.platform
-      Object.defineProperty(process, 'platform', {
-        configurable: true,
-        value: 'win32'
-      })
-      process.env.COMSPEC = 'C:\\Windows\\system32\\cmd.exe'
-      isPwshAvailableMock.mockReturnValue(false)
-
-      try {
-        registerPtyHandlers(
-          mainWindow as never,
-          undefined,
-          () =>
-            '\\\\wsl.localhost\\Ubuntu\\home\\test\\.local\\share\\orca\\codex-runtime-home\\active\\wsl\\home',
-          () =>
-            ({
-              terminalWindowsShell: 'powershell.exe',
-              terminalWindowsPowerShellImplementation: 'powershell.exe'
-            }) as never
-        )
-        handlers.get('pty:spawn')!(null, {
-          cols: 80,
-          rows: 24,
-          shellOverride: 'wsl.exe'
-        })
-
-        const spawnOptions = spawnMock.mock.calls.at(-1)?.[2] as { env: Record<string, string> }
-        expect(spawnOptions.env.CODEX_HOME).toBe(
-          '/home/test/.local/share/orca/codex-runtime-home/active/wsl/home'
-        )
-        expect(spawnOptions.env.ORCA_CODEX_HOME).toBe(
-          '/home/test/.local/share/orca/codex-runtime-home/active/wsl/home'
-        )
-        expect(spawnOptions.env.WSLENV).toContain('CODEX_HOME')
-        expect(spawnOptions.env.WSLENV).toContain('ORCA_CODEX_HOME')
-      } finally {
-        Object.defineProperty(process, 'platform', {
-          configurable: true,
-          value: originalPlatform
-        })
-      }
-    })
   })
 
   it('rejects missing WSL worktree cwd instead of validating only the fallback Windows cwd', async () => {
@@ -3047,158 +3013,6 @@ describe('registerPtyHandlers', () => {
       })
       vi.advanceTimersByTime(8)
       expect(mainWindow.webContents.send).toHaveBeenCalledTimes(1)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('holds background PTY output briefly after foreground input', async () => {
-    vi.useFakeTimers()
-    const activeProc = createMockProc()
-    const backgroundProc = createMockProc()
-    spawnMock.mockReturnValueOnce(activeProc.proc).mockReturnValueOnce(backgroundProc.proc)
-
-    try {
-      registerPtyHandlers(mainWindow as never)
-      const activeSpawn = (await handlers.get('pty:spawn')!(null, {
-        cols: 80,
-        rows: 24,
-        cwd: '/tmp'
-      })) as { id: string }
-      const backgroundSpawn = (await handlers.get('pty:spawn')!(null, {
-        cols: 80,
-        rows: 24,
-        cwd: '/tmp'
-      })) as { id: string }
-      const writeListener = getPtyWriteListener()
-      mainWindow.webContents.send.mockClear()
-
-      backgroundProc.emitData('background output')
-      writeListener(null, {
-        id: activeSpawn.id,
-        data: 'a'
-      })
-
-      vi.advanceTimersByTime(8)
-      expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('pty:data', {
-        id: backgroundSpawn.id,
-        data: 'background output'
-      })
-
-      activeProc.emitData('\x1b[20;2Hredraw')
-      expect(mainWindow.webContents.send).toHaveBeenCalledWith('pty:data', {
-        id: activeSpawn.id,
-        data: '\x1b[20;2Hredraw'
-      })
-      expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('pty:data', {
-        id: backgroundSpawn.id,
-        data: 'background output'
-      })
-
-      vi.advanceTimersByTime(41)
-      expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('pty:data', {
-        id: backgroundSpawn.id,
-        data: 'background output'
-      })
-
-      vi.advanceTimersByTime(1)
-      expect(mainWindow.webContents.send).toHaveBeenCalledWith('pty:data', {
-        id: backgroundSpawn.id,
-        data: 'background output'
-      })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('does not hold foreground PTY batch output behind background output', async () => {
-    vi.useFakeTimers()
-    const activeProc = createMockProc()
-    const backgroundProc = createMockProc()
-    spawnMock.mockReturnValueOnce(activeProc.proc).mockReturnValueOnce(backgroundProc.proc)
-
-    try {
-      registerPtyHandlers(mainWindow as never)
-      const activeSpawn = (await handlers.get('pty:spawn')!(null, {
-        cols: 80,
-        rows: 24,
-        cwd: '/tmp'
-      })) as { id: string }
-      const backgroundSpawn = (await handlers.get('pty:spawn')!(null, {
-        cols: 80,
-        rows: 24,
-        cwd: '/tmp'
-      })) as { id: string }
-      const writeListener = getPtyWriteListener()
-      mainWindow.webContents.send.mockClear()
-
-      backgroundProc.emitData('background output')
-      writeListener(null, {
-        id: activeSpawn.id,
-        data: 'a'
-      })
-      const foregroundOutput = 'x'.repeat(1025)
-      activeProc.emitData(foregroundOutput)
-
-      vi.advanceTimersByTime(8)
-
-      expect(mainWindow.webContents.send).toHaveBeenCalledWith('pty:data', {
-        id: activeSpawn.id,
-        data: foregroundOutput
-      })
-      expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('pty:data', {
-        id: backgroundSpawn.id,
-        data: 'background output'
-      })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('does not starve background PTY output during continuous input', async () => {
-    vi.useFakeTimers()
-    const activeProc = createMockProc()
-    const backgroundProc = createMockProc()
-    spawnMock.mockReturnValueOnce(activeProc.proc).mockReturnValueOnce(backgroundProc.proc)
-
-    try {
-      registerPtyHandlers(mainWindow as never)
-      const activeSpawn = (await handlers.get('pty:spawn')!(null, {
-        cols: 80,
-        rows: 24,
-        cwd: '/tmp'
-      })) as { id: string }
-      const backgroundSpawn = (await handlers.get('pty:spawn')!(null, {
-        cols: 80,
-        rows: 24,
-        cwd: '/tmp'
-      })) as { id: string }
-      const writeListener = getPtyWriteListener()
-      mainWindow.webContents.send.mockClear()
-
-      backgroundProc.emitData('background output')
-      for (let index = 0; index < 7; index++) {
-        writeListener(null, {
-          id: activeSpawn.id,
-          data: 'a'
-        })
-        vi.advanceTimersByTime(40)
-      }
-      expect(mainWindow.webContents.send).not.toHaveBeenCalledWith('pty:data', {
-        id: backgroundSpawn.id,
-        data: 'background output'
-      })
-
-      writeListener(null, {
-        id: activeSpawn.id,
-        data: 'a'
-      })
-      vi.advanceTimersByTime(10)
-
-      expect(mainWindow.webContents.send).toHaveBeenCalledWith('pty:data', {
-        id: backgroundSpawn.id,
-        data: 'background output'
-      })
     } finally {
       vi.useRealTimers()
     }

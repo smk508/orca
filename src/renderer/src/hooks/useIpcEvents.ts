@@ -76,7 +76,7 @@ import { collectLeafIdsInOrder } from '@/components/terminal-pane/layout-seriali
 import { track } from '@/lib/telemetry'
 import { singlePaneLayoutSnapshot } from '@/store/slices/terminal-helpers'
 import { buildWorkspaceSessionPayload } from '@/lib/workspace-session'
-import { getLinkedWorkItemSuggestedName } from '../../../shared/workspace-name'
+import { getLinearIssueWorkspaceName } from '../../../shared/workspace-name'
 import type { AppState } from '../store/types'
 import {
   closeWebRuntimeSessionTab,
@@ -129,12 +129,38 @@ function releaseBrowserAutomationBootstrapLease(browserPageId: string): void {
   browserAutomationBootstrapLeaseByPageId.delete(browserPageId)
 }
 
+function findBrowserPageWorktreeId(store: AppState, browserPageId: string): string | null {
+  for (const [worktreeId, browserTabs] of Object.entries(store.browserTabsByWorktree)) {
+    for (const workspace of browserTabs) {
+      if (
+        workspace.id === browserPageId ||
+        workspace.activePageId === browserPageId ||
+        workspace.pageIds?.includes(browserPageId)
+      ) {
+        return worktreeId
+      }
+    }
+  }
+
+  for (const pages of Object.values(store.browserPagesByWorkspace)) {
+    const page = pages.find((candidate) => candidate.id === browserPageId)
+    if (page) {
+      return page.worktreeId
+    }
+  }
+
+  return null
+}
+
 function acquireBrowserAutomationBootstrapLease(
   worktreeId: string | null | undefined,
   browserPageId?: string | null
 ): void {
   const store = useAppStore.getState()
-  const targetWorktreeId = worktreeId ?? store.activeWorktreeId
+  const targetWorktreeId =
+    worktreeId ??
+    (browserPageId ? findBrowserPageWorktreeId(store, browserPageId) : null) ??
+    store.activeWorktreeId
   if (!targetWorktreeId) {
     return
   }
@@ -420,6 +446,14 @@ function mergeRemoteWorkspaceSession(
     lastVisitedAtByWorktreeId: {
       ...omitTargetWorktrees(current.lastVisitedAtByWorktreeId),
       ...remote.lastVisitedAtByWorktreeId
+    },
+    defaultTerminalTabsAppliedByWorktreeId: {
+      ...omitTargetWorktrees(current.defaultTerminalTabsAppliedByWorktreeId),
+      ...remote.defaultTerminalTabsAppliedByWorktreeId
+    },
+    sleptWorktreeIds: {
+      ...omitTargetWorktrees(current.sleptWorktreeIds),
+      ...remote.sleptWorktreeIds
     }
   }
 }
@@ -583,7 +617,7 @@ export function buildNewWorkspaceShortcutModalData(
 
   return {
     telemetrySource: 'shortcut',
-    prefilledName: getLinkedWorkItemSuggestedName(linearIssue),
+    prefilledName: getLinearIssueWorkspaceName(linearIssue),
     // Why: Cmd+N from a Linear issue should behave like the issue's Start
     // workspace action; otherwise the agent launches without source context.
     linkedWorkItem: buildLinearIssueLinkedWorkItem(linearIssue)
@@ -716,6 +750,12 @@ export function useIpcEvents(): void {
       window.api.ui.onOpenSettings(() => {
         useAppStore.getState().openSettingsPage()
       })
+    )
+
+    unsubs.push(
+      window.api.ui.onOpenSetupGuide?.(() => {
+        useAppStore.getState().openModal('setup-guide', { telemetrySource: 'help_menu' })
+      }) ?? (() => {})
     )
 
     unsubs.push(
@@ -941,7 +981,8 @@ export function useIpcEvents(): void {
           tabId,
           leafId,
           splitFromLeafId,
-          splitDirection
+          splitDirection,
+          splitTelemetrySource
         }) => {
           try {
             if (isRuntimeEnvironmentActive()) {
@@ -1018,10 +1059,12 @@ export function useIpcEvents(): void {
                 // paneKey. Reusing the existing tab preserves native split-pane
                 // behavior instead of letting createTab mint a collision tab.
                 store.updateTabPtyId(tab.id, ptyId)
+                const existingLayout = store.terminalLayoutsByTabId?.[tab.id]
+                const sourcePtyId = existingLayout?.ptyIdsByLeafId?.[splitFromLeafId]
                 store.setTabLayout(
                   tab.id,
                   addSplitLeafToLayout(
-                    store.terminalLayoutsByTabId?.[tab.id],
+                    existingLayout,
                     splitFromLeafId,
                     leafId,
                     ptyId,
@@ -1037,6 +1080,8 @@ export function useIpcEvents(): void {
                       paneRuntimeId: -1,
                       direction: splitDirection ?? 'horizontal',
                       sourceLeafId: splitFromLeafId,
+                      sourcePtyId,
+                      telemetrySource: splitTelemetrySource,
                       newLeafId: leafId,
                       ptyId
                     }
@@ -1182,10 +1227,18 @@ export function useIpcEvents(): void {
     )
 
     unsubs.push(
-      window.api.ui.onSplitTerminal(({ tabId, paneRuntimeId, direction, command }) => {
-        const detail: SplitTerminalPaneDetail = { tabId, paneRuntimeId, direction, command }
-        window.dispatchEvent(new CustomEvent(SPLIT_TERMINAL_PANE_EVENT, { detail }))
-      })
+      window.api.ui.onSplitTerminal(
+        ({ tabId, paneRuntimeId, direction, command, telemetrySource }) => {
+          const detail: SplitTerminalPaneDetail = {
+            tabId,
+            paneRuntimeId,
+            direction,
+            command,
+            telemetrySource
+          }
+          window.dispatchEvent(new CustomEvent(SPLIT_TERMINAL_PANE_EVENT, { detail }))
+        }
+      )
     )
 
     unsubs.push(
@@ -1425,11 +1478,11 @@ export function useIpcEvents(): void {
     // has display != none. Main sends this before browser automation commands
     // so persisted hidden tabs mount without changing the user's active pane.
     unsubs.push(
-      window.api.browser.onActivateView(({ worktreeId }) => {
+      window.api.browser.onActivateView(({ worktreeId, browserPageId }) => {
         if (isRuntimeEnvironmentActive()) {
           return
         }
-        acquireBrowserAutomationBootstrapLease(worktreeId)
+        acquireBrowserAutomationBootstrapLease(worktreeId, browserPageId)
       })
     )
 
@@ -2212,11 +2265,11 @@ export function useIpcEvents(): void {
         repoConnectionResolved,
         owningWorktreeId
       } = resolvePaneKey(store, data.paneKey)
-      if (!exists && data.worktreeId) {
+      if (!exists && data.worktreeId && hasRuntimeBackedWorktreeAttribution(data)) {
         // Why: orchestration worker hooks can carry main-side worktree
         // attribution before this renderer has a terminal tab for the pane.
-        // Accept those only when the worktree is known, then keep the normal
-        // repo connection check below for SSH/local ownership.
+        // Require runtime identity too; durable snapshots with only worktreeId
+        // can be stale cached rows from closed/remounted panes.
         const fallbackOwnership = resolveWorktreeConnection(store, data.worktreeId)
         if (fallbackOwnership.worktreeExists) {
           owningWorktreeId = data.worktreeId
@@ -2565,6 +2618,13 @@ export function useIpcEvents(): void {
       resetAgentHookCompletionNotificationCoordinators()
     }
   }, [])
+}
+
+function hasRuntimeBackedWorktreeAttribution(data: AgentStatusIpcPayload): boolean {
+  return (
+    (typeof data.terminalHandle === 'string' && data.terminalHandle.length > 0) ||
+    data.orchestration !== undefined
+  )
 }
 
 function applyResolvedAgentTerminalTitleToTab(

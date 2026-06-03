@@ -1,6 +1,7 @@
 import { toast } from 'sonner'
 import { useAppStore } from '@/store'
 import { clearWorktreeSleepIntent, markWorktreeSleepIntent } from '@/lib/worktree-sleep-intent'
+import { cancelPendingSidebarWorktreeActivation } from '@/lib/sidebar-worktree-activation'
 import { VIRTUALIZED_SCROLL_ANCHOR_RECORD_EVENT } from '@/hooks/useVirtualizedScrollAnchor'
 
 /**
@@ -84,9 +85,13 @@ export async function runSleepWorktrees(worktreeIds: readonly string[]): Promise
   if (worktreeIds.length === 0) {
     return
   }
+  // Why: clicking a slept sidebar row queues a delayed wake. A later Sleep
+  // command is the newer intent, so do not let that stale wake respawn PTYs.
+  cancelPendingSidebarWorktreeActivation()
   const {
     activeWorktreeId,
     setActiveWorktree,
+    markWorktreeSlept,
     shutdownWorktreeBrowsers,
     shutdownWorktreeTerminals
   } = useAppStore.getState()
@@ -125,6 +130,7 @@ export async function runSleepWorktrees(worktreeIds: readonly string[]): Promise
         // serializer buffers into buffersByLeafId for SSH wake to reseed
         // scrollback. See DESIGN_DOC_TERMINAL_HISTORY_FIX_V2.md §3.3.c.
         await shutdownWorktreeTerminals(worktreeId, { keepIdentifiers: true })
+        markWorktreeSlept(worktreeId)
       } catch (err) {
         errors.push(err instanceof Error ? err.message : String(err))
       }

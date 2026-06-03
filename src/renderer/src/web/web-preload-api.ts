@@ -4,6 +4,10 @@
 import type { PreloadApi, PreflightStatus, RefreshAgentsResult } from '../../../preload/api-types'
 import type { RuntimeRpcResponse } from '../../../shared/runtime-rpc-envelope'
 import type {
+  ComputerUsePermissionSetupResult,
+  ComputerUsePermissionStatusResult
+} from '../../../shared/computer-use-permissions-types'
+import type {
   DetectedWorktreeListResult,
   DirEntry,
   ForceDeleteWorktreeBranchResult,
@@ -20,12 +24,14 @@ import type {
   WorkspaceSessionPatch,
   WorkspaceSessionState
 } from '../../../shared/types'
+import type { SkillDiscoveryResult } from '../../../shared/skills'
 import {
   getDefaultOnboardingState,
   getDefaultSettings,
   getDefaultUIState,
   getDefaultWorkspaceSession,
-  normalizeAgentActivityDisplayMode
+  normalizeAgentActivityDisplayMode,
+  ONBOARDING_FLOW_VERSION
 } from '../../../shared/constants'
 import { legacyBaseRefSearchResult } from '../../../shared/base-ref-search-result'
 import { createE2EConfig } from '../../../shared/e2e-config'
@@ -64,6 +70,7 @@ import {
   type FeatureInteractionId,
   type FeatureInteractionState
 } from '../../../shared/feature-interactions'
+import { normalizeContextualTourIds, type ContextualTourId } from '../../../shared/contextual-tours'
 
 const SETTINGS_STORAGE_KEY = 'orca.web.settings.v1'
 const UI_STORAGE_KEY = 'orca.web.ui.v1'
@@ -155,6 +162,7 @@ type WebGitHubApi = NonNullable<PreloadApi['gh']>
 type WebGitHubResult<K extends keyof WebGitHubApi> = Awaited<ReturnType<WebGitHubApi[K]>>
 type WebGitHubRouteKey =
   | 'repoSlug'
+  | 'repoUpstream'
   | 'prForBranch'
   | 'issue'
   | 'workItem'
@@ -202,6 +210,7 @@ type WebGitHubRouteKey =
   | 'updateIssueTypeBySlug'
 type WebGitHubRuntimeMethod =
   | 'github.repoSlug'
+  | 'github.repoUpstream'
   | 'github.prForBranch'
   | 'github.issue'
   | 'github.workItem'
@@ -302,6 +311,7 @@ type WebKeybindingDocument = {
 
 export const GITHUB_WEB_RPC_METHODS = {
   repoSlug: 'github.repoSlug',
+  repoUpstream: 'github.repoUpstream',
   prForBranch: 'github.prForBranch',
   issue: 'github.issue',
   workItem: 'github.workItem',
@@ -485,6 +495,7 @@ function createWebPreloadApi(): Partial<PreloadApi> {
         const next: OnboardingState = {
           ...current,
           ...updates,
+          flowVersion: ONBOARDING_FLOW_VERSION,
           checklist: {
             ...current.checklist,
             ...updates.checklist
@@ -541,9 +552,7 @@ function createWebPreloadApi(): Partial<PreloadApi> {
     computerUsePermissions: createComputerUsePermissionsApi(),
     updater: createUpdaterApi(),
     shell: createShellApi(),
-    skills: {
-      discover: () => Promise.resolve({ skills: [], sources: [], scannedAt: Date.now() })
-    },
+    skills: createSkillsApi(),
     pty: createPtyApi(),
     ssh: createSshApi(),
     wsl: {
@@ -1003,6 +1012,7 @@ function createWorktreesApi(): NonNullable<Partial<PreloadApi>['worktrees']> {
         pushTarget: args.pushTarget,
         setupDecision: args.setupDecision,
         createdWithAgent: args.createdWithAgent,
+        pendingFirstAgentMessageRename: args.pendingFirstAgentMessageRename,
         workspaceStatus: args.workspaceStatus,
         manualOrder: args.manualOrder
       })
@@ -1145,6 +1155,21 @@ function createFileApi(): NonNullable<Partial<PreloadApi>['fs']> {
         worktree: file.worktree.id,
         relativePath: file.relativePath
       })
+    },
+    pathExists: async ({ filePath }) => {
+      try {
+        const file = await resolveRuntimeFilePath(filePath)
+        await callRuntimeResult('files.stat', {
+          worktree: file.worktree.id,
+          relativePath: file.relativePath
+        })
+        return true
+      } catch (error) {
+        if (isMissingPathError(error)) {
+          return false
+        }
+        throw error
+      }
     },
     listFiles: async ({ rootPath, excludePaths }) => {
       const file = await resolveRuntimeFilePath(rootPath)
@@ -1372,6 +1397,8 @@ function createGitHubApi(): WebGitHubApi {
   const githubApi = {
     viewer: () => Promise.resolve(null),
     repoSlug: (args) => route<WebGitHubResult<'repoSlug'>>(GITHUB_WEB_RPC_METHODS.repoSlug, args),
+    repoUpstream: (args) =>
+      route<WebGitHubResult<'repoUpstream'>>(GITHUB_WEB_RPC_METHODS.repoUpstream, args),
     prForBranch: (args) =>
       route<WebGitHubResult<'prForBranch'>>(GITHUB_WEB_RPC_METHODS.prForBranch, args),
     refreshPRNow: async ({ candidate }) => {
@@ -1629,6 +1656,10 @@ function createWebUiApi(): NonNullable<Partial<PreloadApi>['ui']> {
           featureInteractions: mergeFeatureInteractionState(
             local.featureInteractions,
             result.ui.featureInteractions
+          ),
+          contextualToursSeenIds: mergeContextualTourSeenIds(
+            local.contextualToursSeenIds,
+            result.ui.contextualToursSeenIds
           )
         }
         writeJson(UI_STORAGE_KEY, next)
@@ -1674,6 +1705,10 @@ function createWebUiApi(): NonNullable<Partial<PreloadApi>['ui']> {
           featureInteractions: mergeFeatureInteractionState(
             local.featureInteractions,
             result.ui.featureInteractions
+          ),
+          contextualToursSeenIds: mergeContextualTourSeenIds(
+            local.contextualToursSeenIds,
+            result.ui.contextualToursSeenIds
           )
         }
         writeJson(UI_STORAGE_KEY, next)
@@ -1706,6 +1741,7 @@ function createWebUiApi(): NonNullable<Partial<PreloadApi>['ui']> {
     },
     isMaximized: () => Promise.resolve(false),
     onOpenSettings: () => noopUnsubscribe,
+    onOpenSetupGuide: () => noopUnsubscribe,
     onOpenFeatureTour: () => noopUnsubscribe,
     onOpenCrashReport: () => noopUnsubscribe,
     onToggleLeftSidebar: () => noopUnsubscribe,
@@ -1910,20 +1946,23 @@ function createComputerUsePermissionsApi(): NonNullable<
 > {
   return {
     getStatus: () =>
-      Promise.resolve({
-        platform: getBrowserPlatform(),
-        helperAppPath: null,
-        helperUnavailableReason: 'web_client',
-        permissions: []
-      }),
-    openSetup: () =>
-      Promise.resolve({
+      callRuntimeResult<ComputerUsePermissionStatusResult>(
+        'computer.permissionsStatus',
+        {},
+        15_000
+      ),
+    openSetup: (args) =>
+      callRuntimeResult<ComputerUsePermissionSetupResult>(
+        'computer.permissions',
+        args ?? {},
+        15_000
+      ).catch(() => ({
         platform: getBrowserPlatform(),
         helperAppPath: null,
         openedSettings: false,
         launchedHelper: false,
         nextStep: 'Computer-use permissions are managed on the Orca server.'
-      }),
+      })),
     reset: () =>
       Promise.resolve({
         platform: getBrowserPlatform(),
@@ -1935,9 +1974,21 @@ function createComputerUsePermissionsApi(): NonNullable<
   }
 }
 
+function createSkillsApi(): NonNullable<Partial<PreloadApi>['skills']> {
+  return {
+    discover: () =>
+      callRuntimeResult<SkillDiscoveryResult>('skills.discover', undefined, 15_000).catch(() => ({
+        skills: [],
+        sources: [],
+        scannedAt: Date.now()
+      }))
+  }
+}
+
 function createNotificationsApi(): NonNullable<Partial<PreloadApi>['notifications']> {
   return {
     dispatch: () => Promise.resolve({ delivered: false, reason: 'not-supported' }),
+    dismiss: () => Promise.resolve({ dismissed: 0 }),
     openSystemSettings: () => Promise.resolve(),
     getPermissionStatus: () =>
       Promise.resolve({ supported: false, platform: getBrowserPlatform(), requested: false }),
@@ -2310,6 +2361,7 @@ function getStoredWorkspaceSession(): WorkspaceSessionState {
 function closeWebOnboarding(base: OnboardingState): OnboardingState {
   return {
     ...base,
+    flowVersion: ONBOARDING_FLOW_VERSION,
     closedAt: Date.now(),
     outcome: 'dismissed',
     checklist: {
@@ -2371,6 +2423,17 @@ function mergeFeatureInteractionState(
       : incomingRecord
   }
   return merged
+}
+
+function mergeContextualTourSeenIds(
+  current: PersistedUIState['contextualToursSeenIds'],
+  incoming: PersistedUIState['contextualToursSeenIds']
+): ContextualTourId[] {
+  const merged = new Set<ContextualTourId>(normalizeContextualTourIds(current))
+  for (const id of normalizeContextualTourIds(incoming)) {
+    merged.add(id)
+  }
+  return [...merged]
 }
 
 function mergeSettings(base: GlobalSettings, updates: Partial<GlobalSettings>): GlobalSettings {
@@ -2458,6 +2521,13 @@ function toLegacyDetectedWorktreeResult(
       visible: true
     }))
   }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  return /\bENOENT\b|not found|no such file/i.test(error.message)
 }
 
 async function resolveRuntimeWorktreeByPath(worktreePath: string): Promise<Worktree> {

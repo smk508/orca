@@ -20,8 +20,6 @@ import {
   FolderOpen,
   GitMerge,
   GitPullRequestArrow,
-  List,
-  ListTree,
   MessageSquare,
   Trash,
   Trash2,
@@ -45,6 +43,7 @@ import { isFolderRepo } from '../../../../shared/repo-kind'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
+import { DetachedHeadBadge } from '@/components/DetachedHeadBadge'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -81,10 +80,9 @@ import {
   type SourceControlTreeNode
 } from './source-control-tree'
 import {
-  getDiscardAreaConfirmationCopy,
-  getDiscardEntryConfirmationCopy,
-  type DiscardConfirmationCopy
-} from './source-control-discard-confirmation'
+  SourceControlDiscardDialog,
+  type PendingDiscardConfirmation
+} from './source-control-discard-dialog'
 import { refreshGitStatusForWorktree } from './git-status-refresh'
 import { toast } from 'sonner'
 import {
@@ -161,7 +159,6 @@ import type {
   GitConflictKind,
   GitConflictOperation,
   GitStatusEntry,
-  GlobalSettings,
   SourceControlViewMode,
   TuiAgent
 } from '../../../../shared/types'
@@ -185,6 +182,7 @@ import {
 import type { SourceControlAiOperation } from '../../../../shared/source-control-ai-types'
 import { getCommitMessageModelDiscoveryHostKeyForScope } from '../../../../shared/commit-message-host-key'
 import { getRuntimeGitScope } from '@/runtime/runtime-git-client'
+import { getWorktreeGitIdentityDisplay } from '@/lib/worktree-git-identity-display'
 import { getRepositorySourceControlAiSectionId } from '@/components/settings/repository-settings-targets'
 import {
   getCommitFailureDialogWorktreeKey,
@@ -371,61 +369,6 @@ type PullRequestGenerationRecords = Record<string, PullRequestGenerationRecord>
 export function normalizeSourceControlViewMode(value: unknown): SourceControlViewMode {
   return value === 'tree' || value === 'list' ? value : 'list'
 }
-
-export function getNextSourceControlViewMode(mode: SourceControlViewMode): SourceControlViewMode {
-  return mode === 'tree' ? 'list' : 'tree'
-}
-
-export type SourceControlViewModePreferenceWriteState = {
-  writeChain: Promise<void>
-  writeSeq: number
-}
-
-export function requestSourceControlViewModePreferenceWrite({
-  hydrated,
-  currentMode,
-  writeState,
-  setOptimisticMode,
-  updateSettings
-}: {
-  hydrated: boolean
-  currentMode: SourceControlViewMode
-  writeState: SourceControlViewModePreferenceWriteState
-  setOptimisticMode: (mode: SourceControlViewMode | null) => void
-  updateSettings: (
-    updates: Pick<GlobalSettings, 'sourceControlViewMode'>
-  ) => Promise<GlobalSettings | void>
-}): SourceControlViewMode | null {
-  if (!hydrated) {
-    return null
-  }
-  const next = getNextSourceControlViewMode(currentMode)
-  const writeSeq = writeState.writeSeq + 1
-  writeState.writeSeq = writeSeq
-  setOptimisticMode(next)
-
-  // Why: settings writes cross IPC. Queue them so rapid toolbar clicks keep
-  // the user's final intent as the persisted value even if earlier writes
-  // would otherwise resolve after later clicks.
-  const write = writeState.writeChain
-    .catch(() => undefined)
-    .then(() => updateSettings({ sourceControlViewMode: next }))
-    .then(() => undefined)
-  writeState.writeChain = write
-  void write
-    .finally(() => {
-      if (writeState.writeSeq === writeSeq) {
-        setOptimisticMode(null)
-      }
-    })
-    .catch(() => undefined)
-
-  return next
-}
-
-type PendingDiscardConfirmation =
-  | { kind: 'entry'; entry: GitStatusEntry }
-  | { kind: 'area'; area: DiscardAllArea; paths: readonly string[] }
 
 type GitStatusSourceControlTreeNode = SourceControlTreeNode<
   GitStatusEntry,
@@ -1127,7 +1070,6 @@ function SourceControlInner(): React.JSX.Element {
   const isRemoteOperationActive = useAppStore((s) => s.isRemoteOperationActive)
   const inFlightRemoteOpKind = useAppStore((s) => s.inFlightRemoteOpKind)
   const settings = useAppStore((s) => s.settings)
-  const updateSettings = useAppStore((s) => s.updateSettings)
   const openSettingsTarget = useAppStore((s) => s.openSettingsTarget)
   const openSettingsPage = useAppStore((s) => s.openSettingsPage)
   const hostedReviewCache = useAppStore((s) => s.hostedReviewCache)
@@ -1284,26 +1226,10 @@ function SourceControlInner(): React.JSX.Element {
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
     createDefaultCollapsedSections
   )
-  const [optimisticSourceControlViewMode, setOptimisticSourceControlViewMode] =
-    useState<SourceControlViewMode | null>(null)
-  const sourceControlViewModeWriteStateRef = useRef<SourceControlViewModePreferenceWriteState>({
-    writeChain: Promise.resolve(),
-    writeSeq: 0
-  })
   const persistedSourceControlViewMode = normalizeSourceControlViewMode(
     settings?.sourceControlViewMode
   )
-  const sourceControlViewMode = optimisticSourceControlViewMode ?? persistedSourceControlViewMode
-  const isSourceControlViewModeHydrated = settings !== null
-  const handleToggleSourceControlViewMode = useCallback(() => {
-    requestSourceControlViewModePreferenceWrite({
-      hydrated: isSourceControlViewModeHydrated,
-      currentMode: sourceControlViewMode,
-      writeState: sourceControlViewModeWriteStateRef.current,
-      setOptimisticMode: setOptimisticSourceControlViewMode,
-      updateSettings
-    })
-  }, [isSourceControlViewModeHydrated, sourceControlViewMode, updateSettings])
+  const sourceControlViewMode = persistedSourceControlViewMode
   const [collapsedTreeDirs, setCollapsedTreeDirs] = useState<Set<string>>(new Set())
   const [baseRefDialogOpen, setBaseRefDialogOpen] = useState(false)
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscardConfirmation | null>(null)
@@ -1386,7 +1312,9 @@ function SourceControlInner(): React.JSX.Element {
 
   const isFolder = activeRepo ? isFolderRepo(activeRepo) : false
   const worktreePath = activeWorktree?.path ?? null
-  const branchName = activeWorktree?.branch.replace(/^refs\/heads\//, '') ?? 'HEAD'
+  const gitIdentityDisplay = activeWorktree ? getWorktreeGitIdentityDisplay(activeWorktree) : null
+  const detachedHeadDisplay = gitIdentityDisplay?.kind === 'detached' ? gitIdentityDisplay : null
+  const branchName = gitIdentityDisplay?.kind === 'branch' ? gitIdentityDisplay.branchName : ''
   const sourceControlAiDiscoveryHostKey = useMemo(
     () =>
       getCommitMessageModelDiscoveryHostKeyForScope(
@@ -1776,16 +1704,6 @@ function SourceControlInner(): React.JSX.Element {
   }, [collapsedSections, flatEntries, sourceControlViewMode, visibleTreeRowsByArea])
 
   const [isExecutingBulk, setIsExecutingBulk] = useState(false)
-  const pendingDiscardCopy = useMemo<DiscardConfirmationCopy | null>(() => {
-    if (!pendingDiscard) {
-      return null
-    }
-    if (pendingDiscard.kind === 'entry') {
-      return getDiscardEntryConfirmationCopy(pendingDiscard.entry)
-    }
-    return getDiscardAreaConfirmationCopy(pendingDiscard.area, pendingDiscard.paths.length)
-  }, [pendingDiscard])
-
   const unresolvedConflicts = useMemo(
     () => entries.filter((entry) => entry.conflictStatus === 'unresolved' && entry.conflictKind),
     [entries]
@@ -4153,7 +4071,6 @@ function SourceControlInner(): React.JSX.Element {
   const showGenericEmptyState =
     !hasUncommittedEntries && branchSummary?.status === 'ready' && branchEntries.length === 0
   const currentWorktreeId = activeWorktree.id
-  const PendingDiscardIcon = pendingDiscardCopy?.confirmLabel.startsWith('Delete') ? Trash : Undo2
 
   return (
     <>
@@ -4185,14 +4102,17 @@ function SourceControlInner(): React.JSX.Element {
           )}
         </div>
 
-        {scope === 'all' && (
+        {detachedHeadDisplay && (
+          <div className="border-b border-border px-3 py-2">
+            <DetachedHeadBadge display={detachedHeadDisplay} side="bottom" />
+          </div>
+        )}
+
+        {scope === 'all' && shouldShowCompareSummary(branchSummary) && (
           <div className="border-b border-border px-3 py-2">
             <CompareSummary
               summary={branchSummary}
-              viewMode={sourceControlViewMode}
               onChangeBaseRef={() => setBaseRefDialogOpen(true)}
-              onToggleViewMode={handleToggleSourceControlViewMode}
-              viewModeToggleDisabled={!isSourceControlViewModeHydrated}
               onRetry={() => void refreshBranchCompare()}
             />
           </div>
@@ -4854,45 +4774,11 @@ function SourceControlInner(): React.JSX.Element {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={pendingDiscard !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setPendingDiscard(null)
-          }
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-sm">
-              {pendingDiscardCopy?.title ?? 'Discard changes?'}
-            </DialogTitle>
-            <DialogDescription className="text-xs">
-              {pendingDiscardCopy?.description ?? 'This cannot be undone.'}
-            </DialogDescription>
-          </DialogHeader>
-          {pendingDiscard?.kind === 'area' ? (
-            <div className="rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
-              {pendingDiscard.paths.length} {pendingDiscard.paths.length === 1 ? 'file' : 'files'}
-            </div>
-          ) : pendingDiscard?.kind === 'entry' ? (
-            <div className="rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-xs">
-              <div className="break-all font-medium text-foreground">
-                {pendingDiscard.entry.path}
-              </div>
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setPendingDiscard(null)}>
-              Cancel
-            </Button>
-            <Button type="button" variant="destructive" onClick={confirmPendingDiscard}>
-              <PendingDiscardIcon className="size-4" />
-              {pendingDiscardCopy?.confirmLabel ?? 'Discard'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <SourceControlDiscardDialog
+        pendingDiscard={pendingDiscard}
+        onCancel={() => setPendingDiscard(null)}
+        onConfirm={confirmPendingDiscard}
+      />
 
       <Dialog open={baseRefDialogOpen} onOpenChange={setBaseRefDialogOpen}>
         <DialogContent className="max-w-xl">
@@ -5996,21 +5882,25 @@ export function CommitArea({
   )
 }
 
+export function shouldShowCompareSummary(summary: GitBranchCompareSummary | null): boolean {
+  if (!summary || summary.status === 'loading') {
+    return true
+  }
+  if (summary.status !== 'ready') {
+    return true
+  }
+  return typeof summary.commitsAhead === 'number' && summary.commitsAhead > 0
+}
+
 export function CompareSummary({
   summary,
-  viewMode,
   onChangeBaseRef,
-  onToggleViewMode,
-  viewModeToggleDisabled,
   onRetry
 }: {
   summary: GitBranchCompareSummary | null
-  viewMode: SourceControlViewMode
   onChangeBaseRef: () => void
-  onToggleViewMode: () => void
-  viewModeToggleDisabled?: boolean
   onRetry: () => void
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   if (!summary || summary.status === 'loading') {
     return (
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -6032,36 +5922,33 @@ export function CompareSummary({
             label="Change base ref"
             onClick={onChangeBaseRef}
           />
-          <CompareSummaryToolbarButton
-            icon={viewMode === 'tree' ? List : ListTree}
-            label={viewMode === 'tree' ? 'Show changes as list' : 'Show changes as tree'}
-            onClick={onToggleViewMode}
-            disabled={viewModeToggleDisabled}
-          />
           <CompareSummaryToolbarButton icon={RefreshCw} label="Retry" onClick={onRetry} />
         </div>
       </div>
     )
   }
 
+  const commitsAhead = summary.commitsAhead
+  const showCommitsAhead = typeof commitsAhead === 'number' && commitsAhead > 0
+  const commitsAheadTitle = showCommitsAhead
+    ? `${commitsAhead} ${commitsAhead === 1 ? 'commit' : 'commits'} ahead of ${summary.baseRef}`
+    : undefined
+
+  if (!showCommitsAhead) {
+    return null
+  }
+
   return (
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-      {summary.commitsAhead !== undefined && (
-        <span title={`Comparing against ${summary.baseRef}`}>
-          {summary.commitsAhead} commits ahead of {summary.baseRef}
-        </span>
-      )}
+      <span className="flex min-w-0 items-center gap-1" title={commitsAheadTitle}>
+        <ArrowUp className="size-3" />
+        <span>{commitsAhead} ahead</span>
+      </span>
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <CompareSummaryToolbarButton
           icon={Settings2}
           label="Change base ref"
           onClick={onChangeBaseRef}
-        />
-        <CompareSummaryToolbarButton
-          icon={viewMode === 'tree' ? List : ListTree}
-          label={viewMode === 'tree' ? 'Show changes as list' : 'Show changes as tree'}
-          onClick={onToggleViewMode}
-          disabled={viewModeToggleDisabled}
         />
         <CompareSummaryToolbarButton
           icon={RefreshCw}
@@ -6076,13 +5963,11 @@ export function CompareSummary({
 export function CompareSummaryToolbarButton({
   icon: Icon,
   label,
-  onClick,
-  disabled = false
+  onClick
 }: {
   icon: LucideIcon
   label: string
   onClick: () => void
-  disabled?: boolean
 }): React.JSX.Element {
   return (
     <Tooltip>
@@ -6091,17 +5976,9 @@ export function CompareSummaryToolbarButton({
           type="button"
           variant="ghost"
           size="icon-xs"
-          className={cn(
-            'text-muted-foreground hover:text-foreground',
-            disabled && 'cursor-not-allowed opacity-50'
-          )}
+          className="text-muted-foreground hover:text-foreground"
           aria-label={label}
-          aria-disabled={disabled}
-          onClick={() => {
-            if (!disabled) {
-              onClick()
-            }
-          }}
+          onClick={onClick}
         >
           <Icon className="size-3.5" />
         </Button>
@@ -6343,10 +6220,10 @@ function DiffCommentsInlineList({
 
 function conflictAbortButtonVariant(
   conflictOperation: GitConflictOperation
-): 'ghost' | 'destructive' {
+): 'outline' | 'destructive' {
   // Why: aborting a rebase is the escape hatch for this state, so it should
-  // match the quiet conflict-review action instead of reading as a red danger path.
-  return conflictOperation === 'rebase' ? 'ghost' : 'destructive'
+  // match the quiet outline conflict-review action instead of reading as red.
+  return conflictOperation === 'rebase' ? 'outline' : 'destructive'
 }
 
 export function ConflictSummaryCard({
@@ -6407,7 +6284,7 @@ export function ConflictSummaryCard({
         </Button>
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
           className="mt-1.5 h-7 w-full text-xs"
           onClick={onReview}
@@ -6460,7 +6337,7 @@ export function OperationBanner({
 
   return (
     <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center justify-center gap-2">
         <Icon className="size-4 shrink-0 text-amber-600 dark:text-amber-400" />
         <span className="text-xs font-medium text-foreground">{label}</span>
       </div>

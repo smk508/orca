@@ -199,13 +199,15 @@ export function CompactAgentSummaryButton({
                   className="inline-flex min-w-0 shrink-0 items-center gap-0.5 rounded-sm bg-sidebar/70 px-1 py-0.5"
                 >
                   <AgentStateDot state={group.state} size="sm" />
-                  <span className="inline-flex shrink-0 items-center gap-0.5">
+                  {/* Why: same-state agent identities read as one status cluster;
+                      overlapping them saves width without merging different states. */}
+                  <span className="inline-flex shrink-0 items-center -space-x-0.5 pl-0.5">
                     {iconAgents.map((agent) => (
                       <span
                         key={agent.paneKey}
-                        className="inline-flex size-3.5 items-center justify-center rounded-full border border-sidebar-border/70 bg-sidebar"
+                        className="inline-flex size-4 items-center justify-center rounded-full border border-sidebar-border/70 bg-sidebar"
                       >
-                        <AgentIcon agent={agentTypeToIconAgent(agent.agentType)} size={10} />
+                        <AgentIcon agent={agentTypeToIconAgent(agent.agentType)} size={13} />
                       </span>
                     ))}
                   </span>
