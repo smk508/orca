@@ -1,5 +1,5 @@
 import { type Dispatch, type SetStateAction } from 'react'
-import { ArrowLeft, CircleStop, FolderTree, Loader2 } from 'lucide-react'
+import { ArrowLeft, CircleStop, Loader2 } from 'lucide-react'
 import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,40 +40,22 @@ export function AddRepoNestedImportStep({
     <>
       <DialogHeader>
         <DialogTitle>Import repositories from folder</DialogTitle>
-        <div className="flex min-w-0 items-center gap-1.5">
-          {scanInProgress ? <AddRepoNestedImportStopButton onStopScan={onStopScan} /> : null}
-          <DialogDescription className="min-w-0 truncate">
-            {`${scanInProgress ? 'Scanning... ' : ''}Found ${scan.repos.length} ${
-              scan.repos.length === 1 ? 'repository' : 'repositories'
-            } in this folder.`}
-          </DialogDescription>
+        <div className="min-w-0 space-y-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            {scanInProgress ? <AddRepoNestedImportStopButton onStopScan={onStopScan} /> : null}
+            <DialogDescription className="min-w-0 truncate">
+              {`${scanInProgress ? 'Scanning... ' : ''}Found ${scan.repos.length} ${
+                scan.repos.length === 1 ? 'repository' : 'repositories'
+              } in this folder.`}
+            </DialogDescription>
+          </div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            Scanned folder: {folderName} · {scan.selectedPath}
+          </div>
         </div>
       </DialogHeader>
 
       <div className="flex min-h-0 min-w-0 max-w-full flex-col gap-3 overflow-hidden pt-1">
-        <div className="flex min-w-0 max-w-full items-center gap-3 overflow-hidden rounded-md border border-border bg-muted/30 p-3">
-          <div className="grid size-9 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
-            <FolderTree className="size-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-foreground">
-              Scanned folder: {folderName}
-            </div>
-            <div className="truncate text-[11px] text-muted-foreground">{scan.selectedPath}</div>
-          </div>
-        </div>
-
-        <div className="min-w-0 space-y-1">
-          <label className="text-[11px] font-medium text-muted-foreground">Group name</label>
-          <Input
-            value={groupName}
-            onChange={(event) => onGroupNameChange(event.target.value)}
-            disabled={scanInProgress}
-            className="h-9"
-            placeholder={folderName}
-          />
-        </div>
-
         <NestedRepoChecklist
           scan={scan}
           selectedPaths={selectedPaths}
@@ -97,12 +79,22 @@ export function AddRepoNestedImportStep({
             >
               Import separately
             </Button>
-            <Button
-              onClick={() => onImport('group')}
-              disabled={isAdding || scanInProgress || selectedPaths.size === 0}
-            >
-              Import as group
-            </Button>
+            <div className="flex min-w-0 flex-wrap justify-end gap-2">
+              <Input
+                aria-label="Group name"
+                value={groupName}
+                onChange={(event) => onGroupNameChange(event.target.value)}
+                disabled={isAdding || scanInProgress}
+                className="h-9 w-36 min-w-0"
+                placeholder={folderName}
+              />
+              <Button
+                onClick={() => onImport('group')}
+                disabled={isAdding || scanInProgress || selectedPaths.size === 0}
+              >
+                Import as group
+              </Button>
+            </div>
           </div>
         </div>
       </div>
