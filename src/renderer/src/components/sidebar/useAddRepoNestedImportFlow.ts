@@ -10,8 +10,7 @@ import {
   type NestedRepoTelemetryRuntimeKind
 } from '../../../../shared/nested-repo-telemetry'
 import type { AddRepoExistingWorkspaceSource } from '../../../../shared/telemetry-events'
-import type { NestedRepoScanResult, ProjectGroupImportResult, Repo } from '../../../../shared/types'
-import type { AddRepoDialogStep } from './add-repo-dialog-types'
+import type { NestedRepoScanResult, ProjectGroupImportResult } from '../../../../shared/types'
 
 export function useAddRepoNestedImportFlow({
   nestedAttemptId,
@@ -25,9 +24,7 @@ export function useAddRepoNestedImportFlow({
   fetchWorktrees,
   importNestedRepos,
   getNestedRepoRuntimeKind,
-  setAddedRepo,
-  setExistingWorkspaceSource,
-  setStep,
+  onGitRepoReady,
   setIsAdding
 }: {
   nestedAttemptId: string | null
@@ -38,7 +35,7 @@ export function useAddRepoNestedImportFlow({
   nestedGroupName: string
   nestedImportScanId: string | null
   activeRuntimeEnvironmentId: string | null | undefined
-  fetchWorktrees: (repoId: string) => Promise<unknown>
+  fetchWorktrees: (repoId: string, options?: { requireAuthoritative?: boolean }) => Promise<unknown>
   importNestedRepos: (args: {
     parentPath: string
     groupName: string
@@ -48,9 +45,7 @@ export function useAddRepoNestedImportFlow({
     mode: 'group' | 'separate'
   }) => Promise<ProjectGroupImportResult | null>
   getNestedRepoRuntimeKind: (connectionId: string | null) => NestedRepoTelemetryRuntimeKind
-  setAddedRepo: (repo: Repo | null) => void
-  setExistingWorkspaceSource: (source: AddRepoExistingWorkspaceSource | null) => void
-  setStep: (step: AddRepoDialogStep) => void
+  onGitRepoReady: (repoId: string, source: AddRepoExistingWorkspaceSource) => Promise<void>
   setIsAdding: (isAdding: boolean) => void
 }): {
   handleImportNestedRepos: (mode: 'group' | 'separate') => Promise<void>
@@ -162,27 +157,30 @@ export function useAddRepoNestedImportFlow({
           return
         }
         for (const projectId of importedRepoIds) {
-          await fetchWorktrees(projectId)
+          // Why: imported repos are already persisted; non-authoritative SSH
+          // refreshes should not block revealing the first imported project.
+          await fetchWorktrees(projectId, { requireAuthoritative: true })
         }
         if (gen !== nestedImportGenRef.current) {
           return
         }
-        const repo = useAppStore.getState().repos.find((entry) => entry.id === firstRepoId)
-        if (repo) {
-          setAddedRepo(repo)
-          setExistingWorkspaceSource(
-            nestedConnectionId
-              ? 'ssh_remote_path'
-              : activeRuntimeEnvironmentId?.trim()
-                ? 'runtime_server_path'
-                : 'local_folder_picker'
-          )
-          setStep('setup')
-        }
-        if (result.failedCount > 0 && gen === nestedImportGenRef.current) {
+        if (result.failedCount > 0) {
           toast.warning('Some repositories could not be imported', {
             description: `${result.failedCount} failed`
           })
+        }
+        const repo = useAppStore.getState().repos.find((entry) => entry.id === firstRepoId)
+        if (repo) {
+          const source: AddRepoExistingWorkspaceSource = nestedConnectionId
+            ? 'ssh_remote_path'
+            : activeRuntimeEnvironmentId?.trim()
+              ? 'runtime_server_path'
+              : 'local_folder_picker'
+          await onGitRepoReady(repo.id, source)
+        }
+      } catch (err) {
+        if (gen === nestedImportGenRef.current) {
+          toast.error(err instanceof Error ? err.message : String(err))
         }
       } finally {
         if (!resultTracked) {
@@ -216,10 +214,8 @@ export function useAddRepoNestedImportFlow({
       nestedScan,
       nestedSelectedPaths,
       getNestedRepoRuntimeKind,
-      setAddedRepo,
-      setExistingWorkspaceSource,
-      setIsAdding,
-      setStep
+      onGitRepoReady,
+      setIsAdding
     ]
   )
 
