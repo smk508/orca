@@ -38,8 +38,8 @@ export function normalizeAgentActivityDisplayMode(value: unknown): AgentActivity
 
 // Why: the onboarding wizard's last step index. Centralized so backfill,
 // clamps, and UI step references all agree on the same upper bound.
-export const ONBOARDING_FINAL_STEP = 5
-export const ONBOARDING_FLOW_VERSION = 2
+export const ONBOARDING_FINAL_STEP = 4
+export const ONBOARDING_FLOW_VERSION = 3
 
 export const ORCA_BROWSER_PARTITION = 'persist:orca-browser'
 // Why: blank browser tabs must start from an inert guest URL that does not
@@ -241,6 +241,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     sourceControlViewMode: 'list',
     showTitlebarAppName: true,
     showTasksButton: true,
+    showAutomationsButton: true,
     showMobileButton: true,
     ctrlTabOrderMode: 'mru',
     // Why: switching worktrees and opening command surfaces from a focused
@@ -431,6 +432,7 @@ export function getDefaultWorkspaceSession(): WorkspaceSessionState {
     tabsByWorktree: {},
     terminalLayoutsByTabId: {},
     openFilesByWorktree: {},
+    markdownFrontmatterVisible: {},
     browserTabsByWorktree: {},
     browserPagesByWorkspace: {},
     activeBrowserTabIdByWorktree: {},
