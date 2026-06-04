@@ -1,8 +1,9 @@
-import { type Dispatch, type SetStateAction } from 'react'
+import { useId, type Dispatch, type SetStateAction } from 'react'
 import { CircleHelp, CircleStop, Loader2 } from 'lucide-react'
 import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { NestedRepoChecklist } from '@/components/repo/NestedRepoChecklist'
 import type { NestedRepoScanResult } from '../../../../shared/types'
@@ -35,6 +36,7 @@ export function AddRepoNestedImportStep({
   onStopScan
 }: AddRepoNestedImportStepProps): React.JSX.Element {
   const folderName = getRuntimePathBasename(scan.selectedPath) || scan.selectedPath
+  const groupNameInputId = useId()
   const repoCountLabel = `${scan.repos.length} ${
     scan.repos.length === 1 ? 'repository' : 'repositories'
   }`
@@ -70,7 +72,9 @@ export function AddRepoNestedImportStep({
         {!isFirstRepoImport ? (
           <div className="min-w-0 shrink-0 space-y-1">
             <div className="flex shrink-0 items-center gap-1">
-              <label className="text-[11px] font-medium text-muted-foreground">Group name</label>
+              <Label htmlFor={groupNameInputId} className="text-[11px] text-muted-foreground">
+                Group name
+              </Label>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -90,6 +94,7 @@ export function AddRepoNestedImportStep({
               </Tooltip>
             </div>
             <Input
+              id={groupNameInputId}
               aria-label="Group name"
               value={groupName}
               onChange={(event) => onGroupNameChange(event.target.value)}
