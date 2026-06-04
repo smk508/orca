@@ -76,6 +76,8 @@ import {
   isTerminalLiveInputWithinByteLimit,
   scheduleTerminalLiveInputFocus
 } from '../../../../src/terminal/terminal-live-input'
+import { nativeKeyEventToBytes } from '../../../../src/terminal/terminal-hardware-key'
+import { OrcaKeyCaptureView, type NativeKeyEvent } from '@orca/expo-hardware-keyboard'
 import { countTerminalGestureInputSequences } from '../../../../src/terminal/terminal-gesture-input'
 import { MobileBrowserPane, type MobileBrowserTab } from '../../../../src/browser/MobileBrowserPane'
 import { isBlankBrowserUrl, normalizeBrowserUrl } from '../../../../src/browser/browser-url'
@@ -1108,6 +1110,12 @@ export default function SessionScreen() {
     activeSessionTab?.type !== 'file' &&
     activeSessionTab?.type !== 'browser'
   const liveInputEnabled = activeHandle ? liveInputTerminalHandles.has(activeHandle) : false
+  // Why: physical-keyboard capture is a third input mode. When enabled for the
+  // active terminal we mount a native key-capture view that forwards hardware
+  // key presses — including modifiers, arrows, Esc, and function keys, which the
+  // live-input TextInput cannot surface — straight to the PTY.
+  const [keyCaptureTerminalHandles, setKeyCaptureTerminalHandles] = useState<Set<string>>(new Set())
+  const keyCaptureEnabled = activeHandle ? keyCaptureTerminalHandles.has(activeHandle) : false
   const [browserScreencastSupported, setBrowserScreencastSupported] = useState<boolean | null>(null)
   // Why: terminal gesture/input callbacks are intentionally stable and
   // imperative; keep their refs current before commit instead of one effect later.
@@ -2375,6 +2383,7 @@ export default function SessionScreen() {
     setActiveSessionTabId(null)
     setLiveInputCapture('')
     setLiveInputTerminalHandles(new Set())
+    setKeyCaptureTerminalHandles(new Set())
     setMarkdownDocs(new Map())
     setFileDocs(new Map())
     clearDelayedActionTimers()
@@ -2809,6 +2818,16 @@ export default function SessionScreen() {
     })
     setLiveInputCapture('')
     if (nextEnabled) {
+      // Only one input-capture surface at a time: enabling live input turns off
+      // physical-keyboard capture for this terminal.
+      setKeyCaptureTerminalHandles((prev) => {
+        if (!prev.has(activeHandle)) {
+          return prev
+        }
+        const next = new Set(prev)
+        next.delete(activeHandle)
+        return next
+      })
       scheduleTerminalLiveInputFocus(liveInputFocusTimerRef, () => liveInputRef.current?.focus())
     } else {
       clearTerminalLiveInputFocusTimer(liveInputFocusTimerRef)
@@ -2870,6 +2889,54 @@ export default function SessionScreen() {
     setLiveInputCapture('')
     liveInputRef.current?.setNativeProps({ text: '' })
   }, [activeHandle, liveInputTerminalHandles, sendLiveTerminalInput])
+
+  const toggleKeyCapture = useCallback(() => {
+    if (!activeHandle) {
+      return
+    }
+    const nextEnabled = !keyCaptureTerminalHandles.has(activeHandle)
+    setKeyCaptureTerminalHandles((prev) => {
+      const next = new Set(prev)
+      if (nextEnabled) {
+        next.add(activeHandle)
+      } else {
+        next.delete(activeHandle)
+      }
+      return next
+    })
+    // Why: physical-keyboard capture and the live-input TextInput both own the
+    // input bar and compete for first responder. Turning one on turns the other
+    // off so only one capture surface is mounted at a time.
+    if (nextEnabled) {
+      setLiveInputTerminalHandles((prev) => {
+        if (!prev.has(activeHandle)) {
+          return prev
+        }
+        const next = new Set(prev)
+        next.delete(activeHandle)
+        return next
+      })
+      clearTerminalLiveInputFocusTimer(liveInputFocusTimerRef)
+      liveInputRef.current?.blur()
+    }
+  }, [activeHandle, keyCaptureTerminalHandles])
+
+  const handleNativeKey = useCallback(
+    (event: { nativeEvent: NativeKeyEvent }) => {
+      if (!activeHandle) {
+        return
+      }
+      if (!keyCaptureTerminalHandles.has(activeHandle)) {
+        return
+      }
+      const bytes = nativeKeyEventToBytes(event.nativeEvent)
+      if (!bytes) {
+        return
+      }
+      sendLiveTerminalInput(activeHandle, bytes)
+    },
+    [activeHandle, keyCaptureTerminalHandles, sendLiveTerminalInput]
+  )
 
   const allowTerminalGestureInput = useCallback(
     (handle: string, sequenceCount: number): boolean => {
@@ -4168,6 +4235,32 @@ export default function SessionScreen() {
                     }
                   />
                 </Pressable>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.accessoryKey,
+                    keyCaptureEnabled && styles.accessoryKeyActive,
+                    pressed && styles.accessoryKeyPressed,
+                    !canSend && styles.accessoryKeyDisabled
+                  ]}
+                  disabled={!canSend}
+                  onPress={toggleKeyCapture}
+                  accessibilityLabel={
+                    keyCaptureEnabled
+                      ? 'Disable physical keyboard capture'
+                      : 'Capture physical keyboard keys'
+                  }
+                >
+                  <KeyboardIcon
+                    size={14}
+                    color={
+                      keyCaptureEnabled
+                        ? colors.bgBase
+                        : canSend
+                          ? colors.textSecondary
+                          : colors.textMuted
+                    }
+                  />
+                </Pressable>
                 {canPaste && (
                   <Pressable
                     style={({ pressed }) => [
@@ -4261,7 +4354,23 @@ export default function SessionScreen() {
             </View>
 
             {/* Input bar */}
-            {liveInputEnabled ? (
+            {keyCaptureEnabled ? (
+              <View style={[styles.inputBar, styles.liveInputBar]}>
+                <KeyboardIcon size={16} color={colors.textSecondary} strokeWidth={2} />
+                <Text style={styles.liveInputHint} numberOfLines={1}>
+                  Physical keyboard sends directly to terminal
+                </Text>
+                {/* Why: a non-text-input first responder; captures hardware keys
+                    (modifiers, arrows, Esc, function keys) without showing the
+                    software keyboard. canSend gates focus so a disconnected
+                    session does not swallow keys. */}
+                <OrcaKeyCaptureView
+                  active={canSend}
+                  style={StyleSheet.absoluteFill}
+                  onKey={handleNativeKey}
+                />
+              </View>
+            ) : liveInputEnabled ? (
               <Pressable
                 style={[styles.inputBar, styles.liveInputBar]}
                 disabled={!canSend}

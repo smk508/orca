@@ -14,6 +14,7 @@
     "mock-server": "npx tsx scripts/mock-server.ts"
   },
   "dependencies": {
+    "@orca/expo-hardware-keyboard": "file:./packages/expo-hardware-keyboard",
     "@orca/expo-two-way-audio": "file:./packages/expo-two-way-audio",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "buffer": "^6.0.3",
