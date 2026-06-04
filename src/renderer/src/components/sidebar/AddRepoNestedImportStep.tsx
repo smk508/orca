@@ -69,6 +69,7 @@ export function AddRepoNestedImportStep({
         {scanInProgress || scan.truncated || scan.timedOut || scan.stopped ? (
           <NestedRepoScanLimitNotice scan={scan} />
         ) : null}
+        {/* Why: first-time import uses one flat action because it is easier for new users to understand. */}
         {!isFirstRepoImport ? (
           <div className="min-w-0 shrink-0 space-y-1">
             <div className="flex shrink-0 items-center gap-1">
