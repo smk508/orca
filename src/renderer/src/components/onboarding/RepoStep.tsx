@@ -105,7 +105,7 @@ export function RepoStep({
                 </span>
               </div>
               <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                Scanned {folderName} - {nestedScan.selectedPath}
+                Scanned folder: {folderName} - {nestedScan.selectedPath}
               </div>
             </div>
           </div>

@@ -74,7 +74,7 @@ describe('RepoStep', () => {
     })
 
     expect(html).toContain('Import repositories')
-    expect(html).toContain('Scanned platform - /workspace/platform')
+    expect(html).toContain('Scanned folder: platform - /workspace/platform')
     expect(html).not.toContain('Group name')
     expect(html).not.toContain('Import separately')
     expect(html).not.toContain('Import as project group')

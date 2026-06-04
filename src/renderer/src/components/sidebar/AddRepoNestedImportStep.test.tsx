@@ -44,7 +44,6 @@ describe('AddRepoNestedImportStep', () => {
     )
 
     expect(html).toContain('Import repositories from folder')
-    expect(html).toContain('Blank uses platform')
     expect(html).toContain('Import separately')
     expect(html).toContain('Import as group')
     expect(html).toContain('payments/api')

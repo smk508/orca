@@ -56,7 +56,9 @@ export function AddRepoNestedImportStep({
             <FolderTree className="size-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-foreground">Scanned {folderName}</div>
+            <div className="truncate text-sm font-medium text-foreground">
+              Scanned folder: {folderName}
+            </div>
             <div className="truncate text-[11px] text-muted-foreground">{scan.selectedPath}</div>
           </div>
         </div>
@@ -70,7 +72,6 @@ export function AddRepoNestedImportStep({
             className="h-9"
             placeholder={folderName}
           />
-          <div className="truncate text-[11px] text-muted-foreground">Blank uses {folderName}</div>
         </div>
 
         <NestedRepoChecklist
