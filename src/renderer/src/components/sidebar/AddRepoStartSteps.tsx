@@ -210,14 +210,25 @@ export function AddRepoLocalStartStep({
           onClick={primaryAction.onClick}
         />
 
+        {/* Match the primary card's size so promoted siblings (e.g. SSH's Browse folder) read as equal choices. */}
         {secondaryAction ? (
-          <AddRepoCompactStartAction
+          <AddRepoPrimaryStartAction
             icon={secondaryAction.icon}
             title={secondaryAction.title}
             description={secondaryAction.description}
             disabled={isAdding}
             buttonRef={secondaryIsBrowse ? browseActionRef : undefined}
             onClick={secondaryAction.onClick}
+          />
+        ) : null}
+
+        {/* Keep the busy notice anchored to the action cards above, not the More options panel below. */}
+        {isAdding && addProjectBusyLabel ? (
+          <AddRepoNestedScanProgressNotice
+            busyLabel={addProjectBusyLabel}
+            nestedScanInProgress={nestedScanInProgress}
+            nestedScanId={nestedScanId}
+            onStopNestedScan={onStopNestedScan}
           />
         ) : null}
 
@@ -258,15 +269,6 @@ export function AddRepoLocalStartStep({
           </div>
         </Collapsible>
       </div>
-
-      {isAdding && addProjectBusyLabel ? (
-        <AddRepoNestedScanProgressNotice
-          busyLabel={addProjectBusyLabel}
-          nestedScanInProgress={nestedScanInProgress}
-          nestedScanId={nestedScanId}
-          onStopNestedScan={onStopNestedScan}
-        />
-      ) : null}
     </>
   )
 }
@@ -302,34 +304,6 @@ const AddRepoPrimaryStartAction = ({
     <span className="min-w-0">
       <span className="block text-sm font-semibold leading-5">{title}</span>
       <span className="mt-0.5 block text-xs font-normal leading-5 text-muted-foreground">
-        {description}
-      </span>
-    </span>
-  </Button>
-)
-
-const AddRepoCompactStartAction = ({
-  icon: Icon,
-  title,
-  description,
-  disabled,
-  onClick,
-  buttonRef
-}: AddRepoStartActionProps): React.JSX.Element => (
-  <Button
-    ref={buttonRef}
-    type="button"
-    variant="outline"
-    onClick={onClick}
-    disabled={disabled}
-    className="h-auto min-h-14 w-full justify-start gap-3 whitespace-normal px-3 py-3 text-left"
-  >
-    <span className="grid size-8 shrink-0 place-items-center rounded-md border border-border bg-background text-muted-foreground">
-      <Icon className="size-4" />
-    </span>
-    <span className="min-w-0">
-      <span className="block text-sm font-medium leading-5">{title}</span>
-      <span className="mt-0.5 block text-xs font-normal leading-4 text-muted-foreground">
         {description}
       </span>
     </span>
