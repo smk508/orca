@@ -80,12 +80,17 @@ export function useSettingsSetupGuideProgress(
   }, [
     checkJiraConnection,
     checkLinearConnection,
+    expectedPreflightContextKey,
     jiraStatusCurrent,
     jiraStatusChecked,
+    jiraStatusContextKey,
     linearStatusCurrent,
     linearStatusChecked,
+    linearStatusContextKey,
+    preflightStatusContextKey,
     preflightStatusCurrent,
     preflightStatusChecked,
+    providerRuntimeContextKey,
     refreshPreflightStatus,
     shouldRefreshTaskSourceState
   ])

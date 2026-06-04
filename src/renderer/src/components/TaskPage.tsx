@@ -43,6 +43,7 @@ import { toast } from 'sonner'
 import { useAppStore } from '@/store'
 import { useAllWorktrees, useRepoMap } from '@/store/selectors'
 import { callRuntimeRpc, getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
+import { getLocalPreflightContext, localPreflightContextKey } from '@/lib/local-preflight-context'
 import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
@@ -2462,6 +2463,7 @@ export default function TaskPage(): React.JSX.Element {
   const linearStatusContextKey = useAppStore((s) => s.linearStatusContextKey)
   const preflightStatus = useAppStore((s) => s.preflightStatus)
   const preflightStatusChecked = useAppStore((s) => s.preflightStatusChecked)
+  const preflightStatusContextKey = useAppStore((s) => s.preflightStatusContextKey)
   const selectLinearWorkspace = useAppStore((s) => s.selectLinearWorkspace)
   const searchLinearIssues = useAppStore((s) => s.searchLinearIssues)
   const listLinearIssues = useAppStore((s) => s.listLinearIssues)
@@ -2480,6 +2482,9 @@ export default function TaskPage(): React.JSX.Element {
   const patchLinearIssue = useAppStore((s) => s.patchLinearIssue)
   const checkLinearConnection = useAppStore((s) => s.checkLinearConnection)
   const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
+  const expectedPreflightContextKey = useAppStore((s) =>
+    localPreflightContextKey(getLocalPreflightContext(s))
+  )
   const jiraStatus = useAppStore((s) => s.jiraStatus)
   const jiraStatusChecked = useAppStore((s) => s.jiraStatusChecked)
   const jiraStatusContextKey = useAppStore((s) => s.jiraStatusContextKey)
@@ -2493,6 +2498,7 @@ export default function TaskPage(): React.JSX.Element {
   providerRuntimeContextKeyRef.current = providerRuntimeContextKey
   const linearStatusCurrent = linearStatusContextKey === providerRuntimeContextKey
   const jiraStatusCurrent = jiraStatusContextKey === providerRuntimeContextKey
+  const preflightStatusCurrent = preflightStatusContextKey === expectedPreflightContextKey
   const linearStatusReady = linearStatusCurrent && linearStatusChecked
   const jiraStatusReady = jiraStatusCurrent && jiraStatusChecked
   const linearConnected = linearStatusCurrent && linearStatus.connected
@@ -2591,7 +2597,7 @@ export default function TaskPage(): React.JSX.Element {
       restoreAvailableDefaultTaskProvider(
         preferredVisibleTaskProviders,
         {
-          gitlabInstalled: preflightStatus?.glab?.installed === true,
+          gitlabInstalled: preflightStatusCurrent && preflightStatus?.glab?.installed === true,
           linearConnected: linearConnected === true
         },
         defaultTaskSource
@@ -2600,6 +2606,7 @@ export default function TaskPage(): React.JSX.Element {
       defaultTaskSource,
       linearConnected,
       preferredVisibleTaskProviders,
+      preflightStatusCurrent,
       preflightStatus?.glab?.installed
     ]
   )
@@ -5598,7 +5605,7 @@ export default function TaskPage(): React.JSX.Element {
   ])
 
   useEffect(() => {
-    if (!preflightStatusChecked) {
+    if (!preflightStatusCurrent || !preflightStatusChecked) {
       void refreshPreflightStatus()
     }
     if (!linearStatusReady) {
@@ -5610,9 +5617,15 @@ export default function TaskPage(): React.JSX.Element {
   }, [
     checkJiraConnection,
     checkLinearConnection,
+    expectedPreflightContextKey,
+    jiraStatusContextKey,
     jiraStatusReady,
+    linearStatusContextKey,
     linearStatusReady,
+    providerRuntimeContextKey,
+    preflightStatusContextKey,
     preflightStatusChecked,
+    preflightStatusCurrent,
     refreshPreflightStatus
   ])
 

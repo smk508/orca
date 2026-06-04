@@ -12,7 +12,20 @@ function statusFacts(overrides: Partial<StatusFacts> = {}): StatusFacts {
   return {
     preflightStatus: {
       gh: { installed: false, authenticated: false },
-      glab: { installed: false, authenticated: false }
+      glab: { installed: false, authenticated: false },
+      bitbucket: { configured: false, authenticated: false },
+      azureDevOps: {
+        configured: false,
+        authenticated: false,
+        tokenConfigured: false,
+        baseUrl: null
+      },
+      gitea: {
+        configured: false,
+        authenticated: false,
+        tokenConfigured: false,
+        baseUrl: null
+      }
     },
     preflightStatusChecked: true,
     preflightStatusContextKey: 'host',
@@ -226,9 +239,98 @@ describe('deriveIntegrationConnectionStatus', () => {
     ).toMatchObject({
       reviewConnected: true,
       reviewProviderName: 'GitHub',
+      codeHostTaskProviderName: 'GitHub',
       trackerConnected: true,
       trackerProviderName: 'Linear',
       checking: false
+    })
+  })
+
+  it('counts token-backed review providers as review-ready without treating them as task sources', () => {
+    const cases: {
+      name: 'Bitbucket' | 'Azure DevOps' | 'Gitea'
+      preflightStatus: StatusFacts['preflightStatus']
+    }[] = [
+      {
+        name: 'Bitbucket',
+        preflightStatus: {
+          gh: { installed: false, authenticated: false },
+          glab: { installed: false, authenticated: false },
+          bitbucket: { configured: true, authenticated: true }
+        }
+      },
+      {
+        name: 'Azure DevOps',
+        preflightStatus: {
+          gh: { installed: false, authenticated: false },
+          glab: { installed: false, authenticated: false },
+          azureDevOps: {
+            configured: true,
+            authenticated: true,
+            tokenConfigured: true,
+            baseUrl: 'https://dev.azure.com/acme'
+          }
+        }
+      },
+      {
+        name: 'Gitea',
+        preflightStatus: {
+          gh: { installed: false, authenticated: false },
+          glab: { installed: false, authenticated: false },
+          gitea: {
+            configured: true,
+            authenticated: true,
+            tokenConfigured: true,
+            baseUrl: 'https://gitea.example.test/api/v1'
+          }
+        }
+      }
+    ]
+
+    for (const testCase of cases) {
+      expect(
+        deriveIntegrationConnectionStatus(
+          statusFacts({
+            preflightStatus: testCase.preflightStatus
+          })
+        )
+      ).toMatchObject({
+        reviewConnected: true,
+        reviewProviderName: testCase.name,
+        codeHostTaskProviderName: null,
+        trackerConnected: false,
+        trackerProviderName: null,
+        checking: false
+      })
+    }
+  })
+
+  it('does not count failed token-backed review provider auth as review-ready', () => {
+    expect(
+      deriveIntegrationConnectionStatus(
+        statusFacts({
+          preflightStatus: {
+            gh: { installed: false, authenticated: false },
+            glab: { installed: false, authenticated: false },
+            azureDevOps: {
+              configured: true,
+              authenticated: false,
+              tokenConfigured: true,
+              baseUrl: 'https://dev.azure.com/acme'
+            },
+            gitea: {
+              configured: true,
+              authenticated: false,
+              tokenConfigured: true,
+              baseUrl: 'https://gitea.example.test/api/v1'
+            }
+          }
+        })
+      )
+    ).toMatchObject({
+      reviewConnected: false,
+      reviewProviderName: null,
+      codeHostTaskProviderName: null
     })
   })
 })

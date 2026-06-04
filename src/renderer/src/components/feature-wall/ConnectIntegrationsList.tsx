@@ -11,6 +11,8 @@ import {
   LinearIntegrationCard
 } from '@/components/settings/task-tracker-integration-cards'
 import { useIntegrationProviderStatusRefresh } from '@/components/settings/use-integration-provider-status-refresh'
+import { getLocalPreflightContext, localPreflightContextKey } from '@/lib/local-preflight-context'
+import { useAppStore } from '@/store'
 import { CodeHostTaskNote, IntegrationProgress, IntegrationStep } from './connect-integration-step'
 import {
   deriveIntegrationFlowState,
@@ -24,6 +26,9 @@ import {
 export function ConnectIntegrationsList(): React.JSX.Element {
   useIntegrationProviderStatusRefresh()
   const status = useIntegrationConnectionStatus()
+  const preflightContextKey = useAppStore((s) =>
+    localPreflightContextKey(getLocalPreflightContext(s))
+  )
   // Lets a done step reopen inline via "Change" without losing its connected
   // state. Cleared once the user collapses it again.
   const [reopened, setReopened] = useState<{ review: boolean; task: boolean }>({
@@ -36,7 +41,13 @@ export function ConnectIntegrationsList(): React.JSX.Element {
   // dedicated tracker; it resolves when one connects or the user accepts the
   // code host via "Use … issues". This stays truthful — we never claim a
   // tracker is connected when it isn't.
-  const [taskAccepted, setTaskAccepted] = useState(false)
+  const [acceptedCodeHostTaskProvider, setAcceptedCodeHostTaskProvider] = useState<{
+    provider: 'GitHub' | 'GitLab'
+    preflightContextKey: string
+  } | null>(null)
+  const taskAccepted =
+    acceptedCodeHostTaskProvider?.provider === status.codeHostTaskProviderName &&
+    acceptedCodeHostTaskProvider.preflightContextKey === preflightContextKey
 
   const flow = deriveIntegrationFlowState({
     reviewConnected: status.reviewConnected,
@@ -97,7 +108,9 @@ export function ConnectIntegrationsList(): React.JSX.Element {
             </>
           ) : (
             <>
-              <span className="font-semibold text-foreground">{status.reviewProviderName}</span>{' '}
+              <span className="font-semibold text-foreground">
+                {status.codeHostTaskProviderName}
+              </span>{' '}
               issues available as tasks
             </>
           )
@@ -107,11 +120,17 @@ export function ConnectIntegrationsList(): React.JSX.Element {
       >
         <LinearIntegrationCard />
         <JiraIntegrationCard />
-        {status.reviewProviderName && !trackerDone ? (
+        {status.codeHostTaskProviderName && !trackerDone ? (
           <CodeHostTaskNote
-            providerName={status.reviewProviderName}
+            providerName={status.codeHostTaskProviderName}
             onAccept={() => {
-              setTaskAccepted(true)
+              if (!status.codeHostTaskProviderName) {
+                return
+              }
+              setAcceptedCodeHostTaskProvider({
+                provider: status.codeHostTaskProviderName,
+                preflightContextKey
+              })
               setReopened((r) => ({ ...r, task: false }))
             }}
           />
