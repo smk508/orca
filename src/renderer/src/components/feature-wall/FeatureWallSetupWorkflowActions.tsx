@@ -16,10 +16,6 @@ import type {
   Worktree
 } from '../../../../shared/types'
 import { getRepositoryLocalCommandsSectionId } from '../settings/repository-settings-targets'
-import { AddReposAnimatedVisual } from './AddReposAnimatedVisual'
-import { SetupTwoAgentsVisual, SetupWorkspacesVisual } from './FeatureWallSetupStepVisuals'
-import { SetupScriptAnimatedVisual } from './SetupScriptAnimatedVisual'
-import { SetupStepPreview } from './SetupStepPreview'
 import {
   requestContextualTourWhenReady,
   type RequestContextualTourWhenReadyArgs
@@ -43,25 +39,17 @@ export function getSetupGuideGitRepo(
   return activeRepo ?? repos.find((entry) => isGitRepoKind(entry)) ?? null
 }
 
-export function AddReposAction(props: { reducedMotion: boolean }): React.JSX.Element {
+export function AddReposAction(): React.JSX.Element {
   const openModal = useAppStore((s) => s.openModal)
   return (
-    <div className="space-y-4">
-      <Button type="button" size="sm" className="w-fit gap-2" onClick={() => openModal('add-repo')}>
-        <Plus className="size-3.5" />
-        Add project
-      </Button>
-      <SetupStepPreview>
-        <AddReposAnimatedVisual reducedMotion={props.reducedMotion} />
-      </SetupStepPreview>
-    </div>
+    <Button type="button" size="sm" className="w-fit gap-2" onClick={() => openModal('add-repo')}>
+      <Plus className="size-3.5" />
+      Add project
+    </Button>
   )
 }
 
-export function TwoAgentsAction(props: {
-  reducedMotion: boolean
-  done: boolean
-}): React.JSX.Element {
+export function TwoAgentsAction(props: { done: boolean }): React.JSX.Element | null {
   const targetWorktree = useSetupTargetWorktree()
   const openModal = useAppStore((s) => s.openModal)
   const closeModal = useAppStore((s) => s.closeModal)
@@ -84,73 +72,60 @@ export function TwoAgentsAction(props: {
     })
   }, [closeModal, openModal, targetWorktree])
 
+  if (props.done || paneTarget) {
+    return null
+  }
+
   return (
-    <div className="space-y-4">
-      {!props.done && !paneTarget ? (
-        <div>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" size="sm" className="w-fit gap-2" onClick={handlePrimaryAction}>
-              <ArrowUpRight className="size-3.5" />
-              Try it out
-            </Button>
-          </div>
-        </div>
-      ) : null}
-      <SetupStepPreview>
-        <SetupTwoAgentsVisual reducedMotion={props.reducedMotion} />
-      </SetupStepPreview>
-    </div>
+    <Button type="button" size="sm" className="w-fit gap-2" onClick={handlePrimaryAction}>
+      <ArrowUpRight className="size-3.5" />
+      Try it out
+    </Button>
   )
 }
 
-export function WorkspacesAction(props: {
-  reducedMotion: boolean
-  done: boolean
-}): React.JSX.Element {
+export function WorkspacesAction(props: { done: boolean }): React.JSX.Element | null {
   const openModal = useAppStore((s) => s.openModal)
   const activeRepoId = useAppStore((s) => s.activeRepoId)
   const repos = useAppStore((s) => s.repos)
   const repo = getSetupGuideGitRepo(repos, activeRepoId)
+  if (props.done) {
+    return null
+  }
+
   return (
-    <div className="space-y-4">
-      {!props.done ? (
-        <Button
-          type="button"
-          size="sm"
-          className="w-fit gap-2"
-          onClick={() => {
-            cancelPendingSetupGuideTourRequest()
-            if (!repo) {
-              promptForSetupGuideProject(openModal)
-              return
-            }
-            const tourRequestId = createSetupGuideTourRequestId()
-            openModal('new-workspace-composer', {
-              initialRepoId: repo.id,
-              telemetrySource: 'unknown',
-              contextualTourSource: 'setup_guide_parallel_work',
-              setupGuideTourRequestId: tourRequestId
-            })
-            requestSetupGuideTourWhenReady({
-              id: 'workspace-creation',
-              source: 'setup_guide_parallel_work',
-              wasFeaturePreviouslyInteracted: false,
-              shouldContinue: () => isSetupGuideWorkspaceComposerRequestCurrent(tourRequestId)
-            })
-          }}
-        >
-          <ArrowUpRight className="size-3.5" />
-          Try it out
-        </Button>
-      ) : null}
-      <SetupStepPreview>
-        <SetupWorkspacesVisual reducedMotion={props.reducedMotion} />
-      </SetupStepPreview>
-    </div>
+    <Button
+      type="button"
+      size="sm"
+      className="w-fit gap-2"
+      onClick={() => {
+        cancelPendingSetupGuideTourRequest()
+        if (!repo) {
+          promptForSetupGuideProject(openModal)
+          return
+        }
+        const tourRequestId = createSetupGuideTourRequestId()
+        openModal('new-workspace-composer', {
+          initialRepoId: repo.id,
+          telemetrySource: 'unknown',
+          contextualTourSource: 'setup_guide_parallel_work',
+          setupGuideTourRequestId: tourRequestId
+        })
+        requestSetupGuideTourWhenReady({
+          id: 'workspace-creation',
+          source: 'setup_guide_parallel_work',
+          wasFeaturePreviouslyInteracted: false,
+          shouldContinue: () => isSetupGuideWorkspaceComposerRequestCurrent(tourRequestId)
+        })
+      }}
+    >
+      <ArrowUpRight className="size-3.5" />
+      Try it out
+    </Button>
   )
 }
 
-export function SetupScriptAction(props: { reducedMotion: boolean }): React.JSX.Element {
+export function SetupScriptAction(): React.JSX.Element {
   const repos = useAppStore((s) => s.repos)
   const activeRepoId = useAppStore((s) => s.activeRepoId)
   const closeModal = useAppStore((s) => s.closeModal)
@@ -212,47 +187,42 @@ export function SetupScriptAction(props: { reducedMotion: boolean }): React.JSX.
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-border bg-muted/20 p-3">
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-          <Input
-            value={setupScript}
-            disabled={!canConfigure}
-            onChange={(event) => setSetupScript(event.target.value)}
-            placeholder="pnpm install"
-            aria-label="Setup script"
-            className="font-mono text-sm"
-          />
-          <Button
-            type="button"
-            size="sm"
-            className="gap-2"
-            disabled={!canConfigure || setupScript.trim().length === 0}
-            onClick={() => void handleSaveSetupScript()}
-          >
-            <Save className="size-3.5" />
-            Save
-          </Button>
-        </div>
+      <div className="grid max-w-2xl gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <Input
+          value={setupScript}
+          disabled={!canConfigure}
+          onChange={(event) => setSetupScript(event.target.value)}
+          placeholder="pnpm install"
+          aria-label="Setup script"
+          className="font-mono text-sm"
+        />
         <Button
           type="button"
-          variant="ghost"
           size="sm"
-          className="mt-2 w-fit gap-2 px-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
-          disabled={!canConfigure}
-          onClick={openLocalCommandSettings}
+          className="gap-2"
+          disabled={!canConfigure || setupScript.trim().length === 0}
+          onClick={() => void handleSaveSetupScript()}
         >
-          <Settings className="size-3.5" />
-          View in settings
+          <Save className="size-3.5" />
+          Save
         </Button>
       </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="w-fit gap-2 px-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
+        disabled={!canConfigure}
+        onClick={openLocalCommandSettings}
+      >
+        <Settings className="size-3.5" />
+        View in settings
+      </Button>
       {!canConfigure ? (
         <p className="text-xs text-muted-foreground">
           Add a git project first, then configure the setup script for that repository.
         </p>
       ) : null}
-      <SetupStepPreview>
-        <SetupScriptAnimatedVisual reducedMotion={props.reducedMotion} />
-      </SetupStepPreview>
     </div>
   )
 }
