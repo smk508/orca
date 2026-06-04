@@ -1,5 +1,5 @@
 import { type Dispatch, type SetStateAction } from 'react'
-import { ArrowLeft, CircleStop, Loader2 } from 'lucide-react'
+import { ArrowLeft, CircleHelp, CircleStop, Loader2 } from 'lucide-react'
 import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,6 +13,7 @@ type AddRepoNestedImportStepProps = {
   scan: NestedRepoScanResult
   groupName: string
   selectedPaths: Set<string>
+  isFirstRepoImport: boolean
   isAdding: boolean
   scanInProgress: boolean
   onGroupNameChange: (value: string) => void
@@ -26,6 +27,7 @@ export function AddRepoNestedImportStep({
   scan,
   groupName,
   selectedPaths,
+  isFirstRepoImport,
   isAdding,
   scanInProgress,
   onGroupNameChange,
@@ -35,23 +37,24 @@ export function AddRepoNestedImportStep({
   onStopScan
 }: AddRepoNestedImportStepProps): React.JSX.Element {
   const folderName = getRuntimePathBasename(scan.selectedPath) || scan.selectedPath
+  const repoCountLabel = `${scan.repos.length} ${
+    scan.repos.length === 1 ? 'repository' : 'repositories'
+  }`
 
   return (
     <>
       <DialogHeader>
         <DialogTitle>Import repositories from folder</DialogTitle>
-        <div className="min-w-0 space-y-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            {scanInProgress ? <AddRepoNestedImportStopButton onStopScan={onStopScan} /> : null}
-            <DialogDescription className="min-w-0 truncate">
-              {`${scanInProgress ? 'Scanning... ' : ''}Found ${scan.repos.length} ${
-                scan.repos.length === 1 ? 'repository' : 'repositories'
-              } in this folder.`}
-            </DialogDescription>
-          </div>
-          <div className="truncate text-[11px] text-muted-foreground">
-            Scanned folder: {folderName} · {scan.selectedPath}
-          </div>
+        <div className="flex min-w-0 items-center gap-1.5">
+          {scanInProgress ? <AddRepoNestedImportStopButton onStopScan={onStopScan} /> : null}
+          <DialogDescription className="min-w-0 truncate">
+            {scanInProgress ? 'Scanning... ' : null}
+            Found {repoCountLabel} in{' '}
+            <span className="font-mono text-[11px] text-foreground" title={scan.selectedPath}>
+              {scan.selectedPath}
+            </span>
+            .
+          </DialogDescription>
         </div>
       </DialogHeader>
 
@@ -66,19 +69,38 @@ export function AddRepoNestedImportStep({
         {scanInProgress || scan.truncated || scan.timedOut || scan.stopped ? (
           <NestedRepoScanLimitNotice scan={scan} />
         ) : null}
-        <div className="flex min-w-0 shrink-0 items-center gap-2">
-          <label className="shrink-0 text-[11px] font-medium text-muted-foreground">
-            Group name
-          </label>
-          <Input
-            aria-label="Group name"
-            value={groupName}
-            onChange={(event) => onGroupNameChange(event.target.value)}
-            disabled={isAdding || scanInProgress}
-            className="h-9 min-w-0 flex-1"
-            placeholder={folderName}
-          />
-        </div>
+        {!isFirstRepoImport ? (
+          <div className="flex min-w-0 shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1">
+              <label className="text-[11px] font-medium text-muted-foreground">Group name</label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="What is a group name?"
+                    className="size-5 text-muted-foreground hover:text-foreground"
+                  >
+                    <CircleHelp className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={4} className="max-w-64">
+                  Group related repositories so they stay together. They will appear under{' '}
+                  {groupName.trim() || folderName}.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Input
+              aria-label="Group name"
+              value={groupName}
+              onChange={(event) => onGroupNameChange(event.target.value)}
+              disabled={isAdding || scanInProgress}
+              className="h-9 min-w-0 flex-1"
+              placeholder={folderName}
+            />
+          </div>
+        ) : null}
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <Button onClick={onBack} disabled={isAdding && !scanInProgress} variant="ghost">
             <ArrowLeft className="size-3.5" />
@@ -88,16 +110,18 @@ export function AddRepoNestedImportStep({
             <Button
               onClick={() => onImport('separate')}
               disabled={isAdding || scanInProgress || selectedPaths.size === 0}
-              variant="outline"
+              variant={isFirstRepoImport ? 'default' : 'outline'}
             >
-              Import separately
+              {isFirstRepoImport ? 'Import' : 'Import separately'}
             </Button>
-            <Button
-              onClick={() => onImport('group')}
-              disabled={isAdding || scanInProgress || selectedPaths.size === 0}
-            >
-              Import as group
-            </Button>
+            {!isFirstRepoImport ? (
+              <Button
+                onClick={() => onImport('group')}
+                disabled={isAdding || scanInProgress || selectedPaths.size === 0}
+              >
+                Import as group
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>

@@ -194,6 +194,7 @@ export function AddRepoDialogStepContent({
         scan={nestedScan}
         groupName={nestedGroupName}
         selectedPaths={nestedSelectedPaths}
+        isFirstRepoImport={repoCount === 0}
         isAdding={isAdding}
         scanInProgress={nestedScanInProgress}
         onGroupNameChange={onNestedGroupNameChange}
