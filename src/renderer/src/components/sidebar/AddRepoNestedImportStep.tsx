@@ -88,8 +88,8 @@ export function AddRepoNestedImportStep({
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={4} className="max-w-64">
-                  Keeps these related repos together in the sidebar under one group. Best for
-                  related repos like microservices.
+                  Keeps these repos together in one group. Best for related repos like
+                  microservices.
                 </TooltipContent>
               </Tooltip>
             </div>
