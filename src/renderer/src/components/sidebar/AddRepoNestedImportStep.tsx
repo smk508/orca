@@ -4,9 +4,10 @@ import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/di
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { NestedRepoTreePreview } from '@/components/repo/NestedRepoTreePreview'
+import { NestedRepoChecklist } from '@/components/repo/NestedRepoChecklist'
 import type { NestedRepoScanResult } from '../../../../shared/types'
 import { NestedRepoScanLimitNotice } from '../repo/NestedRepoScanLimitNotice'
+import { getRuntimePathBasename } from '../../../../shared/cross-platform-path'
 
 type AddRepoNestedImportStepProps = {
   scan: NestedRepoScanResult
@@ -33,14 +34,16 @@ export function AddRepoNestedImportStep({
   onImport,
   onStopScan
 }: AddRepoNestedImportStepProps): React.JSX.Element {
+  const folderName = getRuntimePathBasename(scan.selectedPath) || scan.selectedPath
+
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Import as project group</DialogTitle>
+        <DialogTitle>Import repositories from folder</DialogTitle>
         <div className="flex min-w-0 items-center gap-1.5">
           {scanInProgress ? <AddRepoNestedImportStopButton onStopScan={onStopScan} /> : null}
           <DialogDescription className="min-w-0 truncate">
-            {`${scanInProgress ? 'Scanning... ' : ''}Found ${scan.repos.length} git ${
+            {`${scanInProgress ? 'Scanning... ' : ''}Found ${scan.repos.length} ${
               scan.repos.length === 1 ? 'repository' : 'repositories'
             } in this folder.`}
           </DialogDescription>
@@ -53,9 +56,7 @@ export function AddRepoNestedImportStep({
             <FolderTree className="size-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-foreground">
-              Group under {groupName}
-            </div>
+            <div className="truncate text-sm font-medium text-foreground">Scanned {folderName}</div>
             <div className="truncate text-[11px] text-muted-foreground">{scan.selectedPath}</div>
           </div>
         </div>
@@ -67,10 +68,12 @@ export function AddRepoNestedImportStep({
             onChange={(event) => onGroupNameChange(event.target.value)}
             disabled={scanInProgress}
             className="h-9"
+            placeholder={folderName}
           />
+          <div className="truncate text-[11px] text-muted-foreground">Blank uses {folderName}</div>
         </div>
 
-        <NestedRepoTreePreview
+        <NestedRepoChecklist
           scan={scan}
           selectedPaths={selectedPaths}
           onSelectedPathsChange={onSelectedPathsChange}
@@ -95,9 +98,9 @@ export function AddRepoNestedImportStep({
             </Button>
             <Button
               onClick={() => onImport('group')}
-              disabled={isAdding || scanInProgress || selectedPaths.size === 0 || !groupName.trim()}
+              disabled={isAdding || scanInProgress || selectedPaths.size === 0}
             >
-              Import as project group
+              Import as group
             </Button>
           </div>
         </div>

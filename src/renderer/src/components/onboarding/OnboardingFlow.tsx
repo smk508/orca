@@ -272,9 +272,7 @@ export default function OnboardingFlow({
                 nestedScanInProgress={flow.nestedScanInProgress}
                 nestedSelectedPaths={flow.nestedSelectedPaths}
                 onNestedSelectedPathsChange={flow.setNestedSelectedPaths}
-                nestedGroupName={flow.nestedGroupName}
-                onNestedGroupNameChange={flow.setNestedGroupName}
-                onImportNested={(mode) => void flow.importNested(mode)}
+                onImportNested={() => void flow.importNested()}
                 onCancelNested={flow.cancelNested}
                 onStopNestedScan={flow.stopNestedScan}
                 onOpenFolder={() => void flow.openFolder()}
