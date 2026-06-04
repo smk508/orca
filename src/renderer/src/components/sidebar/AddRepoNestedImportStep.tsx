@@ -66,6 +66,19 @@ export function AddRepoNestedImportStep({
         {scanInProgress || scan.truncated || scan.timedOut || scan.stopped ? (
           <NestedRepoScanLimitNotice scan={scan} />
         ) : null}
+        <div className="flex min-w-0 shrink-0 items-center gap-2">
+          <label className="shrink-0 text-[11px] font-medium text-muted-foreground">
+            Group name
+          </label>
+          <Input
+            aria-label="Group name"
+            value={groupName}
+            onChange={(event) => onGroupNameChange(event.target.value)}
+            disabled={isAdding || scanInProgress}
+            className="h-9 min-w-0 flex-1"
+            placeholder={folderName}
+          />
+        </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <Button onClick={onBack} disabled={isAdding && !scanInProgress} variant="ghost">
             <ArrowLeft className="size-3.5" />
@@ -79,22 +92,12 @@ export function AddRepoNestedImportStep({
             >
               Import separately
             </Button>
-            <div className="flex min-w-0 flex-wrap justify-end gap-2">
-              <Input
-                aria-label="Group name"
-                value={groupName}
-                onChange={(event) => onGroupNameChange(event.target.value)}
-                disabled={isAdding || scanInProgress}
-                className="h-9 w-36 min-w-0"
-                placeholder={folderName}
-              />
-              <Button
-                onClick={() => onImport('group')}
-                disabled={isAdding || scanInProgress || selectedPaths.size === 0}
-              >
-                Import as group
-              </Button>
-            </div>
+            <Button
+              onClick={() => onImport('group')}
+              disabled={isAdding || scanInProgress || selectedPaths.size === 0}
+            >
+              Import as group
+            </Button>
           </div>
         </div>
       </div>

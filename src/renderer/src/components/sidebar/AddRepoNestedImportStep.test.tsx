@@ -51,7 +51,6 @@ describe('AddRepoNestedImportStep', () => {
     expect(html).toContain('payments/api')
     expect(html).toContain('billing/api')
     expect(html).not.toContain('disabled=""')
-    expect(html).not.toContain('>Group name</label>')
     expect(html).not.toContain('Project group')
   })
 })
