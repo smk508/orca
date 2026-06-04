@@ -1,5 +1,5 @@
 import { type Dispatch, type SetStateAction } from 'react'
-import { ArrowLeft, CircleHelp, CircleStop, Loader2 } from 'lucide-react'
+import { CircleHelp, CircleStop, Loader2 } from 'lucide-react'
 import { DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,7 +18,6 @@ type AddRepoNestedImportStepProps = {
   scanInProgress: boolean
   onGroupNameChange: (value: string) => void
   onSelectedPathsChange: Dispatch<SetStateAction<Set<string>>>
-  onBack: () => void
   onImport: (mode: 'group' | 'separate') => void
   onStopScan: () => void
 }
@@ -32,7 +31,6 @@ export function AddRepoNestedImportStep({
   scanInProgress,
   onGroupNameChange,
   onSelectedPathsChange,
-  onBack,
   onImport,
   onStopScan
 }: AddRepoNestedImportStepProps): React.JSX.Element {
@@ -101,28 +99,22 @@ export function AddRepoNestedImportStep({
             />
           </div>
         ) : null}
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <Button onClick={onBack} disabled={isAdding && !scanInProgress} variant="ghost">
-            <ArrowLeft className="size-3.5" />
-            Back
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <Button
+            onClick={() => onImport('separate')}
+            disabled={isAdding || scanInProgress || selectedPaths.size === 0}
+            variant={isFirstRepoImport ? 'default' : 'outline'}
+          >
+            {isFirstRepoImport ? 'Import' : 'Import separately'}
           </Button>
-          <div className="ml-auto flex min-w-0 flex-wrap justify-end gap-2">
+          {!isFirstRepoImport ? (
             <Button
-              onClick={() => onImport('separate')}
+              onClick={() => onImport('group')}
               disabled={isAdding || scanInProgress || selectedPaths.size === 0}
-              variant={isFirstRepoImport ? 'default' : 'outline'}
             >
-              {isFirstRepoImport ? 'Import' : 'Import separately'}
+              Import as group
             </Button>
-            {!isFirstRepoImport ? (
-              <Button
-                onClick={() => onImport('group')}
-                disabled={isAdding || scanInProgress || selectedPaths.size === 0}
-              >
-                Import as group
-              </Button>
-            ) : null}
-          </div>
+          ) : null}
         </div>
       </div>
     </>

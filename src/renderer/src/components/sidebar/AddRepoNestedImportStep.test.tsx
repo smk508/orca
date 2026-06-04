@@ -36,7 +36,6 @@ describe('AddRepoNestedImportStep', () => {
             scanInProgress={false}
             onGroupNameChange={vi.fn()}
             onSelectedPathsChange={vi.fn()}
-            onBack={vi.fn()}
             onImport={vi.fn()}
             onStopScan={vi.fn()}
           />
@@ -54,6 +53,7 @@ describe('AddRepoNestedImportStep', () => {
     expect(html).toContain('payments/api')
     expect(html).toContain('billing/api')
     expect(html).not.toContain('disabled=""')
+    expect(html).not.toContain('>Back</button>')
     expect(html).not.toContain('Project group')
   })
 
@@ -70,7 +70,6 @@ describe('AddRepoNestedImportStep', () => {
             scanInProgress={false}
             onGroupNameChange={vi.fn()}
             onSelectedPathsChange={vi.fn()}
-            onBack={vi.fn()}
             onImport={vi.fn()}
             onStopScan={vi.fn()}
           />
@@ -85,5 +84,6 @@ describe('AddRepoNestedImportStep', () => {
     expect(html).not.toContain('What is a group name?')
     expect(html).not.toContain('Import as group')
     expect(html).not.toContain('Import separately')
+    expect(html).not.toContain('>Back</button>')
   })
 })
