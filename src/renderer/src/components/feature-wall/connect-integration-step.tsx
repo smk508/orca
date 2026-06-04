@@ -1,0 +1,160 @@
+import { Check } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import type {
+  IntegrationCompletionReason,
+  IntegrationStepState
+} from './use-integration-connection-status'
+
+export type { IntegrationStepState }
+
+// One progressive step. The active step shows its instructional copy and
+// provider rows; a done step collapses to a one-line summary with a "Change"
+// affordance that reopens it inline; upcoming steps stay quiet and inert until
+// the prior step completes. `expanded` (body visibility) is tracked separately
+// from `state` so a done step can reopen while still reading as connected.
+export function IntegrationStep(props: {
+  index: number
+  state: IntegrationStepState
+  expanded: boolean
+  title: string
+  description: string
+  summary?: React.ReactNode
+  onToggle?: () => void
+  canToggle?: boolean
+  children?: React.ReactNode
+}): React.JSX.Element {
+  const { state, expanded, onToggle } = props
+  const done = state === 'done'
+  const active = state === 'active'
+  const canToggle = done && (props.canToggle ?? true)
+
+  return (
+    <div
+      className={cn(
+        'overflow-hidden rounded-xl border bg-card transition-colors',
+        active || (done && expanded) ? 'border-foreground/25 shadow-xs' : 'border-border',
+        state === 'upcoming' && 'opacity-55'
+      )}
+    >
+      <button
+        type="button"
+        onClick={canToggle ? onToggle : undefined}
+        disabled={!canToggle}
+        aria-current={active ? 'step' : undefined}
+        aria-expanded={canToggle ? expanded : undefined}
+        className={cn(
+          'flex w-full items-center gap-3 px-4 py-3.5 text-left',
+          canToggle ? 'hover:bg-accent/50' : 'cursor-default'
+        )}
+      >
+        <span
+          className={cn(
+            'flex size-7 shrink-0 items-center justify-center rounded-full border text-[13px] font-semibold leading-none',
+            done
+              ? 'border-status-success-border bg-status-success-background text-status-success'
+              : active
+                ? 'border-foreground bg-foreground text-background'
+                : 'border-border text-muted-foreground'
+          )}
+        >
+          {done ? <Check className="size-3.5" /> : props.index + 1}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[15px] font-semibold leading-tight text-foreground">
+            {props.title}
+          </span>
+          <span className="mt-0.5 block text-[13px] leading-snug text-muted-foreground">
+            {done ? props.summary : props.description}
+          </span>
+        </span>
+        {canToggle ? (
+          <span className="shrink-0 text-[12px] font-medium text-muted-foreground">
+            {expanded ? 'Done' : 'Change'}
+          </span>
+        ) : null}
+      </button>
+      {expanded ? (
+        <div className="space-y-2 border-t border-border bg-muted/30 p-3">{props.children}</div>
+      ) : null}
+    </div>
+  )
+}
+
+// Two progress dots tracking step state; the active one stretches into a bar.
+export function IntegrationProgress(props: {
+  states: readonly IntegrationStepState[]
+}): React.JSX.Element {
+  return (
+    <div className="flex items-center gap-1.5 pt-2" aria-hidden>
+      {props.states.map((state, i) => (
+        <span
+          key={i}
+          className={cn(
+            'h-[7px] rounded-full transition-all',
+            state === 'active' ? 'w-[22px] bg-foreground' : 'w-[7px]',
+            state === 'done' ? 'bg-status-success' : state !== 'active' && 'bg-border'
+          )}
+        />
+      ))}
+    </div>
+  )
+}
+
+// Acknowledges the step-1 code host as an already-usable task source so we
+// don't ask the user to connect the same gh/glab auth twice. "Use … issues"
+// resolves the step without a tracker; the copy never claims a tracker exists.
+export function CodeHostTaskNote(props: {
+  providerName: string
+  onAccept?: () => void
+}): React.JSX.Element {
+  return (
+    <div className="flex items-start gap-2.5 border-t border-border px-1 pb-1 pt-3 text-[13px] leading-snug text-muted-foreground">
+      <Check className="mt-px size-3.5 shrink-0 text-status-success" />
+      <div className="min-w-0 flex-1">
+        <span>
+          <span className="font-semibold text-foreground">{props.providerName}</span> issues are
+          already available as a task source.
+        </span>
+        <span className="mt-0.5 block text-[12px]">
+          Connect a tracker above only if your team plans work there.
+        </span>
+        {props.onAccept ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="mt-1.5 h-auto px-0 text-[12px] text-foreground hover:bg-transparent hover:underline"
+            onClick={props.onAccept}
+          >
+            Use {props.providerName} issues for tasks
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+// Final banner shown once both steps are connected or locally acknowledged.
+export function IntegrationCompleteBanner(props: {
+  completionReason: IntegrationCompletionReason
+  codeHostProviderName: string | null
+}): React.JSX.Element {
+  const details =
+    props.completionReason === 'dedicated-tracker'
+      ? 'Review status and a task source are connected. You can change either from Settings any time.'
+      : `Review status is connected, and ${props.codeHostProviderName ?? 'code host'} issues are available as tasks for this setup flow.`
+
+  return (
+    <div className="mt-2.5 flex items-center gap-3 rounded-xl border border-status-success-border bg-status-success-background px-4 py-3.5">
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-status-success/15 text-status-success">
+        <Check className="size-4" />
+      </span>
+      <div className="min-w-0">
+        <p className="text-[14px] font-semibold leading-tight text-foreground">
+          You&apos;re set up
+        </p>
+        <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground">{details}</p>
+      </div>
+    </div>
+  )
+}

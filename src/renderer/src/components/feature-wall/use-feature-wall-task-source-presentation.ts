@@ -1,7 +1,9 @@
 import { useEffect } from 'react'
 import type { FeatureWallWorkflow } from '../../../../shared/feature-wall-workflows'
 import { useAppStore } from '@/store'
+import { getLocalPreflightContext, localPreflightContextKey } from '@/lib/local-preflight-context'
 import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
+import { deriveIntegrationConnectionStatus } from './use-integration-connection-status'
 
 export type FeatureWallTaskSourcePresentation = {
   workflow: FeatureWallWorkflow
@@ -18,6 +20,8 @@ export function useFeatureWallTaskSourcePresentation(
 ): FeatureWallTaskSourcePresentation {
   const preflightStatus = useAppStore((s) => s.preflightStatus)
   const preflightStatusChecked = useAppStore((s) => s.preflightStatusChecked)
+  const preflightStatusContextKey = useAppStore((s) => s.preflightStatusContextKey)
+  const preflightStatusError = useAppStore((s) => s.preflightStatusError)
   const preflightStatusLoading = useAppStore((s) => s.preflightStatusLoading)
   const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
   const linearStatus = useAppStore((s) => s.linearStatus)
@@ -29,9 +33,13 @@ export function useFeatureWallTaskSourcePresentation(
   const jiraStatusContextKey = useAppStore((s) => s.jiraStatusContextKey)
   const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
   const settings = useAppStore((s) => s.settings)
+  const expectedPreflightContextKey = useAppStore((s) =>
+    localPreflightContextKey(getLocalPreflightContext(s))
+  )
   const providerRuntimeContextKey = getProviderRuntimeContextKey(settings)
   const linearStatusCurrent = linearStatusContextKey === providerRuntimeContextKey
   const jiraStatusCurrent = jiraStatusContextKey === providerRuntimeContextKey
+  const preflightStatusCurrent = preflightStatusContextKey === expectedPreflightContextKey
 
   useEffect(() => {
     if (!isOpen) {
@@ -39,7 +47,7 @@ export function useFeatureWallTaskSourcePresentation(
     }
     // Why: the Tasks tour copy depends on whether a task source is already
     // usable, so connected users should not see setup-oriented guidance.
-    if (!preflightStatusChecked) {
+    if (!preflightStatusCurrent || !preflightStatusChecked) {
       void refreshPreflightStatus()
     }
     if (!linearStatusCurrent || !linearStatusChecked) {
@@ -56,22 +64,30 @@ export function useFeatureWallTaskSourcePresentation(
     jiraStatusChecked,
     linearStatusCurrent,
     linearStatusChecked,
+    preflightStatusCurrent,
     preflightStatusChecked,
     refreshPreflightStatus
   ])
 
-  const hasConnectedTaskSource =
-    (preflightStatus?.gh.installed === true && preflightStatus.gh.authenticated === true) ||
-    (preflightStatus?.glab?.installed === true && preflightStatus.glab.authenticated === true) ||
-    (linearStatusCurrent && linearStatus.connected === true) ||
-    (jiraStatusCurrent && jiraStatus.connected === true)
-  const isCheckingTaskSources =
-    preflightStatusLoading ||
-    !preflightStatusChecked ||
-    !linearStatusCurrent ||
-    !linearStatusChecked ||
-    !jiraStatusCurrent ||
-    !jiraStatusChecked
+  const taskSourceStatus = deriveIntegrationConnectionStatus({
+    preflightStatus,
+    preflightStatusChecked,
+    preflightStatusContextKey,
+    preflightStatusError,
+    preflightStatusLoading,
+    expectedPreflightContextKey,
+    linearStatus,
+    linearStatusChecked,
+    linearStatusContextKey,
+    jiraStatus,
+    jiraStatusChecked,
+    jiraStatusContextKey,
+    providerRuntimeContextKey
+  })
 
-  return { workflow: selected, hasConnectedTaskSource, isCheckingTaskSources }
+  return {
+    workflow: selected,
+    hasConnectedTaskSource: taskSourceStatus.trackerConnected,
+    isCheckingTaskSources: taskSourceStatus.checking
+  }
 }

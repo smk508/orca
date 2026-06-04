@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/store'
 import { isGitRepoKind } from '../../../../shared/repo-kind'
 import { checkRuntimeHooks } from '@/runtime/runtime-hooks-client'
+import { getLocalPreflightContext, localPreflightContextKey } from '@/lib/local-preflight-context'
 import { hasEffectiveSetupCommand } from '@/lib/setup-script-status'
 import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
 import {
@@ -18,6 +19,7 @@ import {
   getFeatureWallSetupProgress,
   type FeatureWallSetupProgress
 } from '../feature-wall/feature-wall-setup-progress'
+import { deriveIntegrationConnectionStatus } from '../feature-wall/use-integration-connection-status'
 import {
   getComputerUsePermissionSetupState,
   getCurrentSetupScriptProbeState,
@@ -41,6 +43,9 @@ export function useSetupGuideProgress(
   const terminalLayoutsByTabId = useAppStore((s) => s.terminalLayoutsByTabId)
   const preflightStatus = useAppStore((s) => s.preflightStatus)
   const preflightStatusChecked = useAppStore((s) => s.preflightStatusChecked)
+  const preflightStatusContextKey = useAppStore((s) => s.preflightStatusContextKey)
+  const preflightStatusError = useAppStore((s) => s.preflightStatusError)
+  const preflightStatusLoading = useAppStore((s) => s.preflightStatusLoading)
   const refreshPreflightStatus = useAppStore((s) => s.refreshPreflightStatus)
   const linearStatus = useAppStore((s) => s.linearStatus)
   const linearStatusChecked = useAppStore((s) => s.linearStatusChecked)
@@ -52,6 +57,9 @@ export function useSetupGuideProgress(
   const checkJiraConnection = useAppStore((s) => s.checkJiraConnection)
   const repos = useAppStore((s) => s.repos)
   const activeRepoId = useAppStore((s) => s.activeRepoId)
+  const expectedPreflightContextKey = useAppStore((s) =>
+    localPreflightContextKey(getLocalPreflightContext(s))
+  )
   const [setupScriptProbe, setSetupScriptProbe] = useState<SetupScriptProbeState>(
     INITIAL_SETUP_SCRIPT_PROBE_STATE
   )
@@ -79,12 +87,13 @@ export function useSetupGuideProgress(
   const providerRuntimeContextKey = getProviderRuntimeContextKey(settings)
   const linearStatusCurrent = linearStatusContextKey === providerRuntimeContextKey
   const jiraStatusCurrent = jiraStatusContextKey === providerRuntimeContextKey
+  const preflightStatusCurrent = preflightStatusContextKey === expectedPreflightContextKey
 
   useEffect(() => {
     if (!shouldRefreshCoreState) {
       return
     }
-    if (!preflightStatusChecked) {
+    if (!preflightStatusCurrent || !preflightStatusChecked) {
       void refreshPreflightStatus()
     }
     if (!linearStatusCurrent || !linearStatusChecked) {
@@ -100,6 +109,7 @@ export function useSetupGuideProgress(
     linearStatusChecked,
     jiraStatusCurrent,
     jiraStatusChecked,
+    preflightStatusCurrent,
     preflightStatusChecked,
     refreshPreflightStatus,
     shouldRefreshCoreState
@@ -210,11 +220,22 @@ export function useSetupGuideProgress(
     }
   }, [computerUseSkillInstalled, readComputerUsePermissions, shouldRefreshCoreState])
 
-  const hasConnectedTaskSource =
-    (preflightStatus?.gh.installed === true && preflightStatus.gh.authenticated === true) ||
-    (preflightStatus?.glab?.installed === true && preflightStatus.glab.authenticated === true) ||
-    (linearStatusCurrent && linearStatus.connected === true) ||
-    (jiraStatusCurrent && jiraStatus.connected === true)
+  const taskSourceStatus = deriveIntegrationConnectionStatus({
+    preflightStatus,
+    preflightStatusChecked,
+    preflightStatusContextKey,
+    preflightStatusError,
+    preflightStatusLoading,
+    expectedPreflightContextKey,
+    linearStatus,
+    linearStatusChecked,
+    linearStatusContextKey,
+    jiraStatus,
+    jiraStatusChecked,
+    jiraStatusContextKey,
+    providerRuntimeContextKey
+  })
+  const hasConnectedTaskSource = taskSourceStatus.trackerConnected
   const gitRepoCount = orderedGitRepos.length
   const currentSetupScriptProbe = getCurrentSetupScriptProbeState(
     setupScriptProbe,
@@ -229,9 +250,11 @@ export function useSetupGuideProgress(
   const ready = getSetupGuideProgressReady({
     refreshEnabled: shouldRefreshCoreState,
     settingsLoaded: settings !== null,
-    preflightStatusChecked,
-    linearStatusChecked: linearStatusCurrent && linearStatusChecked,
-    jiraStatusChecked: jiraStatusCurrent && jiraStatusChecked,
+    // Why: task-source readiness is a capability group. Once any provider is
+    // usable, unrelated stale provider checks should not hide setup progress.
+    preflightStatusChecked: !taskSourceStatus.checking,
+    linearStatusChecked: true,
+    jiraStatusChecked: true,
     browserUseSkillDiscoveryLoading: detectedBrowserUseSkillLoading,
     computerUseSkillDiscoveryLoading: computerUseSkillLoading,
     orchestrationSkillDiscoveryLoading: detectedOrchestrationSkillLoading,
