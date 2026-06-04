@@ -15,7 +15,7 @@ const commandInputStylesSource = readFileSync(
 )
 
 function liveInputBarBlock(): string {
-  const start = sessionRouteSource.indexOf('{liveInputEnabled ? (')
+  const start = sessionRouteSource.indexOf(') : liveInputEnabled ? (')
   expect(start).toBeGreaterThanOrEqual(0)
   const end = sessionRouteSource.indexOf(') : (', start)
   expect(end).toBeGreaterThan(start)
