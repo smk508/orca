@@ -1,10 +1,7 @@
 import { Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import type {
-  IntegrationCompletionReason,
-  IntegrationStepState
-} from './use-integration-connection-status'
+import type { IntegrationStepState } from './use-integration-connection-status'
 
 export type { IntegrationStepState }
 
@@ -129,31 +126,6 @@ export function CodeHostTaskNote(props: {
             Use {props.providerName} issues for tasks
           </Button>
         ) : null}
-      </div>
-    </div>
-  )
-}
-
-// Final banner shown once both steps are connected or locally acknowledged.
-export function IntegrationCompleteBanner(props: {
-  completionReason: IntegrationCompletionReason
-  codeHostProviderName: string | null
-}): React.JSX.Element {
-  const details =
-    props.completionReason === 'dedicated-tracker'
-      ? 'Review status and a task source are connected. You can change either from Settings any time.'
-      : `Review status is connected, and ${props.codeHostProviderName ?? 'code host'} issues are available as tasks for this setup flow.`
-
-  return (
-    <div className="mt-2.5 flex items-center gap-3 rounded-xl border border-status-success-border bg-status-success-background px-4 py-3.5">
-      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-status-success/15 text-status-success">
-        <Check className="size-4" />
-      </span>
-      <div className="min-w-0">
-        <p className="text-[14px] font-semibold leading-tight text-foreground">
-          You&apos;re set up
-        </p>
-        <p className="mt-0.5 text-[13px] leading-snug text-muted-foreground">{details}</p>
       </div>
     </div>
   )

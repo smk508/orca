@@ -4,7 +4,7 @@ import {
   deriveIntegrationFlowState,
   deriveIntegrationStepStates
 } from './use-integration-connection-status'
-import { deriveCliProviderRowState } from './connect-integration-rows'
+import { deriveCliProviderCardState } from '@/components/settings/source-control-integration-cards'
 
 type StatusFacts = Parameters<typeof deriveIntegrationConnectionStatus>[0]
 
@@ -233,12 +233,12 @@ describe('deriveIntegrationConnectionStatus', () => {
   })
 })
 
-describe('deriveCliProviderRowState', () => {
+describe('deriveCliProviderCardState', () => {
   it('does not show cached CLI auth as connected while preflight is stale or errored', () => {
     const connectedCli = { installed: true, authenticated: true }
 
     expect(
-      deriveCliProviderRowState({
+      deriveCliProviderCardState({
         cliStatus: connectedCli,
         preflightStatusAvailable: true,
         preflightStatusChecked: true,
@@ -249,7 +249,7 @@ describe('deriveCliProviderRowState', () => {
     ).toBe('checking')
 
     expect(
-      deriveCliProviderRowState({
+      deriveCliProviderCardState({
         cliStatus: connectedCli,
         preflightStatusAvailable: true,
         preflightStatusChecked: true,
@@ -284,8 +284,7 @@ describe('deriveIntegrationFlowState', () => {
     ).toMatchObject({
       review: 'done',
       task: 'active',
-      complete: false,
-      completionReason: null
+      complete: false
     })
   })
 
@@ -300,8 +299,7 @@ describe('deriveIntegrationFlowState', () => {
     ).toMatchObject({
       review: 'active',
       task: 'done',
-      complete: false,
-      completionReason: null
+      complete: false
     })
   })
 })

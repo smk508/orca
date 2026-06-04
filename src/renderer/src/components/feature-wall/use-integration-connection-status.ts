@@ -3,7 +3,6 @@ import { getLocalPreflightContext, localPreflightContextKey } from '@/lib/local-
 import { getProviderRuntimeContextKey } from '@/lib/provider-runtime-context'
 
 export type IntegrationStepState = 'active' | 'done' | 'upcoming'
-export type IntegrationCompletionReason = 'dedicated-tracker' | 'code-host-issues'
 
 // Pure derivation of the two-step flow's step states from connection facts,
 // extracted so the progressive logic is testable without the store or DOM.
@@ -35,7 +34,6 @@ export function deriveIntegrationFlowState(input: {
   task: IntegrationStepState
   complete: boolean
   taskResolved: boolean
-  completionReason: IntegrationCompletionReason | null
 } {
   const trackerConnected = input.trackerProviderName !== null
   // Code-host acceptance is local acknowledgement, so it can complete the task
@@ -46,15 +44,9 @@ export function deriveIntegrationFlowState(input: {
     trackerConnected,
     taskAccepted: taskAcceptedReady
   })
-  const completionReason: IntegrationCompletionReason | null = stepStates.complete
-    ? trackerConnected
-      ? 'dedicated-tracker'
-      : 'code-host-issues'
-    : null
   return {
     ...stepStates,
-    taskResolved: stepStates.task === 'done',
-    completionReason
+    taskResolved: stepStates.task === 'done'
   }
 }
 

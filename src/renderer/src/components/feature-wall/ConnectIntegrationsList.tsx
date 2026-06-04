@@ -1,32 +1,29 @@
 import { useState } from 'react'
-import { CLI_PROVIDERS, type CliAuthProviderId } from './connect-integrations-provider-config'
-import { CliProviderRow, JiraProviderRow, LinearProviderRow } from './connect-integration-rows'
 import {
-  CodeHostTaskNote,
-  IntegrationCompleteBanner,
-  IntegrationProgress,
-  IntegrationStep
-} from './connect-integration-step'
+  AzureDevOpsIntegrationCard,
+  BitbucketIntegrationCard,
+  GiteaIntegrationCard,
+  GitHubIntegrationCard,
+  GitLabIntegrationCard
+} from '@/components/settings/source-control-integration-cards'
+import {
+  JiraIntegrationCard,
+  LinearIntegrationCard
+} from '@/components/settings/task-tracker-integration-cards'
+import { useIntegrationProviderStatusRefresh } from '@/components/settings/use-integration-provider-status-refresh'
+import { CodeHostTaskNote, IntegrationProgress, IntegrationStep } from './connect-integration-step'
 import {
   deriveIntegrationFlowState,
   useIntegrationConnectionStatus
 } from './use-integration-connection-status'
-
-type ReviewProviderId = 'github' | 'gitlab'
-type TaskProviderId = 'linear' | 'jira'
 
 // Progressive two-step integration setup: first connect a code host for review
 // status, then a task source. Only one step is active at a time — connecting a
 // step collapses it to a summary and promotes the next. Done-state is driven by
 // real provider connection status, never an optimistic click.
 export function ConnectIntegrationsList(): React.JSX.Element {
+  useIntegrationProviderStatusRefresh()
   const status = useIntegrationConnectionStatus()
-  // Which provider row is open within each step (accordion, one at a time).
-  const [openReview, setOpenReview] = useState<ReviewProviderId | null>(null)
-  const [openTask, setOpenTask] = useState<TaskProviderId | null>(null)
-  // A CLI auth terminal locks the accordion so the user finishes or re-checks
-  // before switching providers.
-  const [activeAuthProvider, setActiveAuthProvider] = useState<CliAuthProviderId | null>(null)
   // Lets a done step reopen inline via "Change" without losing its connected
   // state. Cleared once the user collapses it again.
   const [reopened, setReopened] = useState<{ review: boolean; task: boolean }>({
@@ -50,24 +47,10 @@ export function ConnectIntegrationsList(): React.JSX.Element {
   const reviewDone = status.reviewConnected
   const trackerDone = status.trackerProviderName !== null
   const taskResolved = flow.taskResolved
-  const reviewExpanded = !reviewDone || reopened.review || activeAuthProvider !== null
-  const reviewCanToggle = reviewDone && activeAuthProvider === null
+  const reviewExpanded = !reviewDone || reopened.review
+  const reviewCanToggle = reviewDone
   // Step 2 only becomes reachable once review status is connected.
   const taskExpanded = reviewDone && (!taskResolved || reopened.task)
-
-  const toggleReview = (id: ReviewProviderId): void => {
-    if (activeAuthProvider) {
-      setOpenReview(activeAuthProvider as ReviewProviderId)
-      return
-    }
-    setOpenReview((current) => (current === id ? null : id))
-  }
-  const toggleTask = (id: TaskProviderId): void => {
-    if (activeAuthProvider) {
-      return
-    }
-    setOpenTask((current) => (current === id ? null : id))
-  }
 
   return (
     <div className="space-y-2.5">
@@ -83,7 +66,7 @@ export function ConnectIntegrationsList(): React.JSX.Element {
         state={flow.review}
         expanded={reviewExpanded}
         title="Keep review status in view"
-        description="Connect GitHub or GitLab so Orca can show PR or MR status, checks, and reviews while agents work."
+        description="Connect a review provider so Orca can show PR or MR status, checks, and reviews while agents work."
         summary={
           <>
             <span className="font-semibold text-foreground">{status.reviewProviderName}</span>{' '}
@@ -93,26 +76,11 @@ export function ConnectIntegrationsList(): React.JSX.Element {
         onToggle={() => setReopened((r) => ({ ...r, review: !r.review }))}
         canToggle={reviewCanToggle}
       >
-        <CliProviderRow
-          config={CLI_PROVIDERS.github}
-          open={openReview === 'github'}
-          disabled={activeAuthProvider !== null && activeAuthProvider !== 'github'}
-          onToggle={() => toggleReview('github')}
-          onAuthTerminalOpenChange={(open) => {
-            setOpenReview('github')
-            setActiveAuthProvider(open ? 'github' : null)
-          }}
-        />
-        <CliProviderRow
-          config={CLI_PROVIDERS.gitlab}
-          open={openReview === 'gitlab'}
-          disabled={activeAuthProvider !== null && activeAuthProvider !== 'gitlab'}
-          onToggle={() => toggleReview('gitlab')}
-          onAuthTerminalOpenChange={(open) => {
-            setOpenReview('gitlab')
-            setActiveAuthProvider(open ? 'gitlab' : null)
-          }}
-        />
+        <GitHubIntegrationCard />
+        <GitLabIntegrationCard />
+        <BitbucketIntegrationCard />
+        <AzureDevOpsIntegrationCard />
+        <GiteaIntegrationCard />
       </IntegrationStep>
 
       <IntegrationStep
@@ -137,16 +105,8 @@ export function ConnectIntegrationsList(): React.JSX.Element {
         onToggle={() => setReopened((r) => ({ ...r, task: !r.task }))}
         canToggle={reviewDone}
       >
-        <LinearProviderRow
-          open={openTask === 'linear'}
-          disabled={activeAuthProvider !== null}
-          onToggle={() => toggleTask('linear')}
-        />
-        <JiraProviderRow
-          open={openTask === 'jira'}
-          disabled={activeAuthProvider !== null}
-          onToggle={() => toggleTask('jira')}
-        />
+        <LinearIntegrationCard />
+        <JiraIntegrationCard />
         {status.reviewProviderName && !trackerDone ? (
           <CodeHostTaskNote
             providerName={status.reviewProviderName}
@@ -157,13 +117,6 @@ export function ConnectIntegrationsList(): React.JSX.Element {
           />
         ) : null}
       </IntegrationStep>
-
-      {flow.completionReason ? (
-        <IntegrationCompleteBanner
-          completionReason={flow.completionReason}
-          codeHostProviderName={status.reviewProviderName}
-        />
-      ) : null}
     </div>
   )
 }
