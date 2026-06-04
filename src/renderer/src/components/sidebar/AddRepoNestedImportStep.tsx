@@ -70,7 +70,7 @@ export function AddRepoNestedImportStep({
           <NestedRepoScanLimitNotice scan={scan} />
         ) : null}
         {!isFirstRepoImport ? (
-          <div className="flex min-w-0 shrink-0 items-center gap-2">
+          <div className="min-w-0 shrink-0 space-y-1">
             <div className="flex shrink-0 items-center gap-1">
               <label className="text-[11px] font-medium text-muted-foreground">Group name</label>
               <Tooltip>
@@ -96,7 +96,7 @@ export function AddRepoNestedImportStep({
               value={groupName}
               onChange={(event) => onGroupNameChange(event.target.value)}
               disabled={isAdding || scanInProgress}
-              className="h-9 min-w-0 flex-1"
+              className="h-9 min-w-0"
               placeholder={folderName}
             />
           </div>
