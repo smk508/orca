@@ -86,8 +86,8 @@ export function AddRepoNestedImportStep({
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={4} className="max-w-64">
-                  Group related repositories so they stay together. They will appear under{' '}
-                  {groupName.trim() || folderName}.
+                  Group related repositories so they stay together under{' '}
+                  {groupName.trim() || folderName} in the sidebar.
                 </TooltipContent>
               </Tooltip>
             </div>
