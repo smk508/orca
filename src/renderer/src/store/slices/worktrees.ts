@@ -1761,7 +1761,22 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     try {
       const ownerState = get()
       const hostId = repoHostId(ownerState, repoId)
-      const settings = settingsForRepoOwner(ownerState, repoId, hostId)
+      const ownerSettings = settingsForRepoOwner(ownerState, repoId, hostId)
+      // Why: a local `worktrees:changed` event for an unbound repo would
+      // otherwise route the list fetch to the active runtime (see
+      // settingsForKnownRepoOwner's unbound fall-through), querying the remote
+      // host with local worktree ids. forceLocalOwner pins the list fetch to
+      // the local host so CLI-created local worktrees refresh into the sidebar
+      // while a remote runtime is active. Gated on a local hostId so a repo
+      // genuinely bound to a runtime/SSH host is never force-listed locally;
+      // for an unbound repo hostId is local, so the host-scoped merge below
+      // only touches local-host worktrees and never clobbers remote state.
+      const settings =
+        options?.forceLocalOwner &&
+        hostId === LOCAL_EXECUTION_HOST_ID &&
+        ownerSettings?.activeRuntimeEnvironmentId
+          ? { ...ownerSettings, activeRuntimeEnvironmentId: null }
+          : ownerSettings
       const detected = await listDetectedWorktreesForRepoCoalesced(settings, repoId, {
         executionHostId: hostId,
         requireAuthoritative: options?.requireAuthoritative
