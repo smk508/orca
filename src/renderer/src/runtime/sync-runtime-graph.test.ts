@@ -1538,4 +1538,57 @@ describe('buildMobileSessionTabSnapshots', () => {
       }
     ])
   })
+
+  it('publishes both light and dark palettes regardless of the host default mode', () => {
+    const leafId = '11111111-1111-4111-8111-111111111111'
+    const state = makeState({
+      settings: {
+        ...getDefaultSettings('/tmp'),
+        // Host default resolves dark via systemPrefersDark, but both palettes
+        // must still be emitted so the client can pick light itself.
+        theme: 'system',
+        terminalUseSeparateLightTheme: true,
+        terminalColorOverrides: {
+          background: '#f8f8f8',
+          foreground: '#101010',
+          cursor: '#202020'
+        },
+        terminalBackgroundOpacity: 0.8,
+        terminalCursorOpacity: 0.5
+      },
+      tabBarOrderByWorktree: { 'wt-1': ['term-1'] },
+      tabsByWorktree: {
+        'wt-1': [{ id: 'term-1', title: 'Terminal', customTitle: null, ptyId: 'pty-1' }]
+      } as unknown as AppState['tabsByWorktree'],
+      terminalLayoutsByTabId: {
+        'term-1': {
+          root: { type: 'leaf', leafId },
+          activeLeafId: leafId,
+          expandedLeafId: null,
+          ptyIdsByLeafId: { [leafId]: 'pty-1' }
+        }
+      } as AppState['terminalLayoutsByTabId']
+    })
+
+    const tab = buildMobileSessionTabSnapshots(state, true)[0]?.tabs[0]
+    expect(tab).toMatchObject({ type: 'terminal' })
+    const terminalTheme = tab?.type === 'terminal' ? tab.terminalTheme : undefined
+    expect(terminalTheme?.mode).toBe('dark')
+    // The host default (mode) palette equals the matching pair palette.
+    expect(terminalTheme?.theme).toEqual(terminalTheme?.palettes?.dark)
+    // Overrides + opacity applied identically to both palettes.
+    expect(terminalTheme?.palettes?.light).toMatchObject({
+      background: 'rgba(248, 248, 248, 0.8)',
+      foreground: '#101010',
+      cursor: 'rgba(32, 32, 32, 0.5)'
+    })
+    expect(terminalTheme?.palettes?.dark).toMatchObject({
+      background: 'rgba(248, 248, 248, 0.8)',
+      foreground: '#101010',
+      cursor: 'rgba(32, 32, 32, 0.5)'
+    })
+    // Light and dark differ in their base (un-overridden) ANSI colors, so the
+    // pair is genuinely two resolutions, not the same palette twice.
+    expect(terminalTheme?.palettes?.light).not.toEqual(terminalTheme?.palettes?.dark)
+  })
 })

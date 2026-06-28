@@ -134,8 +134,20 @@ export type RuntimeMobileSessionTerminalTab = {
 }
 
 export type RuntimeMobileTerminalTheme = {
+  // Why: `mode` + `theme` are the host's default (driven by systemPrefersDark)
+  // and stay populated so a client reading only these still renders. `palettes`
+  // is added alongside so a client can pick its own light/dark independent of
+  // the host's current appearance (CHE-1302). Additive, not versioned: an old
+  // client ignores `palettes`; a new client prefers it and falls back to
+  // `theme` for the host's default mode.
   mode: 'dark' | 'light'
   theme: TerminalColorOverrides
+  /** Both resolved palettes (overrides/opacity applied to each), so the client
+   *  picks light or dark itself. Absent only when no palette resolves. */
+  palettes?: {
+    light: TerminalColorOverrides
+    dark: TerminalColorOverrides
+  }
 }
 
 export type RuntimeMobileSessionMarkdownTab = {

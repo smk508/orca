@@ -1198,15 +1198,21 @@ function isHexColor(value: string | undefined): value is string {
   return typeof value === 'string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)
 }
 
-function resolveMobileTerminalTheme(
-  state: AppState,
+// Why: resolve one mode's palette — the effective xterm theme with
+// terminalColorOverrides applied, then background/cursor opacity folded in.
+// Shared so the host can resolve light and dark with identical logic.
+function resolvePaletteForMode(
+  settings: NonNullable<AppState['settings']>,
+  mode: 'dark' | 'light',
   systemPrefersDark: boolean
-): RuntimeMobileTerminalTheme | undefined {
-  const settings = state.settings
-  if (!settings) {
-    return undefined
-  }
-  const appearance = resolveEffectiveTerminalAppearance(settings, systemPrefersDark)
+): RuntimeMobileTerminalTheme['theme'] | undefined {
+  // Why: force the mode by pinning settings.theme; passing 'dark'/'light'
+  // selects that variant (and its separate-light-theme branch) regardless of
+  // the host's current systemPrefersDark.
+  const appearance = resolveEffectiveTerminalAppearance(
+    { ...settings, theme: mode },
+    systemPrefersDark
+  )
   const resolvedTheme = appearance.theme
     ? { ...appearance.theme, ...settings.terminalColorOverrides }
     : undefined
@@ -1229,7 +1235,33 @@ function resolveMobileTerminalTheme(
       theme[key] = value
     }
   }
-  return { mode: appearance.mode, theme: theme as RuntimeMobileTerminalTheme['theme'] }
+  return theme as RuntimeMobileTerminalTheme['theme']
+}
+
+function resolveMobileTerminalTheme(
+  state: AppState,
+  systemPrefersDark: boolean
+): RuntimeMobileTerminalTheme | undefined {
+  const settings = state.settings
+  if (!settings) {
+    return undefined
+  }
+  // Why: the host's default mode follows systemPrefersDark (or an explicit
+  // theme setting); the client uses it until it expresses its own preference.
+  const defaultMode = resolveEffectiveTerminalAppearance(settings, systemPrefersDark).mode
+  const light = resolvePaletteForMode(settings, 'light', systemPrefersDark)
+  const dark = resolvePaletteForMode(settings, 'dark', systemPrefersDark)
+  const defaultTheme = defaultMode === 'light' ? light : dark
+  if (!defaultTheme) {
+    return undefined
+  }
+  return {
+    mode: defaultMode,
+    theme: defaultTheme,
+    // Why: emit both palettes only when both resolve, so the client always
+    // gets a complete light/dark pair to switch between.
+    ...(light && dark ? { palettes: { light, dark } } : {})
+  }
 }
 
 function getRuntimeLeafIdsForTerminal(tabId: string, state: AppState): string[] {
