@@ -157,6 +157,27 @@ export async function saveTerminalLinkOpenMode(mode: MobileTerminalLinkOpenMode)
   await AsyncStorage.setItem(TERMINAL_LINK_OPEN_MODE_KEY, mode)
 }
 
+export type AppAppearance = 'system' | 'light' | 'dark'
+
+const APP_APPEARANCE_KEY = 'orca:appAppearance'
+export const DEFAULT_APP_APPEARANCE: AppAppearance = 'system'
+
+// Why: app chrome theme is a per-device choice. Default 'system' so the app
+// follows the OS light/dark setting out of the box; 'light'/'dark' pin it. The
+// theme context resolves 'system' against React Native's useColorScheme().
+export async function loadAppAppearance(): Promise<AppAppearance> {
+  try {
+    const raw = await AsyncStorage.getItem(APP_APPEARANCE_KEY)
+    return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : DEFAULT_APP_APPEARANCE
+  } catch {
+    return DEFAULT_APP_APPEARANCE
+  }
+}
+
+export async function saveAppAppearance(appearance: AppAppearance): Promise<void> {
+  await AsyncStorage.setItem(APP_APPEARANCE_KEY, appearance)
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
