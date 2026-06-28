@@ -178,6 +178,33 @@ export async function saveAppAppearance(appearance: AppAppearance): Promise<void
   await AsyncStorage.setItem(APP_APPEARANCE_KEY, appearance)
 }
 
+// Terminal palette appearance — independent of the app-chrome appearance above.
+// A user can want light chrome with a dark terminal (or vice-versa), so this is
+// a separate per-device choice with the same three values.
+export type TerminalColorScheme = 'system' | 'light' | 'dark'
+
+const TERMINAL_COLOR_SCHEME_KEY = 'orca:terminalColorScheme'
+export const DEFAULT_TERMINAL_COLOR_SCHEME: TerminalColorScheme = 'system'
+
+// Why: the host now ships both light and dark terminal palettes (CHE-1302); the
+// client picks one. Default 'system' so the terminal follows the device OS
+// light/dark out of the box; 'light'/'dark' pin it. The theme context resolves
+// 'system' against React Native's useColorScheme().
+export async function loadTerminalColorScheme(): Promise<TerminalColorScheme> {
+  try {
+    const raw = await AsyncStorage.getItem(TERMINAL_COLOR_SCHEME_KEY)
+    return raw === 'light' || raw === 'dark' || raw === 'system'
+      ? raw
+      : DEFAULT_TERMINAL_COLOR_SCHEME
+  } catch {
+    return DEFAULT_TERMINAL_COLOR_SCHEME
+  }
+}
+
+export async function saveTerminalColorScheme(scheme: TerminalColorScheme): Promise<void> {
+  await AsyncStorage.setItem(TERMINAL_COLOR_SCHEME_KEY, scheme)
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')

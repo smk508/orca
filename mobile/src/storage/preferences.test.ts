@@ -11,10 +11,12 @@ import {
   loadAppAppearance,
   loadHostSidebarWidth,
   loadTerminalAutocompleteEnabled,
+  loadTerminalColorScheme,
   loadTerminalLinkOpenMode,
   saveAppAppearance,
   saveHostSidebarWidth,
   saveTerminalAutocompleteEnabled,
+  saveTerminalColorScheme,
   saveTerminalLinkOpenMode
 } from './preferences'
 
@@ -181,5 +183,42 @@ describe('app appearance preference', () => {
     await saveAppAppearance('dark')
 
     expect(AsyncStorage.setItem).toHaveBeenCalledWith('orca:appAppearance', 'dark')
+  })
+})
+
+describe('terminal color scheme preference', () => {
+  beforeEach(() => {
+    vi.mocked(AsyncStorage.getItem).mockReset()
+    vi.mocked(AsyncStorage.setItem).mockReset()
+  })
+
+  it('defaults to system when unset', async () => {
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue(null)
+
+    await expect(loadTerminalColorScheme()).resolves.toBe('system')
+    expect(AsyncStorage.getItem).toHaveBeenCalledWith('orca:terminalColorScheme')
+  })
+
+  it('loads only known schemes and falls back to system otherwise', async () => {
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue('light')
+    await expect(loadTerminalColorScheme()).resolves.toBe('light')
+
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue('dark')
+    await expect(loadTerminalColorScheme()).resolves.toBe('dark')
+
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue('sepia')
+    await expect(loadTerminalColorScheme()).resolves.toBe('system')
+  })
+
+  it('falls back to system when storage cannot be read', async () => {
+    vi.mocked(AsyncStorage.getItem).mockRejectedValue(new Error('storage unavailable'))
+
+    await expect(loadTerminalColorScheme()).resolves.toBe('system')
+  })
+
+  it('persists the selected scheme', async () => {
+    await saveTerminalColorScheme('dark')
+
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('orca:terminalColorScheme', 'dark')
   })
 })
