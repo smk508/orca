@@ -8,9 +8,11 @@ import {
   HOST_SIDEBAR_MIN_WIDTH,
   clampHostDockWidth,
   clampHostSidebarWidth,
+  loadAppAppearance,
   loadHostSidebarWidth,
   loadTerminalAutocompleteEnabled,
   loadTerminalLinkOpenMode,
+  saveAppAppearance,
   saveHostSidebarWidth,
   saveTerminalAutocompleteEnabled,
   saveTerminalLinkOpenMode
@@ -142,5 +144,42 @@ describe('terminal link open mode preference', () => {
     await saveTerminalLinkOpenMode('phone-browser')
 
     expect(AsyncStorage.setItem).toHaveBeenCalledWith('orca:terminalLinkOpenMode', 'phone-browser')
+  })
+})
+
+describe('app appearance preference', () => {
+  beforeEach(() => {
+    vi.mocked(AsyncStorage.getItem).mockReset()
+    vi.mocked(AsyncStorage.setItem).mockReset()
+  })
+
+  it('defaults to system when unset', async () => {
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue(null)
+
+    await expect(loadAppAppearance()).resolves.toBe('system')
+    expect(AsyncStorage.getItem).toHaveBeenCalledWith('orca:appAppearance')
+  })
+
+  it('loads only known appearances and falls back to system otherwise', async () => {
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue('light')
+    await expect(loadAppAppearance()).resolves.toBe('light')
+
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue('dark')
+    await expect(loadAppAppearance()).resolves.toBe('dark')
+
+    vi.mocked(AsyncStorage.getItem).mockResolvedValue('sepia')
+    await expect(loadAppAppearance()).resolves.toBe('system')
+  })
+
+  it('falls back to system when storage cannot be read', async () => {
+    vi.mocked(AsyncStorage.getItem).mockRejectedValue(new Error('storage unavailable'))
+
+    await expect(loadAppAppearance()).resolves.toBe('system')
+  })
+
+  it('persists the selected appearance', async () => {
+    await saveAppAppearance('dark')
+
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('orca:appAppearance', 'dark')
   })
 })
