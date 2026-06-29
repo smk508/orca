@@ -8,7 +8,7 @@ import Animated, {
   useSharedValue
 } from 'react-native-reanimated'
 import { useRouter } from 'expo-router'
-import { ChevronLeft, ChevronRight, Smartphone, Type } from 'lucide-react-native'
+import { ChevronLeft, ChevronRight, Palette, Smartphone, Type } from 'lucide-react-native'
 import { colors, radii, spacing, typography } from '../src/theme/mobile-theme'
 import { loadHosts } from '../src/transport/host-store'
 import type { HostProfile } from '../src/transport/types'
@@ -17,16 +17,29 @@ import type { RpcClient } from '../src/transport/rpc-client'
 import { PickerModal, type PickerOption } from '../src/components/PickerModal'
 import { TerminalShortcutSettings } from '../src/components/TerminalShortcutSettings'
 import { setTerminalAutoRestoreFitMsForHost } from '../src/terminal/terminal-auto-restore-fit-state'
+import { useTheme } from '../src/theme/theme-context'
 import {
   loadTerminalAutocompleteEnabled,
   loadTerminalTextScale,
   saveTerminalAutocompleteEnabled,
-  saveTerminalTextScale
+  saveTerminalTextScale,
+  type TerminalColorScheme
 } from '../src/storage/preferences'
 
 type RestoreValue = 'indefinite' | '60s' | '5m' | '30m'
 
 type TextSizeValue = 'smallest' | 'smaller' | 'default' | 'large' | 'larger' | 'largest'
+
+// 'system' leads because it's the default and the option most users keep.
+const COLOR_THEME_OPTIONS: PickerOption<TerminalColorScheme>[] = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' }
+]
+
+function colorThemeSummary(scheme: TerminalColorScheme): string {
+  return COLOR_THEME_OPTIONS.find((o) => o.value === scheme)?.label ?? 'System'
+}
 
 // scale = baseline zoom the terminal WebView applies on top of fit-to-width.
 // Keep in sync with TERMINAL_TEXT_SCALES; pinch-to-zoom snaps to these values.
@@ -154,6 +167,11 @@ export default function TerminalSettingsScreen() {
     setTextScale(opt.scale)
     void saveTerminalTextScale(opt.scale)
   }, [])
+
+  // Why: terminal palette pick lives in ThemeProvider so the session screen
+  // re-renders the moment the choice changes here — no reconnect, no focus reload.
+  const { terminalColorScheme, setTerminalColorScheme } = useTheme()
+  const [colorThemePickerOpen, setColorThemePickerOpen] = useState(false)
 
   const [autocompleteEnabled, setAutocompleteEnabled] = useState(false)
   // Why: a fast toggle before the initial load resolves must win — otherwise the
@@ -326,6 +344,26 @@ export default function TerminalSettingsScreen() {
           </Pressable>
         </View>
 
+        <Text style={[styles.groupHeading, styles.inputGroupGap]}>COLOR THEME</Text>
+        <Text style={styles.groupDescription}>
+          Choose this device&apos;s terminal light/dark palette. System follows your device&apos;s
+          appearance and switches live when you toggle it. Per-device display only; independent of
+          the desktop&apos;s theme and of the app&apos;s own appearance setting.
+        </Text>
+        <View style={[styles.section, styles.sectionTopGap]}>
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => setColorThemePickerOpen(true)}
+          >
+            <Palette size={16} color={colors.textSecondary} />
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Color theme</Text>
+              <Text style={styles.rowSublabel}>{colorThemeSummary(terminalColorScheme)}</Text>
+            </View>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+        </View>
+
         <Text style={[styles.groupHeading, styles.inputGroupGap]}>KEYBOARD INPUT</Text>
         <Text style={styles.groupDescription}>
           Enable phone-style autocomplete, autocorrect, and spelling suggestions in the terminal
@@ -376,6 +414,15 @@ export default function TerminalSettingsScreen() {
         selected={textSizeValueFromScale(textScale)}
         onSelect={selectTextSize}
         onClose={() => setTextSizePickerOpen(false)}
+      />
+
+      <PickerModal<TerminalColorScheme>
+        visible={colorThemePickerOpen}
+        title="Terminal color theme"
+        options={COLOR_THEME_OPTIONS}
+        selected={terminalColorScheme}
+        onSelect={setTerminalColorScheme}
+        onClose={() => setColorThemePickerOpen(false)}
       />
     </GestureHandlerRootView>
   )

@@ -89,6 +89,8 @@ import {
   type TerminalWebViewHandle
 } from '../../../../src/terminal/TerminalWebView'
 import { isTerminalOscLinkRanges } from '../../../../src/terminal/terminal-osc-link-ranges'
+import { resolveTerminalThemeForScheme } from '../../../../src/terminal/terminal-color-scheme'
+import { useTheme } from '../../../../src/theme/theme-context'
 import { useTerminalViewportRefit } from '../../../../src/terminal/terminal-viewport-refit'
 import {
   getDefaultTerminalAccessoryBuiltInIds,
@@ -881,6 +883,11 @@ export default function SessionScreen() {
   // Master-detail host state (U5/KTD2): on wide layouts a tapped panel docks beside the
   // session content; on narrow it stays null and the icons push full-screen routes.
   const { isWideLayout } = useResponsiveLayout()
+  // Why: the device's own terminal light/dark pick (CHE-1303). Resolved from the
+  // stored preference + OS scheme in ThemeProvider; re-renders here when the
+  // user changes the setting or toggles the OS appearance, so the palette swaps
+  // live without a reconnect.
+  const { resolvedTerminalScheme } = useTheme()
   const [activePanel, setActivePanel] = useState<ActivePanel>(null)
   const [sessionContentRowWidth, setSessionContentRowWidth] = useState(0)
   const canDockPanel = canDockSessionPanel({
@@ -4806,7 +4813,10 @@ export default function SessionScreen() {
                     handle={terminal.handle}
                     active={terminal.handle === activeHandle}
                     keyboardLift={terminal.handle === activeHandle ? activeTerminalKeyboardLift : 0}
-                    terminalTheme={terminal.terminalTheme}
+                    terminalTheme={resolveTerminalThemeForScheme(
+                      terminal.terminalTheme,
+                      resolvedTerminalScheme
+                    )}
                     textScale={terminalTextScale}
                     onTextScaleChange={(scale) => {
                       // Why: pinch-to-zoom in the WebView reports a new preset; persist
