@@ -6,8 +6,9 @@
 // Screens not yet migrated keep importing the static `colors` (dark) from
 // mobile-theme.ts; this context only drives the ones that opt in.
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useColorScheme, type ColorSchemeName } from 'react-native'
+import { useColorScheme } from 'react-native'
 import { darkColors, lightColors, type ThemeColors } from './mobile-theme'
+import { resolveScheme } from './resolve-scheme'
 import {
   DEFAULT_APP_APPEARANCE,
   DEFAULT_TERMINAL_COLOR_SCHEME,
@@ -37,20 +38,6 @@ type ThemeContextValue = {
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
-
-// Shared by both surfaces: 'system' | 'light' | 'dark' values are structurally
-// identical, so one resolver serves the app chrome and the terminal palette.
-function resolveScheme(
-  appearance: AppAppearance | TerminalColorScheme,
-  systemScheme: ColorSchemeName
-): 'light' | 'dark' {
-  if (appearance === 'light' || appearance === 'dark') {
-    return appearance
-  }
-  // 'system' — follow the OS, falling back to dark when the OS scheme is
-  // unavailable (matches the app's historical dark default).
-  return systemScheme === 'light' ? 'light' : 'dark'
-}
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemScheme = useColorScheme()
