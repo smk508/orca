@@ -16,6 +16,7 @@ import type {
   AgentCompletionStatusSnapshot
 } from './agent-completion-coordinator-types'
 import type { RuntimeTerminalProcessInspection } from '@/runtime/runtime-terminal-inspection'
+import { isPiCompatibleAgentType } from '../../../../shared/pi-agent-kind'
 import {
   titleHasExplicitAgentIdentity,
   titleIsInconclusiveNativeDroidTitle
@@ -155,6 +156,12 @@ export function createAgentCompletionCoordinator(
 
   function hookCompletionAgentIdentity(payload: AgentCompletionStatusSnapshot): string | null {
     return payload.agentType?.trim().toLowerCase() || null
+  }
+
+  function doneShouldUseQuietWindow(payload: AgentCompletionStatusSnapshot): boolean {
+    // Why: Pi/OMP emit milestone 'done' while still working, so route their done
+    // through the quiet window (like a resumed turn) so later work can cancel it.
+    return workingStatusObserved || isPiCompatibleAgentType(hookCompletionAgentIdentity(payload))
   }
 
   function hookAttentionToken(payload: AgentCompletionStatusSnapshot): string {
@@ -416,6 +423,12 @@ export function createAgentCompletionCoordinator(
       handleRecognizedProcess(recognized)
       return true
     }
+    if (pendingHookDoneTimer !== null) {
+      // Why: a pending quiet-window 'done' is the authoritative completion;
+      // tearing down agent evidence here would make the timer drop it.
+      scheduleNextPoll()
+      return false
+    }
     if (lastForegroundAgent && hasAgentRunEvidence) {
       if (result.hasChildProcesses) {
         // Why: Codex can briefly report a shell/null foreground while its TUI or
@@ -652,6 +665,14 @@ export function createAgentCompletionCoordinator(
   }
 
   function observeHookStatus(payload: AgentCompletionStatusSnapshot): void {
+    if (options.shouldSuppressHookCompletion?.(payload)) {
+      // Why: a suppressed permission pause must still cancel a provisional 'done'
+      // so the quiet-window timer never fires a false completion notification.
+      if (isAttentionHookState(payload.state)) {
+        clearPendingHookDone()
+      }
+      return
+    }
     if (isRecognizedAgentType(payload.agentType)) {
       establishAgentEvidence()
     }
@@ -700,7 +721,7 @@ export function createAgentCompletionCoordinator(
         // backstops duplicate the same completion.
         currentTurn += 1
       }
-      if (payload.state === 'done' && workingStatusObserved) {
+      if (payload.state === 'done' && doneShouldUseQuietWindow(payload)) {
         lastCompletionIdentity = hookIdentity
           ? {
               source: 'hook',

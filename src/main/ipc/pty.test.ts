@@ -172,6 +172,7 @@ vi.mock('../agent-hooks/migration-unsupported-pty-state', () => ({
 }))
 import { LocalPtyProvider } from '../providers/local-pty-provider'
 import { makePaneKey } from '../../shared/stable-pane-id'
+import { SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV } from '../../shared/setup-agent-sequencing'
 import {
   registerPtyHandlers,
   registerSshPtyProvider,
@@ -204,8 +205,7 @@ const POWERSHELL_OSC133_ARGS = [
 // real absolute executable before handing it to ConPTY (PR #6537 / issue
 // #5161) — a bare/alias `pwsh.exe` makes CreateProcessW fail with error code 5.
 // These match the deterministic install roots pinned in the win32 beforeEach.
-const RESOLVED_WINDOWS_POWERSHELL =
-  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+const RESOLVED_WINDOWS_POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const RESOLVED_PWSH7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
 const TEST_CODEX_HOME =
   process.platform === 'win32'
@@ -797,6 +797,20 @@ describe('registerPtyHandlers', () => {
       }
     )
 
+    it('uses sequenced startup env as the MiMo launch hint when command is a wrapper', async () => {
+      const env = await spawnAndGetEnv(
+        { [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: 'mimo --prompt hi' },
+        undefined,
+        undefined,
+        undefined,
+        'bash -lc wait-wrapper'
+      )
+
+      expect(mimoCodeBuildPtyEnvMock).toHaveBeenCalledTimes(1)
+      expect(env.MIMOCODE_HOME).toBe('/tmp/orca-mimocode-shared')
+      expect(env.ORCA_MIMOCODE_HOME).toBe('/tmp/orca-mimocode-shared')
+    })
+
     it('does not inject MiMo overlay for non-mimo launches', async () => {
       await spawnAndGetEnv()
 
@@ -895,6 +909,29 @@ describe('registerPtyHandlers', () => {
       expect(env.ORCA_OMP_SOURCE_AGENT_DIR).toBe('/tmp/user-omp-agent')
       // CRITICAL: a Pi-named shadow MUST NOT leak into an OMP PTY env.
       expect(env.ORCA_PI_CODING_AGENT_DIR).toBeUndefined()
+      expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
+    })
+
+    it('uses sequenced startup env as the OMP launch hint when command is a wrapper', async () => {
+      const env = await spawnAndGetEnv(
+        {
+          PI_CODING_AGENT_DIR: '/tmp/user-omp-agent',
+          [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: 'omp --resume'
+        },
+        undefined,
+        undefined,
+        undefined,
+        'powershell wait-wrapper'
+      )
+
+      expect(piBuildPtyEnvMock).toHaveBeenCalledWith(
+        expect.any(String),
+        '/tmp/user-omp-agent',
+        'omp'
+      )
+      expect(env.ORCA_OMP_STATUS_EXTENSION).toBe(
+        '/tmp/user-omp-agent/extensions/orca-agent-status.ts'
+      )
       expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
     })
 
@@ -1345,6 +1382,29 @@ describe('registerPtyHandlers', () => {
         )
         expect(env.ORCA_OMP_SOURCE_AGENT_DIR).toBe('/user/.omp/agent')
         expect(env.ORCA_PI_CODING_AGENT_DIR).toBeUndefined()
+        expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
+      })
+
+      it('uses sequenced startup env as the daemon OMP launch hint when command is a wrapper', async () => {
+        const env = await daemonSpawnAndGetEnv(
+          {
+            PI_CODING_AGENT_DIR: '/user/.omp/agent',
+            [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: 'omp --resume'
+          },
+          undefined,
+          undefined,
+          undefined,
+          { command: 'powershell wait-wrapper' }
+        )
+
+        expect(piBuildPtyEnvMock).toHaveBeenCalledWith(
+          expect.any(String),
+          '/user/.omp/agent',
+          'omp'
+        )
+        expect(env.ORCA_OMP_STATUS_EXTENSION).toBe(
+          '/user/.omp/agent/extensions/orca-agent-status.ts'
+        )
         expect(env.ORCA_PI_SOURCE_AGENT_DIR).toBeUndefined()
       })
 
