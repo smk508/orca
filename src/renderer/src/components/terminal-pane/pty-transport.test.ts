@@ -611,6 +611,21 @@ describe('createIpcPtyTransport', () => {
     expect(flushed.endsWith('TAIL$')).toBe(true)
   })
 
+  it('drains pre-handler data and exit into eager buffers for fast background PTYs', async () => {
+    const { ensurePtyDispatcher, registerEagerPtyBuffer } = await import('./pty-transport')
+    const onEagerExit = vi.fn()
+
+    ensurePtyDispatcher()
+    onData?.({ id: 'pty-fast-setup', data: 'setup failed fast\n' })
+    onExit?.({ id: 'pty-fast-setup', code: 1 })
+
+    const handle = registerEagerPtyBuffer('pty-fast-setup', onEagerExit)
+
+    expect(handle.flush()).toBe('setup failed fast\n')
+    await Promise.resolve()
+    expect(onEagerExit).toHaveBeenCalledWith('pty-fast-setup', 1)
+  })
+
   it('enforces the eager buffer cap in UTF-8 bytes for multi-byte output', async () => {
     const { registerEagerPtyBuffer } = await import('./pty-transport')
     const cap = 512 * 1024
@@ -1106,6 +1121,70 @@ describe('createIpcPtyTransport', () => {
     expect(onError).toHaveBeenCalledWith('ENOENT: spawn /bin/nope not found')
   })
 
+  it('surfaces the SSH-not-active toast for a regular SSH target with no PTY provider', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const spawnMock = vi.fn().mockRejectedValue(new Error('No PTY provider for connection ssh-1'))
+    ;(globalThis as { window: typeof window }).window = {
+      ...originalWindow,
+      api: {
+        ...originalWindow?.api,
+        pty: {
+          ...originalWindow?.api?.pty,
+          spawn: spawnMock,
+          write: vi.fn(),
+          resize: vi.fn(),
+          kill: vi.fn(),
+          onData: vi.fn(() => () => {}),
+          onReplay: vi.fn(() => () => {}),
+          onExit: vi.fn(() => () => {})
+        }
+      }
+    } as unknown as typeof window
+
+    const onError = vi.fn()
+    await createIpcPtyTransport({ connectionId: 'ssh-1' }).connect({
+      url: '',
+      callbacks: { onError }
+    })
+
+    expect(onError).toHaveBeenCalledWith(
+      'SSH connection is not active. Use the reconnect dialog or Settings to connect.'
+    )
+  })
+
+  it('suppresses the SSH-not-active toast for a runtime-owned (per-workspace-env) target', async () => {
+    // Why: a runtime-owned SSH target disappearing is expected teardown (e.g. the workspace was
+    // deleted) — there's no reconnect dialog for it, so no toast should fire.
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const spawnMock = vi
+      .fn()
+      .mockRejectedValue(new Error('No PTY provider for connection runtime-ssh-orca-1'))
+    ;(globalThis as { window: typeof window }).window = {
+      ...originalWindow,
+      api: {
+        ...originalWindow?.api,
+        pty: {
+          ...originalWindow?.api?.pty,
+          spawn: spawnMock,
+          write: vi.fn(),
+          resize: vi.fn(),
+          kill: vi.fn(),
+          onData: vi.fn(() => () => {}),
+          onReplay: vi.fn(() => () => {}),
+          onExit: vi.fn(() => () => {})
+        }
+      }
+    } as unknown as typeof window
+
+    const onError = vi.fn()
+    await createIpcPtyTransport({ connectionId: 'runtime-ssh-orca-1' }).connect({
+      url: '',
+      callbacks: { onError }
+    })
+
+    expect(onError).not.toHaveBeenCalled()
+  })
+
   it('surfaces terminal session state save failures without the Electron IPC wrapper', async () => {
     const { createIpcPtyTransport } = await import('./pty-transport')
     const wrappedMessage = `Error invoking remote method 'pty:spawn': Error: ${createTerminalSessionStateSaveFailureMessage()}`
@@ -1291,7 +1370,8 @@ describe('createRemoteRuntimePtyTransport', () => {
         env: { ORCA_TAB_ID: 'tab-1' },
         tabId: 'tab-1',
         leafId: '11111111-1111-4111-8111-111111111111',
-        focus: false
+        focus: false,
+        presentation: 'background'
       },
       timeoutMs: 15_000
     })

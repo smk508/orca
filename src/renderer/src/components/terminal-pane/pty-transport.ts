@@ -13,6 +13,7 @@ import {
   isTerminalInputTooLargeWithDeferredMeasurement,
   iterateTerminalInputChunks
 } from '../../../../shared/terminal-input'
+import { isRuntimeOwnedSshTargetId } from '../../../../shared/execution-host'
 import {
   ptyDataHandlers,
   ptyReplayHandlers,
@@ -22,12 +23,8 @@ import {
   getEagerPtyBufferHandle
 } from './pty-dispatcher'
 import { drainPreHandlerPtyData, drainPreHandlerPtyExit } from './pty-pre-handler-buffer'
-import type {
-  PtyTransport,
-  IpcPtyTransportOptions,
-  PtyConnectResult,
-  PtyDataMeta
-} from './pty-dispatcher'
+import type { PtyDataMeta } from './pty-dispatcher'
+import type { IpcPtyTransportOptions, PtyConnectResult, PtyTransport } from './pty-transport-types'
 import { createBellDetector } from './bell-detector'
 import {
   createAgentStatusOscProcessor,
@@ -44,14 +41,14 @@ export {
   subscribeToPtyExit,
   unregisterPtyDataHandlers
 } from './pty-dispatcher'
+export type { EagerPtyHandle } from './pty-dispatcher'
 export type {
-  EagerPtyHandle,
+  IpcPtyTransportOptions,
   LocalPtySessionMetadata,
-  PtyTransport,
   PtyBufferSnapshot,
   PtyConnectResult,
-  IpcPtyTransportOptions
-} from './pty-dispatcher'
+  PtyTransport
+} from './pty-transport-types'
 export { extractLastOscTitle } from '../../../../shared/agent-detection'
 
 const SSH_SESSION_EXPIRED_ERROR = 'SSH_SESSION_EXPIRED'
@@ -446,6 +443,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     leafId,
     shellOverride,
     projectRuntime,
+    terminalColorQueryReplies,
     telemetry,
     onPtyExit,
     onTitleChange,
@@ -708,6 +706,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
           ...(leafId ? { leafId } : {}),
           ...(shellOverride ? { shellOverride } : {}),
           ...(projectRuntime ? { projectRuntime } : {}),
+          ...(terminalColorQueryReplies ? { terminalColorQueryReplies } : {}),
           ...(telemetry ? { telemetry } : {})
         })
         const spawnResult = result as PtyConnectResult & { isReattach?: boolean }
@@ -785,9 +784,14 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
         // throws a raw IPC error. Replace with a friendly message since this
         // is an expected state, not an application crash.
         if (connectionId && msg.includes('No PTY provider for connection')) {
-          storedCallbacks.onError?.(
-            'SSH connection is not active. Use the reconnect dialog or Settings to connect.'
-          )
+          // Why: a runtime-owned (per-workspace-env) SSH target disappearing is an expected
+          // teardown state (e.g. the workspace was deleted) with no user-facing reconnect dialog —
+          // don't surface a "reconnect" toast for it.
+          if (!isRuntimeOwnedSshTargetId(connectionId)) {
+            storedCallbacks.onError?.(
+              'SSH connection is not active. Use the reconnect dialog or Settings to connect.'
+            )
+          }
         } else {
           storedCallbacks.onError?.(msg)
         }
