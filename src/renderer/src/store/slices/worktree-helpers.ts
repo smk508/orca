@@ -116,7 +116,7 @@ export type WorktreeSlice = {
     options?: { requireAuthoritative?: boolean; forceLocalOwner?: boolean }
   ) => Promise<boolean>
   fetchAllWorktrees: () => Promise<void>
-  fetchWorktreeLineage: () => Promise<void>
+  fetchWorktreeLineage: (options?: { forceLocalOwner?: boolean }) => Promise<void>
   updateWorktreeLineage: (
     worktreeId: string,
     args: { parentWorktreeId?: string; noParent?: boolean }

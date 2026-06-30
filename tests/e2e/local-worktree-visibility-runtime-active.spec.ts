@@ -45,10 +45,12 @@ test.describe('worktree visibility with a remote runtime active', () => {
     const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'))
     const client = new RuntimeClient(userDataDir, 30_000, null, null)
     const createViaCli = async (name: string): Promise<string> => {
-      const response = await client.call<{ result: { worktree: { id: string } } }>(
-        'worktree.create',
-        { repo: `id:${repoId}`, name, noParent: true, activate: false }
-      )
+      const response = await client.call<{ worktree: { id: string } }>('worktree.create', {
+        repo: `id:${repoId}`,
+        name,
+        noParent: true,
+        activate: false
+      })
       return response.result.worktree.id
     }
 

@@ -2049,11 +2049,18 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     set({ hasHydratedWorktreePurge: true })
   },
 
-  fetchWorktreeLineage: async () => {
+  fetchWorktreeLineage: async (options) => {
     try {
       // Why: lineage is a focused-host refresh — fetch from the focused host and
       // host-merge so other hosts' previously fetched lineage is preserved.
-      await refreshWorktreeLineageForSettings(get().settings, set)
+      const ownerSettings = get().settings
+      // Why: local worktree-change events while a runtime is focused are paired
+      // with a forced-local list refresh; lineage must follow the same owner.
+      const settings =
+        options?.forceLocalOwner && ownerSettings?.activeRuntimeEnvironmentId
+          ? { ...ownerSettings, activeRuntimeEnvironmentId: null }
+          : ownerSettings
+      await refreshWorktreeLineageForSettings(settings, set)
     } catch (err) {
       console.error('Failed to fetch worktree lineage:', err)
     }

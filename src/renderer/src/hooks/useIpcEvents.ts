@@ -846,7 +846,9 @@ export function useIpcEvents(): void {
         repoId,
         options?.forceLocalOwner ? { forceLocalOwner: true } : undefined
       )
-      await useAppStore.getState().fetchWorktreeLineage()
+      await useAppStore
+        .getState()
+        .fetchWorktreeLineage(options?.forceLocalOwner ? { forceLocalOwner: true } : undefined)
       // Why: changing the worktree's id unmounts the active pane without
       // re-rendering it under the new id. Now that the list has refreshed,
       // re-activate the renamed worktree so its tab model reconciles and the
