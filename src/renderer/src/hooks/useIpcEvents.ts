@@ -885,8 +885,10 @@ export function useIpcEvents(): void {
         }
       }
       // Why: the deletion diff below is repo-wide, but forceLocalOwner listed only the
-      // local host — a remote-host worktree absent from that scan is not a deletion.
-      // Skip the purge so the local-pinned refresh stays additive.
+      // local host — absence from that scan is not a deletion (an unbound repo can hold
+      // host-unstamped runtime rows in the local bucket). fetchWorktrees already purged
+      // removed local rows host-scoped; accepted gap: an out-of-band local deletion
+      // keeps its workspace-space entry until the next rescan.
       if (options?.forceLocalOwner) {
         return
       }
@@ -1110,7 +1112,7 @@ export function useIpcEvents(): void {
           // Why: with a remote runtime active, an unbound repo's list fetch routes to
           // the runtime host, so this event used to be dropped — leaving CLI-created
           // local worktrees invisible until restart. Pin the refresh to the local host
-          // instead; it is host-scoped and additive, so runtime state is never touched.
+          // instead; it is host-scoped to local, so runtime state is never touched.
           // A folder rename changes the worktree id; handleWorktreesChanged re-keys
           // state and shields it from the deletion diff.
           worktreeChangeRefreshQueue.enqueue({
