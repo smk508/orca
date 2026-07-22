@@ -876,6 +876,14 @@ export function useIpcEvents(): void {
       if (renamedWasActive && renamed) {
         useAppStore.getState().setActiveWorktree(renamed.newWorktreeId)
       }
+      // Sweep expired rename-grace entries before any early return, else forced-local
+      // (or non-authoritative) events let the map grow for the session.
+      const now = Date.now()
+      for (const [id, expiry] of recentlyRenamedWorktreeIdExpiry) {
+        if (expiry <= now) {
+          recentlyRenamedWorktreeIdExpiry.delete(id)
+        }
+      }
       // Why: the deletion diff below is repo-wide, but forceLocalOwner listed only the
       // local host — a remote-host worktree absent from that scan is not a deletion.
       // Skip the purge so the local-pinned refresh stays additive.
@@ -887,7 +895,6 @@ export function useIpcEvents(): void {
       if (!after) {
         return
       }
-      const now = Date.now()
       const removed: string[] = []
       for (const id of before) {
         if (after.has(id)) {
@@ -899,11 +906,6 @@ export function useIpcEvents(): void {
           continue
         }
         removed.push(id)
-      }
-      for (const [id, expiry] of recentlyRenamedWorktreeIdExpiry) {
-        if (expiry <= now) {
-          recentlyRenamedWorktreeIdExpiry.delete(id)
-        }
       }
       if (removed.length > 0) {
         console.warn(
