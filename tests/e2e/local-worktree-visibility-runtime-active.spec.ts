@@ -53,14 +53,14 @@ test.describe('worktree visibility with a remote runtime active', () => {
       })
       return response.result.worktree.id
     }
+    const worktreeRow = (worktreeId: string) =>
+      orcaPage.locator(`[data-worktree-id=${JSON.stringify(worktreeId)}]`).first()
 
     // Guard: with no runtime active, a CLI-created worktree appears. This proves
     // the create+notify path works, so the assertion below isolates the bug
     // rather than masking a broken harness as a fixed regression.
     const controlId = await createViaCli(`wt-control-${Date.now()}`)
-    await expect(orcaPage.locator(`[data-worktree-id="${controlId}"]`).first()).toBeVisible({
-      timeout: 15_000
-    })
+    await expect(worktreeRow(controlId)).toBeVisible({ timeout: 15_000 })
 
     // Stage a remote runtime as active — the condition that triggered the drop.
     await orcaPage.evaluate(() => {
@@ -72,7 +72,7 @@ test.describe('worktree visibility with a remote runtime active', () => {
     // The fix: a CLI-created worktree must still appear, with no app restart.
     const targetId = await createViaCli(`wt-runtime-active-${Date.now()}`)
     await expect(
-      orcaPage.locator(`[data-worktree-id="${targetId}"]`).first(),
+      worktreeRow(targetId),
       'a CLI-created worktree must appear even while a remote runtime is active'
     ).toBeVisible({ timeout: 15_000 })
   })

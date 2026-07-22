@@ -2282,19 +2282,20 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
     try {
       const ownerState = get()
       const requestStartedWorktrees = ownerState.worktreesByRepo[repoId]
-      const hostId = repoHostId(ownerState, repoId)
-      const ownerWasMissingAtStart = !ownerState.repos.some((repo) => repo.id === repoId)
+      const repoOwners = ownerState.repos.filter((repo) => repo.id === repoId)
+      const hasLocalOwner = repoOwners.some(
+        (repo) => getRepoExecutionHostId(repo) === LOCAL_EXECUTION_HOST_ID
+      )
+      // Why: a local event may share its repo id with the focused runtime; prefer
+      // the local owner without redirecting runtime/SSH-only repos.
+      const useLocalOwner =
+        options?.forceLocalOwner === true && (hasLocalOwner || repoOwners.length === 0)
+      const hostId = useLocalOwner ? LOCAL_EXECUTION_HOST_ID : repoHostId(ownerState, repoId)
+      const ownerWasMissingAtStart = repoOwners.length === 0
       const setup = getProjectHostSetupForRepoHost(ownerState, repoId, hostId)
       const ownerSettings = settingsForRepoOwner(ownerState, repoId, hostId)
-      // Why: an unbound repo's list fetch routes to the active runtime
-      // (settingsForKnownRepoOwner's fall-through), so a local worktrees:changed event
-      // would query the remote host with local ids. forceLocalOwner pins the fetch to
-      // the local host, gated on a local hostId so a runtime/SSH-bound repo is never
-      // force-listed locally; the host-scoped merge below never clobbers remote state.
       const settings =
-        options?.forceLocalOwner &&
-        hostId === LOCAL_EXECUTION_HOST_ID &&
-        ownerSettings?.activeRuntimeEnvironmentId
+        useLocalOwner && ownerSettings?.activeRuntimeEnvironmentId
           ? { ...ownerSettings, activeRuntimeEnvironmentId: null }
           : ownerSettings
       const detected = await listDetectedWorktreesForRepoCoalesced(settings, repoId, {
