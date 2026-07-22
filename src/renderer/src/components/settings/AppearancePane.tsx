@@ -1,5 +1,5 @@
 import type React from 'react'
-import { useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import { AppWindow, PanelLeft, TerminalSquare } from 'lucide-react'
 
 import type { GlobalSettings } from '../../../../shared/types'
@@ -10,11 +10,13 @@ import { AppearanceWindowSidebarSection } from './AppearanceWindowSidebarSection
 import { SearchableSetting } from './SearchableSetting'
 import { matchesSettingsSearch, normalizeSettingsSearchQuery } from './settings-search'
 import { useAppStore } from '../../store'
+import { USAGE_PERCENTAGE_DISPLAY_SETTING_ID } from './appearance-usage-percentage-search'
 import {
   getAppIconEntries,
   getAppearancePaneSearchEntries,
   getLanguageEntries,
   getLayoutEntries,
+  getMenuBarIconEntries,
   getSidebarEntries,
   getStatusBarEntries,
   getSystemTrayEntries,
@@ -45,6 +47,7 @@ type AppearancePaneProps = {
   applyTheme: (theme: 'system' | 'dark' | 'light') => void
   fontSuggestions: string[]
   terminalFontSuggestions: string[]
+  onRequestFontSuggestions?: () => void
   systemPrefersDark: boolean
   ghostty: UseGhosttyImportReturn
   warpThemes: UseWarpThemeImportReturn
@@ -68,20 +71,46 @@ export function AppearancePane({
   applyTheme,
   fontSuggestions,
   terminalFontSuggestions,
+  onRequestFontSuggestions,
   systemPrefersDark,
   ghostty,
   warpThemes
 }: AppearancePaneProps): React.JSX.Element {
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
+  const appearanceAccordionDeepLink = useAppStore((state) => state.appearanceAccordionDeepLink)
+  const clearAppearanceAccordionDeepLink = useAppStore(
+    (state) => state.clearAppearanceAccordionDeepLink
+  )
   const isSearching = normalizeSettingsSearchQuery(searchQuery).length > 0
   const isWebClient = isWebClientLocation()
   // Why: the system tray behavior is desktop-Electron Windows-only; a Windows
   // browser web client has no local tray to control.
   const isDesktopWindows = getRendererAppPlatform() === 'win32' && !isWebClient
+  const isDesktopMac = getRendererAppPlatform() === 'darwin' && !isWebClient
 
   const [manuallyOpenSection, setManuallyOpenSection] = useState<AppearanceSectionKey | null>(
     'interface'
   )
+
+  // Why: nested deep links (e.g. Usage percentages) land under Window & Sidebar;
+  // expand that accordion before Settings scrolls so the row is actually visible.
+  useLayoutEffect(() => {
+    if (!appearanceAccordionDeepLink) {
+      return
+    }
+    setManuallyOpenSection(appearanceAccordionDeepLink)
+    clearAppearanceAccordionDeepLink()
+    // Why: accordion expand is layout-synchronous; scroll on the next frame so
+    // the target has non-zero height when Settings (or this fallback) scrolls.
+    const frameId = requestAnimationFrame(() => {
+      document
+        .getElementById(USAGE_PERCENTAGE_DISPLAY_SETTING_ID)
+        ?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => {
+      cancelAnimationFrame(frameId)
+    }
+  }, [appearanceAccordionDeepLink, clearAppearanceAccordionDeepLink])
   const interfaceTitle = translate(
     'auto.components.settings.AppearancePane.interfaceTitle',
     'Interface'
@@ -107,7 +136,8 @@ export function AppearancePane({
     ...getTypographyEntries(),
     ...(SHOW_UI_LANGUAGE_SETTING ? getLanguageEntries() : []),
     ...getTitlebarEntries(),
-    ...getSystemTrayEntries({ showSystemTray: isDesktopWindows })
+    ...getSystemTrayEntries({ showSystemTray: isDesktopWindows }),
+    ...getMenuBarIconEntries({ showMenuBarIcon: isDesktopMac })
   ]
   const terminalSearchEntries = [
     { title: terminalTitle },
@@ -179,6 +209,8 @@ export function AppearancePane({
             updateSettings={updateSettings}
             applyTheme={applyTheme}
             fontSuggestions={fontSuggestions}
+            onRequestFontSuggestions={onRequestFontSuggestions}
+            isDesktopMac={isDesktopMac}
             isDesktopWindows={isDesktopWindows}
             forceVisiblePrimary={interfaceLabelMatches}
           />
@@ -205,6 +237,7 @@ export function AppearancePane({
             updateSettings={updateSettings}
             systemPrefersDark={systemPrefersDark}
             terminalFontSuggestions={terminalFontSuggestions}
+            onRequestFontSuggestions={onRequestFontSuggestions}
             ghostty={ghostty}
             warpThemes={warpThemes}
             forceVisiblePrimary={terminalLabelMatches}
