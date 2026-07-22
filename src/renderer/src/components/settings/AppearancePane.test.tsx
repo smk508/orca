@@ -6,13 +6,14 @@ import { I18nextProvider } from 'react-i18next'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { i18n } from '@/i18n/i18n'
 import { getDefaultSettings } from '../../../../shared/constants'
-import type { GlobalSettings } from '../../../../shared/types'
+import type { GlobalSettings, StatusBarItem } from '../../../../shared/types'
 
 const mocks = vi.hoisted(() => ({
   state: {
+    appPlatform: 'linux' as NodeJS.Platform,
     availableStatusBarToggles: [] as {
       description: string
-      id: 'ports'
+      id: StatusBarItem
       keywords: string[]
       title: string
       toggleDescription: string
@@ -20,8 +21,12 @@ const mocks = vi.hoisted(() => ({
     settingsSearchQuery: 'automations',
     statusBarItems: [],
     toggleStatusBarItem: vi.fn(),
+    usagePercentageDisplay: 'used' as 'used' | 'remaining',
+    setUsagePercentageDisplay: vi.fn(),
     recordFeatureInteraction: vi.fn(),
-    setWorktreeCardMode: vi.fn()
+    setWorktreeCardMode: vi.fn(),
+    appearanceAccordionDeepLink: null as 'interface' | 'terminal' | 'window' | null,
+    clearAppearanceAccordionDeepLink: vi.fn()
   }
 }))
 
@@ -129,7 +134,10 @@ function createWarpThemesStub() {
 
 async function renderAppearancePane(
   settings: GlobalSettings,
-  updateSettings: (updates: Partial<GlobalSettings>) => void = vi.fn()
+  updateSettings: (updates: Partial<GlobalSettings>) => void = vi.fn(),
+  options: {
+    onRequestFontSuggestions?: () => void
+  } = {}
 ): Promise<HTMLDivElement> {
   const container = document.createElement('div')
   document.body.appendChild(container)
@@ -146,6 +154,7 @@ async function renderAppearancePane(
             applyTheme={vi.fn()}
             fontSuggestions={[]}
             terminalFontSuggestions={[]}
+            onRequestFontSuggestions={options.onRequestFontSuggestions}
             systemPrefersDark={false}
             ghostty={createGhosttyStub() as never}
             warpThemes={createWarpThemesStub() as never}
@@ -171,11 +180,16 @@ describe('AppearancePane', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.state.availableStatusBarToggles = []
+    mocks.state.appPlatform = 'linux'
     mocks.state.settingsSearchQuery = 'automations'
+    mocks.state.usagePercentageDisplay = 'used'
     // UIZoomControl reads window.api.ui on mount; the inline-expansion pane can
     // render the full Interface section, so provide a minimal renderer bridge
     // without clobbering happy-dom's window.location.
     ;(window as unknown as { api: unknown }).api = {
+      platform: {
+        get: () => ({ platform: mocks.state.appPlatform })
+      },
       ui: {
         getZoomLevel: () => 0,
         onTerminalZoom: () => () => {},
@@ -296,6 +310,25 @@ describe('AppearancePane', () => {
     expect(container.textContent).not.toContain('Code & Markdown')
   })
 
+  it('requests installed font suggestions only after the IDE font picker is used', async () => {
+    mocks.state.settingsSearchQuery = ''
+    const requestFontSuggestions = vi.fn()
+    const container = await renderAppearancePane(getDefaultSettings('/tmp'), vi.fn(), {
+      onRequestFontSuggestions: requestFontSuggestions
+    })
+
+    expect(requestFontSuggestions).not.toHaveBeenCalled()
+
+    const input = container.querySelector<HTMLInputElement>('input[role="combobox"]')
+    expect(input).not.toBeNull()
+
+    await act(async () => {
+      input?.focus()
+    })
+
+    expect(requestFontSuggestions).toHaveBeenCalledOnce()
+  })
+
   it('keeps the app icon control at the bottom of the pane, after the section rows', async () => {
     mocks.state.settingsSearchQuery = ''
     const container = await renderAppearancePane(getDefaultSettings('/tmp'))
@@ -331,6 +364,23 @@ describe('AppearancePane', () => {
     ).not.toBeNull()
   })
 
+  it('shows and updates the menu bar icon preference only on desktop macOS', async () => {
+    mocks.state.appPlatform = 'darwin'
+    mocks.state.settingsSearchQuery = 'menu bar'
+    const updateSettings = vi.fn()
+    const container = await renderAppearancePane(getDefaultSettings('/tmp'), updateSettings)
+    const toggle = container.querySelector<HTMLButtonElement>(
+      'button[role="switch"][aria-label="Show Menu Bar Icon"]'
+    )
+
+    expect(toggle).not.toBeNull()
+    expect(container.textContent).not.toContain('Minimize to Tray on Close')
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(updateSettings).toHaveBeenCalledWith({ showMenuBarIcon: false })
+  })
+
   it('keeps description-only search matches visible after helper text is hidden', async () => {
     mocks.state.settingsSearchQuery = 'app window'
     const container = await renderAppearancePane(getDefaultSettings('/tmp'))
@@ -362,6 +412,73 @@ describe('AppearancePane', () => {
     const container = await renderAppearancePane(getDefaultSettings('/tmp'))
 
     expect(container.querySelector('button[role="switch"][aria-label="Ports"]')).not.toBeNull()
+  })
+
+  it('updates the usage percentage display from the latest status bar settings section', async () => {
+    mocks.state.settingsSearchQuery = 'remaining'
+    const container = await renderAppearancePane(getDefaultSettings('/tmp'))
+    const remainingButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button[role="radio"]')
+    ).find((button) => button.textContent === 'Remaining')
+
+    expect(container.textContent).toContain('Usage percentages')
+    expect(remainingButton).toBeDefined()
+
+    await act(async () => {
+      remainingButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(mocks.state.setUsagePercentageDisplay).toHaveBeenCalledWith('remaining')
+  })
+
+  it('records MiniMax status bar toggles as usage tracking interactions', async () => {
+    mocks.state.availableStatusBarToggles = [
+      {
+        id: 'minimax',
+        title: 'MiniMax Usage',
+        description: 'Show MiniMax subscription usage in the status bar.',
+        toggleDescription: 'Show MiniMax subscription usage for the active workspace.',
+        keywords: ['status bar', 'minimax', 'usage']
+      }
+    ]
+    mocks.state.settingsSearchQuery = 'minimax'
+    const container = await renderAppearancePane(getDefaultSettings('/tmp'))
+    const miniMaxSwitch = container.querySelector<HTMLButtonElement>(
+      'button[role="switch"][aria-label="MiniMax Usage"]'
+    )
+
+    expect(miniMaxSwitch).not.toBeNull()
+    await act(async () => {
+      miniMaxSwitch?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(mocks.state.recordFeatureInteraction).toHaveBeenCalledWith('usage-tracking')
+    expect(mocks.state.toggleStatusBarItem).toHaveBeenCalledWith('minimax')
+  })
+
+  it('records Antigravity status bar toggles as usage tracking interactions', async () => {
+    mocks.state.availableStatusBarToggles = [
+      {
+        id: 'antigravity',
+        title: 'Antigravity Usage',
+        description: 'Show Antigravity subscription usage in the status bar.',
+        toggleDescription: 'Show Antigravity subscription usage for the active workspace.',
+        keywords: ['status bar', 'antigravity', 'usage']
+      }
+    ]
+    mocks.state.settingsSearchQuery = 'antigravity'
+    const container = await renderAppearancePane(getDefaultSettings('/tmp'))
+    const antigravitySwitch = container.querySelector<HTMLButtonElement>(
+      'button[role="switch"][aria-label="Antigravity Usage"]'
+    )
+
+    expect(antigravitySwitch).not.toBeNull()
+    await act(async () => {
+      antigravitySwitch?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(mocks.state.recordFeatureInteraction).toHaveBeenCalledWith('usage-tracking')
+    expect(mocks.state.toggleStatusBarItem).toHaveBeenCalledWith('antigravity')
   })
 
   it('collapses sibling sections so only the Interface section is expanded by default', async () => {

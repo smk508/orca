@@ -8,8 +8,11 @@ import type {
 import type {
   BaseRefSearchResult,
   BrowserCookieImportResult,
+  BrowserCertificateFailure,
+  BrowserLoadError,
   BrowserSessionProfile,
   BrowserSessionProfileSource,
+  CreateWorktreeResult,
   GitWorktreeInfo,
   RemoveWorktreeResult,
   Repo,
@@ -29,10 +32,25 @@ import type {
 } from './mobile-markdown-document'
 import type { RuntimeCapability } from './protocol-version'
 import type { RemoteRuntimeSharedConnectionDiagnostics } from './remote-runtime-shared-control-types'
+import type {
+  AgentProviderSessionMetadata,
+  SleepingAgentLaunchConfig
+} from './agent-session-resume'
+import type { StartupCommandDelivery } from './codex-startup-delivery'
 
 export type { RuntimeMarkdownReadTabResult, RuntimeMarkdownSaveTabResult }
 
 export type RuntimeGraphStatus = 'ready' | 'reloading' | 'unavailable'
+
+export type RuntimeDesktopWindowStatus = 'available' | 'openable' | 'initializing' | 'blocked'
+
+// Why: headless serve still owns one runtime graph, but zero can never collide
+// with Electron BrowserWindow ids and can be transferred safely on promotion.
+export const HEADLESS_RUNTIME_WINDOW_ID = 0
+
+// Why: the access scope a paired device token grants. Lives in shared so
+// pairing offers, status.get, and the device registry use one vocabulary.
+export type DeviceScope = 'mobile' | 'runtime'
 
 // Why: presence-lock driver state crosses main/preload/renderer IPC. Keep one
 // checked source so future variants cannot drift silently across layers.
@@ -48,6 +66,7 @@ export type RuntimeStatus = {
   rendererGraphEpoch: number
   graphStatus: RuntimeGraphStatus
   authoritativeWindowId: number | null
+  desktopWindowStatus?: RuntimeDesktopWindowStatus
   liveTabCount: number
   liveLeafCount: number
   // Why: optional so clients can read both new and pre-contract runtimes.
@@ -57,6 +76,13 @@ export type RuntimeStatus = {
   capabilities?: RuntimeCapability[]
   remoteControl?: RemoteRuntimeSharedConnectionDiagnostics | null
   hostPlatform?: NodeJS.Platform
+  terminalWindowsShell?: string | null
+  // Why: legacy or saved WebSocket pairings may not carry scope metadata, so
+  // the server stamps the authenticated token scope here for status.get only.
+  deviceScope?: DeviceScope
+  // Why: mobile gates its Floating Workspace entry on this; absent on older
+  // hosts, false when the user disabled the feature in desktop settings.
+  floatingWorkspaceEnabled?: boolean
   // COMPAT(runtimeStatusMobileAliases): added 2026-05-15 for mobile builds
   // that still read these names; new desktop/CLI code uses the fields above.
   protocolVersion?: number
@@ -74,6 +100,7 @@ export type CliStatusResult = {
   app: {
     running: boolean
     pid: number | null
+    desktopWindowStatus?: RuntimeDesktopWindowStatus
   }
   runtime: {
     state: CliRuntimeState
@@ -126,6 +153,7 @@ export type RuntimeMobileSessionTerminalTab = {
   terminalTheme?: RuntimeMobileTerminalTheme
   agentStatus?: AgentStatusEntry | null
   launchAgent?: TuiAgent
+  startupCwd?: string
   parentLayout?: TerminalLayoutSnapshot
   /** Tab-level color/pin (per parentTabId), host-persisted for remote servers. */
   color?: string | null
@@ -198,6 +226,8 @@ export type RuntimeMobileSessionBrowserTab = {
   loading: boolean
   canGoBack: boolean
   canGoForward: boolean
+  loadError?: BrowserLoadError | null
+  certificateFailure?: BrowserCertificateFailure | null
   color?: string | null
   isPinned?: boolean
   isActive: boolean
@@ -255,6 +285,25 @@ export type RuntimeMobileSessionTabMoveResult = {
   moved: true
 }
 
+export type RuntimeMobileSessionTabCloseResult = {
+  closed: true
+  refused?: true
+  refusalReason?:
+    | 'missing-intent'
+    | 'stale-publication'
+    | 'stale-terminal'
+    | 'live-host-pty'
+    | 'unknown-liveness'
+    | 'retirement-owner'
+  // Why: only a republished snapshot can restore a live mirror; dead-leaf refusals intentionally omit this marker.
+  snapshotRepublished?: true
+}
+
+// Why: lets the host tell a user's close from a client-lifecycle echo
+// ('pty-exit'/'cleanup') and adjudicate against its own PTY liveness.
+// Absent on legacy clients, where the existing close endpoint remains user intent.
+export type RuntimeSessionTabCloseReason = 'user' | 'pty-exit' | 'cleanup'
+
 export type RuntimeMobileSessionTabsSnapshot = {
   worktree: string
   publicationEpoch: string
@@ -271,6 +320,8 @@ export type RuntimeMobileSessionTabsResult = {
   worktree: string
   publicationEpoch: string
   snapshotVersion: number
+  /** Live-only targeted command; omitted from durable/list snapshots so reconnect cannot replay navigation. */
+  navigationIntent?: 'follow'
   activeGroupId: string | null
   activeTabId: string | null
   activeTabType: 'terminal' | 'markdown' | 'file' | 'browser' | null
@@ -322,6 +373,24 @@ export type RuntimeFileReadResult = {
   byteLength: number
 }
 
+export type RuntimeTerminalPathOpenTarget =
+  | {
+      kind: 'worktree-file'
+      provider: 'local' | 'ssh'
+      relativePath: string
+      absolutePath: string
+    }
+  | {
+      kind: 'absolute-file'
+      provider: 'local' | 'ssh'
+      absolutePath: string
+      grantId: string
+    }
+  | {
+      kind: 'unsupported'
+      reason: string
+    }
+
 /** Result of resolving a file path tapped in the mobile terminal against the
  *  worktree root (+ optional cwd). relativePath is null when the path resolves
  *  outside the worktree (not openable via the worktree-scoped file RPCs). */
@@ -333,6 +402,7 @@ export type RuntimeTerminalPathResolution = {
   absolutePath: string | null
   exists: boolean
   isDirectory: boolean
+  openTarget?: RuntimeTerminalPathOpenTarget
 }
 
 export type RuntimeFilePreviewResult = {
@@ -418,6 +488,32 @@ export type RuntimeTerminalListResult = {
   truncated: boolean
 }
 
+export type RuntimeWorktreeTerminalSleepFailure =
+  | 'terminal_liveness_unavailable'
+  | 'terminal_worktree_sleep_still_live'
+
+export type RuntimeWorktreeTerminalSleepResult = {
+  stopped: number
+  stoppedPtyIds: string[]
+  livePtyIds: string[]
+} & (
+  | {
+      postStopVerified: true
+      postStopFailure?: never
+      remainingLivePtyIds?: never
+    }
+  | {
+      postStopVerified: false
+      postStopFailure: 'terminal_liveness_unavailable'
+      remainingLivePtyIds?: never
+    }
+  | {
+      postStopVerified: false
+      postStopFailure: 'terminal_worktree_sleep_still_live'
+      remainingLivePtyIds: string[]
+    }
+)
+
 export type RuntimeTerminalShow = RuntimeTerminalSummary & {
   paneRuntimeId: number
   ptyId: string | null
@@ -460,6 +556,34 @@ export type RuntimeTerminalAgentStatus = {
 }
 
 export type RuntimeTerminalPresentation = 'background' | 'focused'
+type RuntimeTerminalCreateBaseRequestPayload = {
+  requestId: string
+  worktreeId?: string
+  afterTabId?: string
+  targetGroupId?: string
+  command?: string
+  cwd?: string
+  env?: Record<string, string>
+  envToDelete?: string[]
+  launchConfig?: SleepingAgentLaunchConfig
+  resumeProviderSession?: AgentProviderSessionMetadata
+  launchToken?: string
+  launchAgent?: TuiAgent
+  viewMode?: 'terminal' | 'chat'
+  startupCommandDelivery?: StartupCommandDelivery
+  title?: string
+  activate?: boolean
+  presentation?: RuntimeTerminalPresentation
+}
+
+export type RuntimeTerminalCreateRequestPayload =
+  | (RuntimeTerminalCreateBaseRequestPayload & { source?: undefined })
+  | (RuntimeTerminalCreateBaseRequestPayload & {
+      worktreeId: string
+      // Why: only the host-owned runtime-session bridge may bypass the renderer's
+      // active-runtime local terminal guard; ordinary UI requests must omit this.
+      source: 'runtime-session'
+    })
 
 export type RuntimeTerminalCreate = {
   handle: string
@@ -470,6 +594,8 @@ export type RuntimeTerminalCreate = {
   title: string | null
   surface?: 'background' | 'visible'
   warning?: string
+  /** Present only for the structured host-authority resume path. */
+  agentSessionDisposition?: 'created' | 'adopted'
 }
 
 export type RuntimeTerminalSplit = {
@@ -494,6 +620,8 @@ export type RuntimeTerminalFocus = {
 export type RuntimeTerminalClose = {
   handle: string
   tabId: string
+  /** Present for the durable whole-tab lifecycle without changing legacy receipts. */
+  closeMode?: 'tab'
   ptyKilled: boolean
 }
 
@@ -543,18 +671,25 @@ export type RuntimeWorktreePsSummary = {
   workspaceKind?: 'git' | 'folder-workspace'
   worktreeId: string
   repoId: string
+  hostId?: Worktree['hostId']
+  terminalPlatform?: NodeJS.Platform
   repo: string
   path: string
   branch: string
   isArchived: boolean
   isMainWorktree: boolean
   hasHostSidebarActivity: boolean
+  worktreeInstanceId?: string
+  lineageWorktreeInstanceId?: string
+  parentWorktreeInstanceId?: string
   parentWorktreeId: string | null
   childWorktreeIds: string[]
   displayName: string
   workspaceStatus: string
   sortOrder: number
   manualOrder?: number
+  lastActivityAt?: number
+  createdAt?: number
   linkedIssue: number | null
   linkedPR: { number: number; state: string } | null
   linkedLinearIssue: string | null
@@ -623,6 +758,8 @@ export type RuntimeWorktreeCreateResult = {
   workspaceLineage?: WorkspaceLineage | null
   warnings: WorktreeLineageWarning[]
   warning?: string
+  startupTerminal?: CreateWorktreeResult['startupTerminal']
+  agentTerminalHandle?: string
 }
 
 export type RuntimeWorktreeRemoveResult = RemoveWorktreeResult & {
@@ -754,6 +891,11 @@ export type BrowserTabInfo = {
   url: string
   title: string
   active: boolean
+  // Why: a failed load leaves getURL() at chrome-error://; surface the structured
+  // error so an agent driving the browser can tell a bypassable certificate
+  // failure from an ordinary network error the way the UI can.
+  loadError?: BrowserLoadError | null
+  certificateFailure?: BrowserCertificateFailure | null
   worktreeId?: string | null
   profileId?: string | null
   profileLabel?: string | null
@@ -985,6 +1127,8 @@ export type BrowserErrorCode =
   | 'browser_no_tab'
   | 'browser_tab_not_found'
   | 'browser_tab_closed'
+  | 'browser_tab_changed'
+  | 'browser_owner_unavailable'
   | 'browser_stale_ref'
   | 'browser_ref_not_found'
   | 'browser_navigation_failed'

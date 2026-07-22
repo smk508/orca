@@ -3,9 +3,10 @@
    make the hook coordination harder to audit. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OpenFile } from '@/store/slices/editor'
-import { getConnectionId, getConnectionIdForFile } from '@/lib/connection-context'
+import { getConnectionIdForFile, isWorktreeConnectionResolved } from '@/lib/connection-context'
 import { joinPath } from '@/lib/path'
 import { useAppStore } from '@/store'
+import { getDiskBaselineSignature } from './diff-content-signature'
 import { getRuntimeFileReadScope, readRuntimeFileContent } from '@/runtime/runtime-file-client'
 import { settingsForRuntimeOwner } from '@/runtime/runtime-rpc-client'
 import {
@@ -14,7 +15,11 @@ import {
   getRuntimeGitDiff,
   getRuntimeGitScope
 } from '@/runtime/runtime-git-client'
-import type { DiffContent, FileContent } from './editor-panel-content-types'
+import {
+  WORKTREE_OWNER_NOT_READY_ERROR,
+  type DiffContent,
+  type FileContent
+} from './editor-panel-content-types'
 import { canUseChangesModeForFile } from './editor-panel-file-mode'
 import {
   isReloadableSingleFileDiffTab,
@@ -25,6 +30,7 @@ import {
   usePruneClosedEditorContent
 } from './useEditorPanelExternalContentEvents'
 import { useEditorPanelFileLoadRetry } from './useEditorPanelFileLoadRetry'
+import { useLocalLogTail } from './useLocalLogTail'
 
 const inFlightFileReads = new Map<string, Promise<FileContent>>()
 const inFlightDiffReads = new Map<string, Promise<DiffContent>>()
@@ -36,14 +42,33 @@ type UseEditorPanelContentStateParams = {
   activeFile: OpenFile | null
   isChangesMode: boolean
   openFiles: OpenFile[]
-  gitStatusByWorktree: GitStatusByWorktree
+  gitStatusEntries: GitStatusByWorktree[string] | undefined
   editorViewMode: EditorViewModeByFile
 }
 
 type UseEditorPanelContentStateResult = {
   fileContents: Record<string, FileContent>
   diffContents: Record<string, DiffContent>
-  reloadFileContent: (file: OpenFile) => void
+  reloadContent: (file: OpenFile) => void
+}
+
+// Why: a clean load re-baselines what this tab's future edits are based on; a
+// dirty tab keeps its baseline (its draft still derives from the older content
+// the signature was taken over). Best-effort metadata — a failure here must
+// not convert an already-delivered load into an error view, hence the guard.
+function stampCleanTabDiskBaseline(id: string, result: FileContent): void {
+  if (result.isBinary || result.loadError) {
+    return
+  }
+  try {
+    const state = useAppStore.getState()
+    const loadedFile = state.openFiles.find((file) => file.id === id)
+    if (loadedFile && !loadedFile.isDirty) {
+      state.setLastKnownDiskSignature(id, getDiskBaselineSignature(result.content))
+    }
+  } catch (err) {
+    console.warn('[editor] failed to stamp disk baseline', err)
+  }
 }
 
 function inFlightReadKey(connectionId: string | undefined, filePath: string): string {
@@ -70,7 +95,7 @@ export function useEditorPanelContentState({
   activeFile,
   isChangesMode,
   openFiles,
-  gitStatusByWorktree,
+  gitStatusEntries,
   editorViewMode
 }: UseEditorPanelContentStateParams): UseEditorPanelContentStateResult {
   const [fileContents, setFileContents] = useState<Record<string, FileContent>>({})
@@ -105,13 +130,24 @@ export function useEditorPanelContentState({
       fileReadGenerationCounterRef.current = generation
       fileReadGenerationRef.current[id] = generation
       try {
-        const connectionId = getConnectionIdForFile(worktreeId ?? null, filePath) ?? undefined
+        const resolvedConnectionId = getConnectionIdForFile(worktreeId ?? null, filePath)
+        const connectionId = resolvedConnectionId ?? undefined
         const restoredOpenFile = openFilesRef.current.find((file) => file.id === id)
         const activeSettings = useAppStore.getState().settings
         const readSettings = settingsForRuntimeOwner(
           activeSettings,
           restoredOpenFile?.runtimeEnvironmentId
         )
+        if (
+          resolvedConnectionId === undefined &&
+          !readSettings?.activeRuntimeEnvironmentId?.trim() &&
+          !isWorktreeConnectionResolved(worktreeId ?? null)
+        ) {
+          // Why: the backing repo hasn't hydrated yet (SSH still connecting), so
+          // we can't tell local from remote. Reading locally would deny a remote
+          // path with a terminal "access denied" (#6648); fail retryably instead.
+          throw new Error(WORKTREE_OWNER_NOT_READY_ERROR)
+        }
         if (restoredOpenFile?.filePath === filePath && restoredOpenFile.relativePath === filePath) {
           if (readSettings?.activeRuntimeEnvironmentId?.trim() || connectionId) {
             // Why: restored external-file tabs contain client-local absolute
@@ -137,7 +173,9 @@ export function useEditorPanelContentState({
             filePath,
             relativePath: restoredOpenFile?.relativePath ?? relativePath,
             worktreeId,
-            connectionId
+            connectionId,
+            includeLocalLogMetadata:
+              restoredOpenFile?.readOnly === true && restoredOpenFile.liveTail === true
           }) as Promise<FileContent>
           inFlightFileReads.set(key, pending)
           queueMicrotask(() => {
@@ -152,6 +190,7 @@ export function useEditorPanelContentState({
         }
         delete fileLoadRetryAttemptsRef.current[id]
         setFileContents((prev) => ({ ...prev, [id]: result }))
+        stampCleanTabDiskBaseline(id, result)
       } catch (err) {
         if (fileReadGenerationRef.current[id] !== generation) {
           return
@@ -184,7 +223,7 @@ export function useEditorPanelContentState({
             ? file.branchCompare
             : null
         const commitCompare = file.commitCompare?.commitOid ? file.commitCompare : null
-        const connectionId = getConnectionId(file.worktreeId) ?? undefined
+        const connectionId = getConnectionIdForFile(file.worktreeId, file.filePath) ?? undefined
         const activeSettings = useAppStore.getState().settings
         const fileSettings = settingsForRuntimeOwner(activeSettings, file.runtimeEnvironmentId)
         const gitScope = getRuntimeGitScope(fileSettings, connectionId)
@@ -285,8 +324,23 @@ export function useEditorPanelContentState({
     []
   )
 
-  const reloadFileContent = useCallback(
+  // Why: the changed-on-disk banner's explicit reload on an unstaged diff tab
+  // must refetch the diff body, not the plain file content — one entry point
+  // branches on the tab mode so every consumer reloads the right store.
+  const reloadContent = useCallback(
     (file: OpenFile): void => {
+      if (file.mode === 'diff') {
+        setDiffContents((prev) => {
+          if (!prev[file.id]) {
+            return prev
+          }
+          const next = { ...prev }
+          delete next[file.id]
+          return next
+        })
+        void loadDiffContent(file, { force: true })
+        return
+      }
       delete fileLoadRetryAttemptsRef.current[file.id]
       setFileContents((prev) => {
         if (!prev[file.id]) {
@@ -300,8 +354,10 @@ export function useEditorPanelContentState({
         force: true
       })
     },
-    [loadFileContent]
+    [loadDiffContent, loadFileContent]
   )
+
+  useLocalLogTail({ openFiles, fileContents, setFileContents, reloadContent })
 
   useEffect(() => {
     if (activeFile?.mode === 'conflict-review' && !selectedConflictReviewFile) {
@@ -311,7 +367,7 @@ export function useEditorPanelContentState({
       }
 
       const snapshotPaths = new Set(snapshotEntries.map((entry) => entry.path))
-      const liveEntries = gitStatusByWorktree[activeFile.worktreeId] ?? []
+      const liveEntries = gitStatusEntries ?? []
       for (const entry of liveEntries) {
         if (
           !snapshotPaths.has(entry.path) ||
@@ -360,7 +416,7 @@ export function useEditorPanelContentState({
     activeFile?.conflictReview?.snapshotTimestamp,
     selectedConflictReviewFile?.id,
     isChangesMode,
-    gitStatusByWorktree
+    gitStatusEntries
   ])
 
   useEditorPanelFileLoadRetry({
@@ -372,9 +428,7 @@ export function useEditorPanelContentState({
     setFileContents
   })
 
-  const changesStatusEntries = activeFile?.worktreeId
-    ? gitStatusByWorktree[activeFile.worktreeId]
-    : undefined
+  const changesStatusEntries = activeFile?.worktreeId ? gitStatusEntries : undefined
   const activeFileGitStatusEntries = useMemo(() => {
     if (!activeFile?.relativePath || !changesStatusEntries) {
       return undefined
@@ -488,5 +542,5 @@ export function useEditorPanelContentState({
     setDiffContents
   )
 
-  return { fileContents, diffContents, reloadFileContent }
+  return { fileContents, diffContents, reloadContent }
 }

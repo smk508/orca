@@ -8,6 +8,10 @@ import { getGitPaneSearchEntries } from './git-search'
 import { SearchableSetting } from './SearchableSetting'
 import { matchesSettingsSearch } from './settings-search'
 import { AutoRenameBranchFromWorkSetting } from './AutoRenameBranchFromWorkSetting'
+import {
+  CompareAgainstUpstreamSetting,
+  compareAgainstUpstreamMatchesSearch
+} from './CompareAgainstUpstreamSetting'
 import { getAutoRenameBranchSearchEntries } from './auto-rename-branch-search'
 import {
   KEEP_LOCAL_MAIN_UP_TO_DATE_SECTION_ID,
@@ -232,11 +236,14 @@ export function GitPane({
             {translate(
               'auto.components.settings.GitPane.976afc6b3e',
               'When you create a workspace, Orca refreshes the remote base and safely fast-forwards your matching local branch, such as'
-            )}
+            )}{' '}
             <code>{translate('auto.components.settings.GitPane.ffba483bae', 'main')}</code>{' '}
-            {translate('auto.components.settings.GitPane.5bf885be48', 'or')}
+            {translate('auto.components.settings.GitPane.5bf885be48', 'or')}{' '}
             <code>{translate('auto.components.settings.GitPane.3ae3de8898', 'master')}</code>
-            {translate('auto.components.settings.GitPane.db3a127eb1', '. This keeps commands like')}
+            {translate(
+              'auto.components.settings.GitPane.db3a127eb1',
+              '. This keeps commands like'
+            )}{' '}
             <code>
               {translate('auto.components.settings.GitPane.d072a12995', 'git diff main...HEAD')}
             </code>{' '}
@@ -281,6 +288,13 @@ export function GitPane({
     }) ? (
       <SourceControlGroupOrderSetting
         key="source-control-group-order"
+        settings={settings}
+        updateSettings={updateSettings}
+      />
+    ) : null,
+    compareAgainstUpstreamMatchesSearch(searchQuery) ? (
+      <CompareAgainstUpstreamSetting
+        key="compare-against-upstream"
         settings={settings}
         updateSettings={updateSettings}
       />

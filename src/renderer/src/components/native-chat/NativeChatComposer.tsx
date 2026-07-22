@@ -1,80 +1,55 @@
-import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
-import { translate } from '@/i18n/i18n'
+import { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../store'
-import type { AgentType } from '../../../../shared/agent-status-types'
-import { NATIVE_FILE_DROP_TARGET } from '../../../../shared/native-file-drop'
 import { sendRuntimePtyInput } from '@/runtime/runtime-terminal-inspection'
 import { getSettingsForAgentTabRuntimeOwner } from '@/lib/agent-paste-draft'
-import { sendNativeChatMessage, submitNativeChatPrompt } from './native-chat-runtime-send'
-import { getAgentSlashCommands } from './native-chat-agent-commands'
+import {
+  sendNativeChatMessage,
+  sendNativeChatMessageWithImageAttachments,
+  submitNativeChatPrompt
+} from './native-chat-runtime-send'
+import type { NativeChatSendHandle } from './native-chat-runtime-send'
+import { getVerifiedNativeChatCommands } from '../../../../shared/native-chat-agent-profiles'
 import { emitNativeChatMessageSent } from '@/lib/native-chat-telemetry'
 import {
   applyMentionSuggestion,
-  applySkillSuggestion,
-  applySlashSuggestion,
-  deriveComposerAutocomplete,
   EMPTY_HISTORY,
-  isSlashCommandDraft,
   pushHistory,
-  slashCommandDispatchText,
-  type HistoryState,
-  type SlashCommandSuggestion
+  type HistoryState
 } from './native-chat-composer-state'
-import { resolveImagePaste } from './native-chat-image-paste'
+import { readNativeChatDraftCache } from './native-chat-draft-cache'
+import { useNativeChatDraft } from './use-native-chat-draft'
 import { NativeChatComposerField } from './NativeChatComposerField'
 import {
   nativeChatComposerTargetIsRemote,
   type NativeChatResolvedTarget
 } from './native-chat-composer-target'
-import { useNativeChatSkills } from './use-native-chat-skills'
 import { useNativeChatComposerAttachments } from './use-native-chat-composer-attachments'
-import { dispatchDictationControl } from '../dictation/dictation-control-events'
+import { useNativeChatComposerPaste } from './use-native-chat-composer-paste'
+import { useNativeChatExternalAttachments } from './use-native-chat-external-attachments'
 import { useNativeChatComposerKeyDown } from './use-native-chat-composer-keydown'
+import { useNativeChatSendLifecycle } from './use-native-chat-send-lifecycle'
+import { useNativeChatSessionOptions } from './use-native-chat-session-options'
+import { useNativeChatFileAttachmentActions } from './use-native-chat-file-attachment-actions'
+import { useNativeChatDictationActions } from './use-native-chat-dictation-actions'
+import { useNativeChatSessionOptionCommand } from './use-native-chat-session-option-command'
+import { useNativeChatPickerState } from './use-native-chat-picker-state'
+import { useNativeChatPickerCommandDispatch } from './use-native-chat-picker-command-dispatch'
+import { useNativeChatTypedInsertion } from './use-native-chat-typed-insertion'
+import type {
+  NativeChatComposerHandle,
+  NativeChatComposerProps
+} from './native-chat-composer-types'
+
+export type {
+  NativeChatComposerHandle,
+  NativeChatComposerProps
+} from './native-chat-composer-types'
 
 // Why: a plain ESC byte is what the agent TUIs read as the interrupt key over a
 // PTY (matching how xterm forwards Escape). The richer interrupt-intent
 // inference (agent-interrupt-intent.ts) is driven by the existing PTY input
 // observers, so writing ESC through the same send path feeds that machinery.
 const ESC = '\x1b'
-
-export type NativeChatComposerProps = {
-  /** Tab hosting the agent; used to resolve the live ptyId + runtime settings. */
-  terminalTabId: string
-  /** Specific split-pane PTY this chat view owns. */
-  targetPtyId: string | null
-  agent: AgentType
-  /**
-   * Mobile presence-lock seam (R8): when a mobile client holds the pty, desktop
-   * sends must be guarded rather than silently dropped. U9 wires the real lock
-   * state in; until then this defaults to `true` (sendable) and the composer
-   * already renders the guarded/disabled affordance when it is `false`.
-   */
-  canSend?: boolean
-  /** True while the hosted TUI reports an in-flight turn; swaps Send to Stop. */
-  isWorking?: boolean
-  /** Interrupt the hosted agent, usually by sending ESC into the PTY. */
-  onStop?: () => void
-  /** Optional optimistic-send hook: called with the sent text so the view can
-   *  render a "queued" echo until the real transcript turn lands (mobile parity). */
-  onOptimisticSend?: (text: string, imagePaths?: string[]) => void
-  /** Called with a dispatched slash command (e.g. `/clear`) so the view can show
-   *  a small "Ran /clear" system line — slash commands aren't chat turns and
-   *  otherwise leave no visible trace that anything happened. */
-  onSlashCommand?: (command: string) => void
-}
-
-export type NativeChatComposerHandle = {
-  focus: () => boolean
-  insertTypedText: (text: string) => boolean
-}
 
 /**
  * Rich native input for the chat view. Sends prompts into the running agent
@@ -88,24 +63,38 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
   function NativeChatComposer(
     {
       terminalTabId,
+      paneKey,
       targetPtyId,
       agent,
       canSend = true,
       isWorking = false,
       onStop,
       onOptimisticSend,
-      onSlashCommand
+      onOptimisticSendCanceled,
+      onSlashCommand,
+      onSwitchToTerminal,
+      readTerminalScreen
     },
     ref
   ): React.JSX.Element {
-    const [draft, setDraft] = useState('')
-    const [caret, setCaret] = useState(0)
+    // Scope key shared with image attachments so an unsent draft + its attached
+    // images survive both TUI/GUI toggles and PTY replacement on reconnect.
+    // Why: local, SSH, and runtime reconnects can replace or temporarily clear
+    // the PTY id. Pane identity is the stable ownership key for unsent input.
+    const draftScopeKey = paneKey
+    const { draft, setDraft } = useNativeChatDraft(draftScopeKey)
+    const [caret, setCaret] = useState(draft.length)
     const [history, setHistory] = useState<HistoryState>(EMPTY_HISTORY)
     const [activeSuggestion, setActiveSuggestion] = useState(0)
     const [notice, setNotice] = useState<string | null>(null)
     const [dictationPressed, setDictationPressed] = useState(false)
-    const skills = useNativeChatSkills(agent, terminalTabId)
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+    const isComposingRef = useRef(false)
+    const { cancelPendingSends, trackPendingSend } = useNativeChatSendLifecycle(
+      terminalTabId,
+      targetPtyId,
+      onOptimisticSendCanceled
+    )
     const dictationState = useAppStore((store) => store.dictationState)
     const voiceSettings = useAppStore((store) => store.settings?.voice)
     const isDictationHoldMode = voiceSettings?.dictationMode === 'hold'
@@ -116,12 +105,36 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       dictationState === 'listening' ||
       dictationState === 'stopping'
 
-    const agentCommands = useMemo(() => getAgentSlashCommands(agent), [agent])
-    const autocomplete = useMemo(
-      () =>
-        deriveComposerAutocomplete(draft, caret, agentCommands, agent === 'codex' ? skills : []),
-      [draft, caret, agentCommands, agent, skills]
-    )
+    // Place the caret at the end of the (possibly restored) draft when the
+    // composer is reused for a different pane. Adjusted during render (matching
+    // the draft reload) so caret and text stay consistent on the first paint.
+    const lastDraftScopeKey = useRef(draftScopeKey)
+    if (lastDraftScopeKey.current !== draftScopeKey) {
+      lastDraftScopeKey.current = draftScopeKey
+      setCaret(readNativeChatDraftCache(draftScopeKey).length)
+    }
+
+    const agentCommands = useMemo(() => getVerifiedNativeChatCommands(agent), [agent])
+    const picker = useNativeChatPickerState({
+      agent,
+      terminalTabId,
+      draftScopeKey,
+      draft,
+      caret,
+      agentCommands,
+      textareaRef,
+      setDraft,
+      setCaret,
+      setActiveSuggestion
+    })
+    const {
+      autocomplete,
+      classifySend,
+      clearSkillOrigin,
+      completeItem,
+      dismiss,
+      handleDraftOrCaretChange
+    } = picker
 
     // Resolve the live ptyId for this chat leaf; runtime owner settings route
     // local vs remote (SSH) sends.
@@ -132,16 +145,15 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       return { ptyId: targetPtyId, settings: getSettingsForAgentTabRuntimeOwner(terminalTabId) }
     }, [targetPtyId, terminalTabId])
 
-    const hasPty = targetPtyId !== null
-    const disabled = !hasPty || !canSend
+    const [hasPty, disabled] = [targetPtyId !== null, targetPtyId === null || !canSend]
 
     const syncCaret = useCallback((el: HTMLTextAreaElement) => {
       setCaret(el.selectionStart ?? el.value.length)
     }, [])
 
-    const { imageAttachments, attachLocalPaths, clearImageAttachments, removeImageAttachment } =
+    const { imageAttachments, attachResolvedPaths, clearImageAttachments, removeImageAttachment } =
       useNativeChatComposerAttachments({
-        attachmentScopeKey: targetPtyId ?? terminalTabId,
+        attachmentScopeKey: paneKey,
         caret,
         resolveTarget,
         textareaRef,
@@ -153,78 +165,61 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       ? !hasPty || !onStop
       : disabled || (draft.trim() === '' && imageAttachments.length === 0)
 
-    const insertTypedText = useCallback(
-      (text: string): boolean => {
-        const textarea = textareaRef.current
-        if (!textarea || textarea.disabled) {
-          return false
-        }
-        const selectionStart = textarea.selectionStart ?? caret
-        const selectionEnd = textarea.selectionEnd ?? selectionStart
-        const next = `${draft.slice(0, selectionStart)}${text}${draft.slice(selectionEnd)}`
-        const nextCaret = selectionStart + text.length
-        textarea.focus()
-        setDraft(next)
-        setCaret(nextCaret)
-        setHistory((prev) => ({ entries: prev.entries, index: null }))
-        setActiveSuggestion(0)
-        requestAnimationFrame(() => {
-          textarea.setSelectionRange(nextCaret, nextCaret)
-        })
-        return true
-      },
-      [caret, draft]
+    const { insertTypedText, focus } = useNativeChatTypedInsertion({
+      textareaRef,
+      caret,
+      draft,
+      setDraft,
+      setCaret,
+      setHistory,
+      setActiveSuggestion
+    })
+
+    const { attachExternalPaths, resolveAttachmentOwner } = useNativeChatExternalAttachments({
+      terminalTabId,
+      disabled,
+      attachResolvedPaths,
+      setNotice
+    })
+
+    const { handlePaste, pasteFromClipboard } = useNativeChatComposerPaste({
+      agent,
+      disabled,
+      caret,
+      resolveAttachmentOwner,
+      attachResolvedPaths,
+      insertTypedText,
+      setCaret,
+      setNotice
+    })
+
+    useImperativeHandle(
+      ref,
+      () => ({ focus, insertTypedText, handlePasteEvent: handlePaste, pasteFromClipboard }),
+      [focus, insertTypedText, handlePaste, pasteFromClipboard]
     )
 
-    const focus = useCallback((): boolean => {
-      const textarea = textareaRef.current
-      if (!textarea || textarea.disabled) {
-        return false
-      }
-      textarea.focus()
-      return true
-    }, [])
-
-    useImperativeHandle(ref, () => ({ focus, insertTypedText }), [focus, insertTypedText])
-
-    useEffect(() => {
-      return window.api.ui.onFileDrop((payload) => {
-        if (payload.target !== NATIVE_FILE_DROP_TARGET.composer) {
-          return
-        }
-        attachLocalPaths(payload.paths)
+    const { pickAttachment } = useNativeChatFileAttachmentActions(attachExternalPaths)
+    const { toggleDictation, startHoldDictation, stopHoldDictation } =
+      useNativeChatDictationActions({ textareaRef, setDictationPressed })
+    const { dispatch: dispatchSessionOptionCommand, isDispatching: isDispatchingSessionOption } =
+      useNativeChatSessionOptionCommand({
+        agent,
+        disabled,
+        onSlashCommand,
+        resolveTarget,
+        setHistory
       })
-    }, [attachLocalPaths])
 
-    const pickAttachment = useCallback(() => {
-      void (async () => {
-        const filePath = await window.api.shell.pickAttachment()
-        if (!filePath) {
-          return
-        }
-        attachLocalPaths([filePath])
-      })()
-    }, [attachLocalPaths])
-
-    const focusForDictation = useCallback(() => {
-      textareaRef.current?.focus()
-    }, [])
-
-    const toggleDictation = useCallback(() => {
-      focusForDictation()
-      dispatchDictationControl('toggle')
-    }, [focusForDictation])
-
-    const startHoldDictation = useCallback(() => {
-      setDictationPressed(true)
-      focusForDictation()
-      dispatchDictationControl('start')
-    }, [focusForDictation])
-
-    const stopHoldDictation = useCallback(() => {
-      setDictationPressed(false)
-      dispatchDictationControl('stop')
-    }, [])
+    const { surface: sessionOptionsSurface, snapshot: sessionOptionsSnapshot } =
+      useNativeChatSessionOptions({
+        agent,
+        terminalTabId,
+        targetPtyId,
+        dispatchCommand: dispatchSessionOptionCommand,
+        onAgentPicker: onSwitchToTerminal,
+        readTerminalScreen
+      })
 
     const send = useCallback(() => {
       const text = draft
@@ -232,24 +227,50 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       if ((text.trim() === '' && imagePaths.length === 0) || disabled) {
         return
       }
+      // Why: block a normal send while a session-option command (e.g. /model) is
+      // still writing its body+delayed-Enter to the same pty, so the two write
+      // sequences can't interleave on one input line.
+      if (isDispatchingSessionOption) {
+        return
+      }
       const target = resolveTarget()
       if (!target) {
         return
       }
-      // Images are pasted into the hosted TUI as soon as they are attached, so the
-      // Send action only submits the text body (if any) plus Enter.
-      if (text.trim().length > 0) {
-        sendNativeChatMessage(target.settings, target.ptyId, text)
+      const classification = classifySend(text)
+      let pendingHandle: NativeChatSendHandle | null = null
+      // Why: image attachments take the attachment send path even for a
+      // command/unknown send, otherwise `clearImageAttachments()` below drops
+      // them silently when the text starts with the agent's slash/skill prefix.
+      if (classification !== 'chat' && imagePaths.length === 0) {
+        pendingHandle = sendNativeChatMessage(target.settings, target.ptyId, text)
+      } else if (imagePaths.length > 0) {
+        pendingHandle = sendNativeChatMessageWithImageAttachments(
+          target.settings,
+          target.ptyId,
+          text,
+          imagePaths
+        )
+      } else if (text.trim().length > 0) {
+        pendingHandle = sendNativeChatMessage(target.settings, target.ptyId, text)
       } else {
         submitNativeChatPrompt(target.settings, target.ptyId)
       }
-      // Slash commands are TUI controls, not chat turns: don't echo a user bubble,
-      // but DO surface a small "Ran /clear" system line so the command leaves a
-      // visible trace instead of seeming to do nothing.
-      if (isSlashCommandDraft(text)) {
-        onSlashCommand?.(text.trim())
+      if (classification !== 'chat') {
+        if (pendingHandle) {
+          trackPendingSend(pendingHandle)
+        }
+        // Why: only verified catalog commands can truthfully claim they ran or
+        // mutate session-option state; unknown slash-like text has no such proof.
+        if (classification === 'command') {
+          onSlashCommand?.(text.trim())
+          sessionOptionsSurface?.recordOutgoingCommand(text.trim())
+        }
       } else {
-        onOptimisticSend?.(text, imagePaths)
+        const pendingId = onOptimisticSend?.(text, imagePaths)
+        if (pendingHandle) {
+          trackPendingSend(pendingHandle, pendingId)
+        }
       }
       // Why: U10 telemetry — record adoption + local-vs-remote runtime split. The
       // agent prop is the loose AgentType; the emitter narrows unknowns to 'other'.
@@ -260,20 +281,28 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       setHistory((prev) => pushHistory(prev, text))
       setDraft('')
       setCaret(0)
+      clearSkillOrigin()
       clearImageAttachments()
       setNotice(null)
     }, [
       agent,
+      classifySend,
+      clearSkillOrigin,
       clearImageAttachments,
       draft,
       imageAttachments,
       disabled,
+      isDispatchingSessionOption,
       resolveTarget,
       onOptimisticSend,
-      onSlashCommand
+      onSlashCommand,
+      sessionOptionsSurface,
+      trackPendingSend,
+      setDraft
     ])
 
     const interrupt = useCallback(() => {
+      cancelPendingSends()
       if (isWorking && onStop) {
         onStop()
         return
@@ -283,83 +312,34 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
         return
       }
       sendRuntimePtyInput(target.settings, target.ptyId, ESC)
-    }, [isWorking, onStop, resolveTarget])
+    }, [cancelPendingSends, isWorking, onStop, resolveTarget])
 
-    const chooseSlash = useCallback((command: SlashCommandSuggestion) => {
-      const next = applySlashSuggestion(command)
-      setDraft(next)
-      setCaret(next.length)
-      setActiveSuggestion(0)
-      textareaRef.current?.focus()
-    }, [])
-
-    const dispatchSlash = useCallback(
-      (command: SlashCommandSuggestion) => {
-        const next = slashCommandDispatchText(command)
-        const target = resolveTarget()
-        if (!target || disabled) {
-          return
-        }
-        sendNativeChatMessage(target.settings, target.ptyId, next)
-        // Surface the command as a system line (this is the autocomplete-menu
-        // dispatch path; the typed-Enter path in `send` does the same).
-        onSlashCommand?.(next.trim())
-        emitNativeChatMessageSent({
-          agent,
-          runtime: nativeChatComposerTargetIsRemote(target.ptyId) ? 'remote' : 'local'
-        })
-        setHistory((prev) => pushHistory(prev, next))
-        setDraft('')
-        setCaret(0)
-        setActiveSuggestion(0)
-        setNotice(null)
-      },
-      [agent, disabled, resolveTarget, onSlashCommand]
-    )
-
-    const handlePaste = useCallback(
-      (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-        const hasImage = Array.from(event.clipboardData.items).some((item) =>
-          item.type.startsWith('image/')
-        )
-        if (!hasImage) {
-          return
-        }
-        event.preventDefault()
-        // Why: snapshot the caret before the async temp-file round-trip — `caret`
-        // state can move (further typing/selection) while the await is in flight.
-        const caretAtPaste = caret
-        void (async () => {
-          const tempPath = await window.api.ui.saveClipboardImageAsTempFile()
-          if (!tempPath) {
-            return
-          }
-          const result = resolveImagePaste(agent, tempPath)
-          if (result.kind === 'unsupported') {
-            setNotice(
-              translate(
-                'components.native-chat.composer.imageUnsupported',
-                'Image paste is not supported for this agent.'
-              )
-            )
-            return
-          }
-          attachLocalPaths([result.path])
-          setCaret(caretAtPaste)
-          setNotice(null)
-        })()
-      },
-      [agent, attachLocalPaths, caret]
-    )
+    const dispatchPickerCommand = useNativeChatPickerCommandDispatch({
+      agent,
+      disabled,
+      isDispatchingSessionOption,
+      resolveTarget,
+      onSlashCommand,
+      sessionOptionsSurface,
+      trackPendingSend,
+      setHistory,
+      setDraft,
+      setCaret,
+      setActiveSuggestion,
+      clearSkillOrigin,
+      clearImageAttachments,
+      setNotice
+    })
 
     const handleKeyDown = useNativeChatComposerKeyDown({
       autocomplete,
       activeSuggestion,
       draft,
-      caret,
       history,
-      chooseSlash,
-      dispatchSlash,
+      isComposing: () => isComposingRef.current,
+      completePickerItem: completeItem,
+      dispatchPickerCommand,
+      dismissPicker: dismiss,
       interrupt,
       send,
       setActiveSuggestion,
@@ -389,12 +369,25 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
           setDraft(value)
           setHistory((prev) => ({ entries: prev.entries, index: null }))
           syncCaret(element)
+          handleDraftOrCaretChange(value, element.selectionStart ?? value.length)
           setActiveSuggestion(0)
         }}
-        onTextareaSelect={syncCaret}
+        onTextareaSelect={(element) => {
+          syncCaret(element)
+          handleDraftOrCaretChange(element.value, element.selectionStart ?? element.value.length)
+          setActiveSuggestion(0)
+        }}
         onKeyDown={handleKeyDown}
+        onCompositionStart={() => {
+          isComposingRef.current = true
+        }}
+        onCompositionEnd={() => {
+          isComposingRef.current = false
+        }}
         onPaste={handlePaste}
-        onChooseSlash={chooseSlash}
+        pickerListboxId={picker.listboxId}
+        onChoosePickerItem={completeItem}
+        onRetrySkills={picker.retrySkills}
         onAcceptMention={() => {
           if (autocomplete.mode !== 'mention') {
             return
@@ -402,14 +395,9 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
           const result = applyMentionSuggestion(draft, caret, autocomplete.query)
           setDraft(result.draft)
           setCaret(result.caret)
-          textareaRef.current?.focus()
-        }}
-        onChooseSkill={(skill) => {
-          const result = applySkillSuggestion(draft, caret, skill.name)
-          setDraft(result.draft)
-          setCaret(result.caret)
-          setActiveSuggestion(0)
-          textareaRef.current?.focus()
+          const textarea = textareaRef.current
+          textarea?.focus()
+          requestAnimationFrame(() => textarea?.setSelectionRange(result.caret, result.caret))
         }}
         onRemoveImageAttachment={(id) => removeImageAttachment(id)}
         onAttach={pickAttachment}
@@ -417,7 +405,9 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
         onDictationHoldStart={startHoldDictation}
         onDictationHoldEnd={stopHoldDictation}
         onSend={send}
-        onStop={onStop}
+        onStop={interrupt}
+        sessionOptionsSurface={sessionOptionsSurface}
+        sessionOptionsSnapshot={sessionOptionsSnapshot}
       />
     )
   }

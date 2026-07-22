@@ -54,6 +54,7 @@ import { translate } from '@/i18n/i18n'
 import { CLOSE_ALL_CONTEXT_MENUS_EVENT } from '@/components/tab-bar/SortableTab'
 import type { RightSidebarExplorerView } from '../../../../shared/types'
 import { getRuntimeEnvironmentIdForWorktree } from '@/lib/worktree-runtime-owner'
+import { createNewTerminalTab } from '@/components/terminal/terminal-tab-create'
 
 function FileExplorerFiles(): React.JSX.Element {
   const explorerView = useAppStore((s) => s.rightSidebarExplorerView)
@@ -79,6 +80,12 @@ function FileExplorerFiles(): React.JSX.Element {
   const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
   const activeWorktree = useActiveWorktree()
   const activeRepo = useRepoById(activeWorktree?.repoId ?? null)
+  const supportsFolderDownload = useAppStore((s) => {
+    const connectionId = activeRepo?.connectionId
+    return connectionId
+      ? s.sshConnectionStates.get(connectionId)?.supportsFolderDownload === true
+      : false
+  })
   const activeRuntimeEnvironmentId = useAppStore((s) =>
     getRuntimeEnvironmentIdForWorktree(s, activeWorktreeId)
   )
@@ -162,6 +169,7 @@ function FileExplorerFiles(): React.JSX.Element {
       hasNameFilter
         ? {
             query: nameFilterQuery,
+            operationOwner: nameFilterFiles.operationOwner,
             relativePaths: nameFilterQueryTooLarge
               ? []
               : nameFilterFiles.loading && nameFilterFiles.files.length === 0
@@ -173,6 +181,7 @@ function FileExplorerFiles(): React.JSX.Element {
       hasNameFilter,
       nameFilterFiles.files,
       nameFilterFiles.loading,
+      nameFilterFiles.operationOwner,
       nameFilterQuery,
       nameFilterQueryTooLarge
     ]
@@ -577,6 +586,15 @@ function FileExplorerFiles(): React.JSX.Element {
     },
     [activeRepo, openModal]
   )
+  const handleOpenInTerminal = useCallback(
+    (node: TreeNode) => {
+      if (!activeWorktreeId || !node.isDirectory) {
+        return
+      }
+      createNewTerminalTab(activeWorktreeId, undefined, { startupCwd: node.path })
+    },
+    [activeWorktreeId]
+  )
 
   if (!worktreePath) {
     return (
@@ -734,8 +752,10 @@ function FileExplorerFiles(): React.JSX.Element {
                 deleteShortcutLabel={deleteShortcutLabel}
                 connectionId={activeRepo?.connectionId ?? null}
                 runtimeDownloadContext={runtimeDownloadContext}
+                supportsFolderDownload={supportsFolderDownload}
                 onClick={handleRowClick}
                 onDoubleClick={handleDoubleClick}
+                onViewFile={handleClick}
                 onContextMenuSelect={preserveSelectionForContextMenu}
                 onCopyPaths={copyPathsForNode}
                 onStartNew={startNew}
@@ -743,6 +763,7 @@ function FileExplorerFiles(): React.JSX.Element {
                 onDuplicate={handleDuplicate}
                 onAddFolderAsProject={handleAddFolderAsProject}
                 canAddFolderAsProject={(node) => canShowAddAsProjectAction(node, activeRepo)}
+                onOpenInTerminal={handleOpenInTerminal}
                 onRequestDelete={handleContextMenuDelete}
                 onCollapseFolderSubtree={handleCollapseFolderSubtree}
                 onFindInFolder={handleFindInFolder}
