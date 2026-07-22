@@ -1,7 +1,22 @@
+<<<<<<< HEAD
 import { useMemo } from 'react'
 import { View, Text, StyleSheet, Pressable, Linking } from 'react-native'
+||||||| 49c0917db
+import { View, Text, StyleSheet, Pressable, Linking } from 'react-native'
+=======
+import { useCallback, useRef, useState } from 'react'
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Linking,
+  ActivityIndicator,
+  ScrollView
+} from 'react-native'
+>>>>>>> origin/main
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useRouter } from 'expo-router'
+import { useFocusEffect, useRouter } from 'expo-router'
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,12 +27,21 @@ import {
   LifeBuoy,
   Mic,
   Globe,
+<<<<<<< HEAD
   Check,
   Sun,
   Moon,
   SunMoon,
   Terminal as TerminalIcon
+||||||| 49c0917db
+  Terminal as TerminalIcon
+=======
+  MessageSquare,
+  Terminal as TerminalIcon,
+  KeyRound
+>>>>>>> origin/main
 } from 'lucide-react-native'
+<<<<<<< HEAD
 import { spacing, typography, type ThemeColors } from '../src/theme/mobile-theme'
 import { useTheme } from '../src/theme/theme-context'
 import { type AppAppearance } from '../src/storage/preferences'
@@ -33,12 +57,83 @@ const APPEARANCE_OPTIONS: Array<{
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'dark', label: 'Dark', icon: Moon }
 ]
+||||||| 49c0917db
+import { colors, spacing, typography } from '../src/theme/mobile-theme'
+=======
+import { colors, radii, spacing, typography } from '../src/theme/mobile-theme'
+import {
+  loadPendingHostCredentialCleanup,
+  subscribePendingHostCredentialCleanup
+} from '../src/transport/host-credential-cleanup'
+import { retryPendingHostCredentialCleanup } from '../src/transport/host-store'
+>>>>>>> origin/main
 
 export default function SettingsScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
+<<<<<<< HEAD
   const { colors, appearance, setAppearance } = useTheme()
   const styles = useMemo(() => makeStyles(colors), [colors])
+||||||| 49c0917db
+=======
+  const [pendingCredentialIds, setPendingCredentialIds] = useState<string[]>([])
+  const [credentialStorageUnreadable, setCredentialStorageUnreadable] = useState(false)
+  const [retryingCredentialCleanup, setRetryingCredentialCleanup] = useState(false)
+  const [credentialRetryFailed, setCredentialRetryFailed] = useState(false)
+  const credentialRefreshGenerationRef = useRef(0)
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true
+      setCredentialRetryFailed(false)
+      const refresh = () => {
+        const generation = ++credentialRefreshGenerationRef.current
+        void loadPendingHostCredentialCleanup().then((state) => {
+          if (active && generation === credentialRefreshGenerationRef.current) {
+            setPendingCredentialIds(state.ids)
+            setCredentialStorageUnreadable(state.storageUnreadable)
+            // Why: neutral copy once the queue is confirmed empty so a later
+            // pending set does not inherit a previous Retry failure message.
+            if (state.ids.length === 0 && !state.storageUnreadable) {
+              setCredentialRetryFailed(false)
+            }
+          }
+        })
+      }
+      const unsubscribe = subscribePendingHostCredentialCleanup(refresh)
+      refresh()
+      return () => {
+        active = false
+        credentialRefreshGenerationRef.current += 1
+        unsubscribe()
+      }
+    }, [])
+  )
+
+  const retryCredentialCleanup = useCallback(async () => {
+    if (retryingCredentialCleanup) {
+      return
+    }
+    setCredentialRetryFailed(false)
+    setRetryingCredentialCleanup(true)
+    try {
+      const result = await retryPendingHostCredentialCleanup()
+      setPendingCredentialIds(result.remainingIds)
+      setCredentialStorageUnreadable(result.storageUnreadable)
+      setCredentialRetryFailed(result.remainingIds.length > 0 || result.storageUnreadable)
+    } catch {
+      setCredentialRetryFailed(true)
+    } finally {
+      setRetryingCredentialCleanup(false)
+    }
+  }, [retryingCredentialCleanup])
+
+  const pendingCredentialCount = pendingCredentialIds.length
+  // Why: show the cleanup card whenever cleanup is pending OR the durable queue
+  // is unreadable — an unreadable queue can hide an orphaned token, so keep a
+  // retry affordance rather than a silently-empty (hidden) section.
+  const showCredentialCleanup = pendingCredentialCount > 0 || credentialStorageUnreadable
+>>>>>>> origin/main
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + spacing.sm }]}>
@@ -49,6 +144,7 @@ export default function SettingsScreen() {
         <Text style={styles.heading}>Settings</Text>
       </View>
 
+<<<<<<< HEAD
       <Text style={styles.sectionLabel}>Appearance</Text>
       <View style={styles.section}>
         {APPEARANCE_OPTIONS.map((option, i) => {
@@ -127,28 +223,195 @@ export default function SettingsScreen() {
           <ChevronRight size={16} color={colors.textMuted} />
         </Pressable>
       </View>
-
-      <View style={[styles.section, styles.sectionSpacer]}>
+||||||| 49c0917db
+      <View style={styles.section}>
         <Pressable
           style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          onPress={() => void Linking.openURL('https://www.onorca.dev/privacy')}
+          onPress={() => router.push('/terminal-settings')}
         >
-          <Shield size={16} color={colors.textSecondary} />
-          <Text style={styles.rowLabel}>Privacy Policy</Text>
+          <TerminalIcon size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>Terminal</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
         </Pressable>
         <View style={styles.separator} />
         <Pressable
           style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          onPress={() => void Linking.openURL('https://github.com/stablyai/orca/issues')}
+          onPress={() => router.push('/browser-settings')}
         >
-          <LifeBuoy size={16} color={colors.textSecondary} />
-          <Text style={styles.rowLabel}>Support</Text>
+          <Globe size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>Browser</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </Pressable>
+        <View style={styles.separator} />
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push('/voice-settings')}
+        >
+          <Mic size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>Voice</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </Pressable>
+        <View style={styles.separator} />
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push('/notifications')}
+        >
+          <Bell size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>Notifications</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </Pressable>
+        <View style={styles.separator} />
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push('/troubleshoot')}
+        >
+          <Wrench size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>Troubleshooting</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
+        </Pressable>
+        <View style={styles.separator} />
+        <Pressable
+          style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          onPress={() => router.push('/about')}
+        >
+          <Info size={16} color={colors.textSecondary} />
+          <Text style={styles.rowLabel}>About</Text>
+          <ChevronRight size={16} color={colors.textMuted} />
         </Pressable>
       </View>
+=======
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: insets.bottom + spacing.lg }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.section}>
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push('/terminal-settings')}
+          >
+            <TerminalIcon size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Terminal</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push('/native-chat-settings')}
+          >
+            <MessageSquare size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Native chat</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push('/browser-settings')}
+          >
+            <Globe size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Browser</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push('/voice-settings')}
+          >
+            <Mic size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Voice</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push('/notifications')}
+          >
+            <Bell size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Notifications</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push('/troubleshoot')}
+          >
+            <Wrench size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Troubleshooting</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => router.push('/about')}
+          >
+            <Info size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>About</Text>
+            <ChevronRight size={16} color={colors.textMuted} />
+          </Pressable>
+        </View>
+>>>>>>> origin/main
+
+        {showCredentialCleanup ? (
+          <View style={[styles.section, styles.sectionSpacer]}>
+            <View style={styles.credentialCleanupRow}>
+              <KeyRound size={16} color={colors.statusAmber} />
+              <View style={styles.credentialCleanupCopy}>
+                <Text style={styles.credentialCleanupTitle}>Pairing credential cleanup</Text>
+                <Text accessibilityLiveRegion="polite" style={styles.rowHint}>
+                  {credentialRetryFailed
+                    ? "Cleanup still couldn't be confirmed. Try again later."
+                    : pendingCredentialCount > 0
+                      ? `Couldn't confirm cleanup for ${pendingCredentialCount} credential${pendingCredentialCount === 1 ? '' : 's'} on this device.`
+                      : "Couldn't check cleanup status on this device. Retry to be safe."}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Retry clearing pairing credentials"
+                accessibilityState={{
+                  busy: retryingCredentialCleanup,
+                  disabled: retryingCredentialCleanup
+                }}
+                disabled={retryingCredentialCleanup}
+                hitSlop={8}
+                style={({ pressed }) => [
+                  styles.retryButton,
+                  pressed && !retryingCredentialCleanup && styles.rowPressed
+                ]}
+                onPress={() => void retryCredentialCleanup()}
+              >
+                {retryingCredentialCleanup ? (
+                  <ActivityIndicator size="small" color={colors.textSecondary} />
+                ) : (
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
+        <View style={[styles.section, styles.sectionSpacer]}>
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => void Linking.openURL('https://www.onorca.dev/privacy')}
+          >
+            <Shield size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Privacy Policy</Text>
+          </Pressable>
+          <View style={styles.separator} />
+          <Pressable
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+            onPress={() => void Linking.openURL('https://github.com/stablyai/orca/issues')}
+          >
+            <LifeBuoy size={16} color={colors.textSecondary} />
+            <Text style={styles.rowLabel}>Support</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
     </View>
   )
 }
 
+<<<<<<< HEAD
 // Why: a factory so the Settings screen styles bind to the active palette
 // (it's one of the screens that drives the live light/dark toggle, so it must
 // re-style on its own change). SettingsScreen memoizes the result per palette.
@@ -217,3 +480,148 @@ function makeStyles(colors: ThemeColors) {
     }
   })
 }
+||||||| 49c0917db
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.bgBase,
+    padding: spacing.lg
+  },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.xl
+  },
+  backButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.sm
+  },
+  heading: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.textPrimary
+  },
+  section: {
+    backgroundColor: colors.bgPanel,
+    borderRadius: 12,
+    overflow: 'hidden'
+  },
+  sectionSpacer: {
+    marginTop: spacing.md
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm + 2,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md + 2
+  },
+  rowPressed: {
+    backgroundColor: colors.bgRaised
+  },
+  rowLabel: {
+    flex: 1,
+    fontSize: typography.bodySize,
+    fontWeight: '500',
+    color: colors.textPrimary
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginHorizontal: spacing.md
+  }
+})
+=======
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: colors.bgBase,
+    paddingHorizontal: spacing.lg
+  },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.xl
+  },
+  backButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.sm
+  },
+  heading: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.textPrimary
+  },
+  section: {
+    backgroundColor: colors.bgPanel,
+    borderRadius: 12,
+    overflow: 'hidden'
+  },
+  sectionSpacer: {
+    marginTop: spacing.md
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm + 2,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md + 2
+  },
+  rowPressed: {
+    backgroundColor: colors.bgRaised
+  },
+  rowLabel: {
+    flex: 1,
+    fontSize: typography.bodySize,
+    fontWeight: '500',
+    color: colors.textPrimary
+  },
+  credentialCleanupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm + 2,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md + 2
+  },
+  credentialCleanupCopy: {
+    flex: 1,
+    gap: spacing.xs
+  },
+  credentialCleanupTitle: {
+    fontSize: typography.bodySize,
+    fontWeight: '500',
+    color: colors.textPrimary
+  },
+  rowHint: {
+    fontSize: typography.metaSize,
+    color: colors.textSecondary,
+    lineHeight: 17
+  },
+  retryButton: {
+    width: 72,
+    height: 32,
+    borderRadius: radii.button,
+    backgroundColor: colors.bgRaised,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  retryButtonText: {
+    fontSize: typography.metaSize,
+    fontWeight: '600',
+    color: colors.textPrimary
+  },
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginHorizontal: spacing.md
+  }
+})
+>>>>>>> origin/main

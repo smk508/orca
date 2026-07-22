@@ -8,9 +8,11 @@ vi.mock('child_process', () => ({
   execFile: execFileMock
 }))
 
+import { resetWindowsProcessRowsSnapshotForTests } from '../main/providers/windows-foreground-process-rows'
 import { resetProcessTableSnapshotForTests } from '../shared/process-table-snapshot'
 import {
   getForegroundProcessName,
+  isProcessAlive,
   resolveDefaultCwd,
   resolveWindowsDefaultShell
 } from './pty-shell-utils'
@@ -49,6 +51,41 @@ async function withProcessPlatform<T>(
 beforeEach(() => {
   execFileMock.mockReset()
   resetProcessTableSnapshotForTests()
+  resetWindowsProcessRowsSnapshotForTests()
+})
+
+describe('isProcessAlive', () => {
+  it('reports the test runner process as alive', () => {
+    expect(isProcessAlive(process.pid)).toBe(true)
+  })
+
+  it('reports a process as dead ONLY on ESRCH', () => {
+    // Why: attach() reaps a lingering managed PTY based on this, so a false
+    // positive would kill a live remote shell. Only "no such process" counts.
+    const spy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err = new Error('no such process') as NodeJS.ErrnoException
+      err.code = 'ESRCH'
+      throw err
+    })
+    try {
+      expect(isProcessAlive(2147483646)).toBe(false)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('treats an unsignalable process (EPERM) as alive', () => {
+    const spy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err = new Error('operation not permitted') as NodeJS.ErrnoException
+      err.code = 'EPERM'
+      throw err
+    })
+    try {
+      expect(isProcessAlive(1)).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+  })
 })
 
 describe('resolveWindowsDefaultShell', () => {
@@ -231,6 +268,94 @@ describe('getForegroundProcessName', () => {
       })
 
       await expect(getForegroundProcessName(100, 'node')).resolves.toBe('node')
+    })
+  })
+
+  // Why: OMP embeds Pi, but the outer process is the user-visible identity (#6364).
+  it('reports the outer omp wrapper over the wrapped pi child from a shell fallback', async () => {
+    await withProcessPlatform('linux', async () => {
+      mockExecFile((_command, args) => {
+        if (args[0] === '-axo') {
+          return {
+            stdout: ['100 99 Ss   bash -l', '101 100 S+   omp', '102 101 S+   pi'].join('\n')
+          }
+        }
+        return new Error('unexpected command')
+      })
+
+      await expect(getForegroundProcessName(100, 'bash')).resolves.toBe('omp')
+    })
+  })
+
+  it('rescans for the omp wrapper when node-pty reports the wrapped pi as foreground', async () => {
+    await withProcessPlatform('linux', async () => {
+      mockExecFile((_command, args) => {
+        if (args[0] === '-axo') {
+          return {
+            stdout: ['100 99 Ss   bash -l', '101 100 S+   omp', '102 101 S+   pi'].join('\n')
+          }
+        }
+        return new Error('unexpected command')
+      })
+
+      await expect(getForegroundProcessName(100, 'pi')).resolves.toBe('omp')
+    })
+  })
+
+  it('returns an outer omp fallback without a process-table scan', async () => {
+    mockExecFile(() => new Error('unexpected process-table scan'))
+
+    await expect(getForegroundProcessName(100, 'omp')).resolves.toBe('omp')
+    expect(execFileMock).not.toHaveBeenCalled()
+  })
+
+  it('rescans a Windows pi fallback for its outer omp wrapper', async () => {
+    await withProcessPlatform('win32', async () => {
+      mockExecFile((command) => {
+        if (command === 'powershell.exe') {
+          return {
+            stdout: JSON.stringify([
+              {
+                CommandLine: 'powershell.exe',
+                ExecutablePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+                Name: 'powershell.exe',
+                ParentProcessId: 99,
+                ProcessId: 100
+              },
+              {
+                CommandLine: 'omp.exe',
+                ExecutablePath: 'C:\\Tools\\omp.exe',
+                Name: 'omp.exe',
+                ParentProcessId: 100,
+                ProcessId: 101
+              },
+              {
+                CommandLine: 'pi.exe',
+                ExecutablePath: 'C:\\Tools\\pi.exe',
+                Name: 'pi.exe',
+                ParentProcessId: 101,
+                ProcessId: 102
+              }
+            ])
+          }
+        }
+        return new Error('unexpected command')
+      })
+
+      await expect(getForegroundProcessName(100, 'pi')).resolves.toBe('omp')
+    })
+  })
+
+  it('keeps a pi fallback as pi when no omp wrapper is in the tree', async () => {
+    await withProcessPlatform('linux', async () => {
+      mockExecFile((_command, args) => {
+        if (args[0] === '-axo') {
+          return { stdout: ['100 99 Ss   bash -l', '101 100 S+   pi'].join('\n') }
+        }
+        return new Error('unexpected command')
+      })
+
+      await expect(getForegroundProcessName(100, 'pi')).resolves.toBe('pi')
     })
   })
 

@@ -180,6 +180,39 @@ describe('createBrowserSlice annotations', () => {
     expect(store.getState().browserAnnotationsByPageId[pageId]).toBeUndefined()
   })
 
+  it('keeps certificate challenges transient across navigation, success, and close', () => {
+    const store = createTestStore()
+    const tab = store.getState().createBrowserTab('wt-1', 'https://localhost:3443/')
+    const pageId = tab.activePageId
+    if (!pageId) {
+      throw new Error('Expected a new browser page')
+    }
+    const failure = {
+      challengeId: 'challenge-1',
+      browserPageId: pageId,
+      errorCode: -202,
+      error: 'ERR_CERT_AUTHORITY_INVALID',
+      origin: 'https://localhost:3443',
+      displayHost: 'localhost:3443',
+      canProceed: true,
+      observedAt: 123
+    }
+
+    store.getState().setBrowserPageCertificateFailure(pageId, failure)
+    expect(store.getState().browserCertificateFailuresByPageId[pageId]).toEqual(failure)
+
+    store.getState().setBrowserPageUrl(pageId, 'https://localhost:3443/next')
+    expect(store.getState().browserCertificateFailuresByPageId[pageId]).toBeUndefined()
+
+    store.getState().setBrowserPageCertificateFailure(pageId, failure)
+    store.getState().updateBrowserPageState(pageId, { loadError: null })
+    expect(store.getState().browserCertificateFailuresByPageId[pageId]).toBeUndefined()
+
+    store.getState().setBrowserPageCertificateFailure(pageId, failure)
+    store.getState().closeBrowserTab(tab.id)
+    expect(store.getState().browserCertificateFailuresByPageId[pageId]).toBeUndefined()
+  })
+
   it('creates inactive browser unified tabs without stealing the visible tab', () => {
     const store = createTestStore()
 
@@ -617,6 +650,45 @@ describe('createBrowserSlice runtime guard', () => {
     const tab = store.getState().createBrowserTab('wt-remote', 'https://example.com')
 
     expect(tab.sessionProfileId).toBe('remote-default')
+  })
+
+  it('stores a runtime-resolved browser partition without a renderer profile mirror', () => {
+    const store = createTestStore()
+    store.setState({ browserSessionProfiles: [] })
+
+    const tab = store.getState().createBrowserTab('wt-1', 'https://example.com', {
+      sessionProfileId: 'profile-isolated',
+      sessionPartition: 'persist:orca-browser-session-profile-isolated'
+    })
+
+    expect(tab.sessionProfileId).toBe('profile-isolated')
+    expect(tab.sessionPartition).toBe('persist:orca-browser-session-profile-isolated')
+    expect(store.getState().browserTabsByWorktree['wt-1']?.[0]?.sessionPartition).toBe(
+      'persist:orca-browser-session-profile-isolated'
+    )
+  })
+
+  it('stores a runtime-resolved partition when switching browser tab profiles', () => {
+    const store = createTestStore()
+    const tab = store.getState().createBrowserTab('wt-1', 'https://example.com', {
+      sessionProfileId: null,
+      sessionPartition: 'persist:orca-browser'
+    })
+
+    store
+      .getState()
+      .switchBrowserTabProfile(
+        tab.id,
+        'profile-isolated',
+        'persist:orca-browser-session-profile-isolated'
+      )
+
+    expect(store.getState().browserTabsByWorktree['wt-1']?.[0]).toEqual(
+      expect.objectContaining({
+        sessionProfileId: 'profile-isolated',
+        sessionPartition: 'persist:orca-browser-session-profile-isolated'
+      })
+    )
   })
 
   it('creates new browser tabs through the owning runtime for desktop remote worktrees', async () => {

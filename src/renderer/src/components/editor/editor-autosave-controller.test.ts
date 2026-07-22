@@ -1,5 +1,3 @@
-/* eslint-disable max-lines -- Why: autosave behavior depends on event wiring,
-   dirty drafts, remote routing, quiesce, and failure cleanup in one harness. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import { createEditorSlice } from '@/store/slices/editor'
@@ -386,7 +384,7 @@ describe('attachEditorAutosaveController', () => {
     }
   })
 
-  it('backs up dirty editor drafts for hot exit without writing files', async () => {
+  it('leaves dirty editor drafts ready for the combined hot-exit checkpoint', async () => {
     const writeFile = vi.fn().mockResolvedValue(undefined)
     const setSync = vi.fn()
     const eventTarget = new EventTarget()
@@ -424,13 +422,7 @@ describe('attachEditorAutosaveController', () => {
       await vi.advanceTimersByTimeAsync(1000)
 
       expect(writeFile).not.toHaveBeenCalled()
-      expect(setSync).toHaveBeenCalledTimes(1)
-      expect(setSync.mock.calls[0][0].openFilesByWorktree['wt-1'][0]).toEqual(
-        expect.objectContaining({
-          filePath: '/repo/file.md',
-          dirtyDraftContent: ''
-        })
-      )
+      expect(setSync).not.toHaveBeenCalled()
       expect(store.getState().openFiles[0]?.isDirty).toBe(true)
       expect(store.getState().editorDrafts['/repo/file.md']).toBe('')
     } finally {

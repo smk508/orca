@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
-import { join } from 'path'
-import { tmpdir } from 'os'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { gitExecFileAsync } from './git/runner'
 import { detectRepoIcon, detectRepoIconAndUpstream } from './repo-icon-autodetect'
@@ -179,7 +179,8 @@ describe('detectRepoIcon', () => {
         source: 'github',
         label: 'stablyai/orca'
       },
-      upstream: { owner: 'stablyai', repo: 'orca' }
+      // Why: fork parents resolve host-qualified so avatars/links stay on the fork's server.
+      upstream: { owner: 'stablyai', repo: 'orca', host: 'github.com' }
     })
   })
 

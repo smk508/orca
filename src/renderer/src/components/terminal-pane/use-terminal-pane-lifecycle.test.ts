@@ -2,15 +2,34 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   applyTerminalScrollbackRowsToMountedPanes,
   clearQueuedInitialCwdAfterFirstPane,
+  getPreviousVisibleForTerminalPane,
+  isTerminalPaneVisibilityResume,
   mapRestoredPaneTitlesByPaneId,
   resolvePaneLinkCwd,
   resolvePaneSeedCwd,
   resolveQueuedInitialCwd,
-  scheduleVisibilityReconcilePass,
+  resetTerminalKeyboardProtocolAfterInterrupt,
   shouldDetachPaneTransportOnUnmount,
   splitPaneWithOneShotStartup,
   suppressIntentionalPaneCloseExit
 } from './use-terminal-pane-lifecycle'
+
+describe('resetTerminalKeyboardProtocolAfterInterrupt', () => {
+  it('does not write to an xterm whose pipeline is certified dead', async () => {
+    const { _resetWritePipelineHealthForTests, notifyUndeliverableWrite } =
+      await import('@/lib/pane-manager/terminal-write-pipeline-health')
+    const terminal = { write: vi.fn() }
+    try {
+      notifyUndeliverableWrite(terminal, 'replay-wedged')
+
+      resetTerminalKeyboardProtocolAfterInterrupt(terminal as never)
+
+      expect(terminal.write).not.toHaveBeenCalled()
+    } finally {
+      _resetWritePipelineHealthForTests(terminal)
+    }
+  })
+})
 
 describe('splitPaneWithOneShotStartup', () => {
   it('only exposes startup to the intentional split and clears it afterwards', () => {
@@ -150,7 +169,7 @@ describe('shouldDetachPaneTransportOnUnmount', () => {
     ).toBe(true)
   })
 
-  it('destroys when the tab is gone and no replacement owns the PTY', () => {
+  it('detaches when closeTab already owns provider shutdown for the removed tab', () => {
     expect(
       shouldDetachPaneTransportOnUnmount({
         tabStillExists: false,
@@ -158,7 +177,40 @@ describe('shouldDetachPaneTransportOnUnmount', () => {
         ptyId: 'remote:env@@term-1',
         worktreeTabs: []
       })
+    ).toBe(true)
+  })
+
+  it('destroys an ID-less transport so a pending spawn cannot outlive unmount', () => {
+    expect(
+      shouldDetachPaneTransportOnUnmount({
+        tabStillExists: false,
+        tabId: 'tab-1',
+        ptyId: null,
+        worktreeTabs: []
+      })
     ).toBe(false)
+  })
+
+  it('detaches a removed automation pane after closeTab takes teardown authority', () => {
+    expect(
+      shouldDetachPaneTransportOnUnmount({
+        tabStillExists: false,
+        tabId: 'automation-tab',
+        ptyId: 'automation-pty',
+        worktreeTabs: [
+          {
+            id: 'unrelated-tab',
+            ptyId: 'unrelated-pty',
+            worktreeId: 'wt-1',
+            title: 'Terminal 1',
+            customTitle: null,
+            color: null,
+            sortOrder: 0,
+            createdAt: 1
+          }
+        ]
+      })
+    ).toBe(true)
   })
 })
 
@@ -289,39 +341,37 @@ describe('suppressIntentionalPaneCloseExit', () => {
   })
 })
 
-describe('scheduleVisibilityReconcilePass', () => {
-  it('schedules a reconcile pass over the bindings when becoming visible', async () => {
-    const reconcileIfSessionDead = vi.fn()
-    const listSessions = vi
-      .fn<() => Promise<{ id: string; cwd: string; title: string }[]>>()
-      .mockResolvedValue([{ id: 'live-1', cwd: '/a', title: 'a' }])
-
-    const scheduled = scheduleVisibilityReconcilePass({
-      isVisible: true,
-      bindings: [{ reconcileIfSessionDead }],
-      listSessions
-    })
-
-    expect(scheduled).toBe(true)
-    // Fire-and-forget: let the async listSessions resolve before asserting.
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(listSessions).toHaveBeenCalledTimes(1)
-    expect(reconcileIfSessionDead).toHaveBeenCalledWith(new Set(['live-1']))
+describe('terminal pane visibility resume tracking', () => {
+  it('ignores previous visibility from a different terminal identity', () => {
+    expect(
+      getPreviousVisibleForTerminalPane({
+        previous: { tabId: 'tab-old', cwd: '/repo', isVisible: false },
+        tabId: 'tab-new',
+        cwd: '/repo'
+      })
+    ).toBeNull()
+    expect(
+      getPreviousVisibleForTerminalPane({
+        previous: { tabId: 'tab-1', cwd: '/repo-old', isVisible: false },
+        tabId: 'tab-1',
+        cwd: '/repo-new'
+      })
+    ).toBeNull()
+    expect(
+      getPreviousVisibleForTerminalPane({
+        previous: { tabId: 'tab-1', cwd: '/repo', isVisible: false },
+        tabId: 'tab-1',
+        cwd: '/repo'
+      })
+    ).toBe(false)
   })
 
-  it('self-gates: does not schedule when hiding (isVisible false)', () => {
-    const listSessions = vi
-      .fn<() => Promise<{ id: string; cwd: string; title: string }[]>>()
-      .mockResolvedValue([])
-
-    const scheduled = scheduleVisibilityReconcilePass({
-      isVisible: false,
-      bindings: [{ reconcileIfSessionDead: vi.fn() }],
-      listSessions
-    })
-
-    expect(scheduled).toBe(false)
-    expect(listSessions).not.toHaveBeenCalled()
+  it('identifies only hidden-to-visible changes as visibility resumes', () => {
+    expect(isTerminalPaneVisibilityResume({ previousIsVisible: null, isVisible: true })).toBe(false)
+    expect(isTerminalPaneVisibilityResume({ previousIsVisible: true, isVisible: true })).toBe(false)
+    expect(isTerminalPaneVisibilityResume({ previousIsVisible: true, isVisible: false })).toBe(
+      false
+    )
+    expect(isTerminalPaneVisibilityResume({ previousIsVisible: false, isVisible: true })).toBe(true)
   })
 })

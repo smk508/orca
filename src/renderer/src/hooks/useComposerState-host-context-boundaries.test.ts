@@ -5,6 +5,7 @@ import {
   canResolveFolderSmartGitHubSubmit,
   getInitialAutoManagedWorkspaceName,
   isExplicitWorkspaceNameInput,
+  resolveSmartGitHubCreateNames,
   resolveInitialWorkspaceRunSeed
 } from './useComposerState'
 
@@ -45,6 +46,42 @@ describe('useComposerState host-context boundaries', () => {
     ).toBe('')
   })
 
+  it('preserves explicit names when a linked PR start point resolves at submit time', () => {
+    expect(
+      resolveSmartGitHubCreateNames({
+        resolutionKind: 'pr-start-point',
+        smartWorkspaceName: 'title-derived-name',
+        smartDisplayName: 'Title derived name',
+        fallbackWorkspaceName: 'edited workspace',
+        nameIsAutoManaged: false
+      })
+    ).toEqual({ workspaceName: 'edited workspace', displayName: undefined })
+  })
+
+  it('keeps smart GitHub names for auto-managed PR start-point submissions', () => {
+    expect(
+      resolveSmartGitHubCreateNames({
+        resolutionKind: 'pr-start-point',
+        smartWorkspaceName: 'title-derived-name',
+        smartDisplayName: 'Title derived name',
+        fallbackWorkspaceName: 'https://github.com/stablyai/orca/pull/6772',
+        nameIsAutoManaged: true
+      })
+    ).toEqual({ workspaceName: 'title-derived-name', displayName: 'Title derived name' })
+  })
+
+  it('requires pasted PR recovery to match the selected GitHub host', () => {
+    const recoverySection = sourceBetween(
+      HOOK_SOURCE,
+      'const effectiveLinkedPR = useMemo',
+      'const setupConfig = useMemo'
+    )
+
+    expect(recoverySection).toContain('githubRepoIdentityKey(fromName.slug)')
+    expect(recoverySection).toContain('githubRepoIdentityKey(selectedRepoSlug)')
+    expect(recoverySection).not.toContain('fromName.slug.owner.toLowerCase()')
+  })
+
   it('auto-owns linked-item generated prefilled names', () => {
     expect(
       getInitialAutoManagedWorkspaceName({
@@ -71,6 +108,10 @@ describe('useComposerState host-context boundaries', () => {
     expect(section).toContain('resolveGitHubPrStartPointForRepo')
     expect(section).toContain('repoId: runRepo.id')
     expect(section).toContain('settings: itemRepoSettings')
+    expect(section).toContain('smartGitHubPrStartPointSelectionRef.current = startPointSelection')
+    expect(section).toContain(
+      'if (smartGitHubPrStartPointSelectionRef.current !== startPointSelection)'
+    )
     expect(section).not.toContain('repoId: repoForItem.id')
     expect(section).not.toContain('repo: repoForItem.id')
   })
@@ -93,6 +134,32 @@ describe('useComposerState host-context boundaries', () => {
     expect(section).toContain('toast.error(result.error)')
     expect(section).toContain("'Failed to resolve MR base.'")
     expect(section).toMatch(/\.catch\(\(error: unknown\) =>/)
+  })
+
+  it('clears only repo-scoped linked work items when the repo or project changes', () => {
+    // Why: Linear and Jira issues are workspace-scoped context — a repo or
+    // project switch must keep them attached. Jira used to be dropped because
+    // this path special-cased Linear only.
+    const repoChangeSection = sourceBetween(
+      HOOK_SOURCE,
+      'const handleRepoChange',
+      'const handleFolderSourceRepoChange'
+    )
+    expect(repoChangeSection).toContain(
+      '!shouldPreserveWorkspaceSourceOnRepoChange(linkedWorkItem)'
+    )
+
+    const folderSourceSection = sourceBetween(
+      HOOK_SOURCE,
+      'const handleFolderSourceRepoChange',
+      'const handleProjectHostSetupChange'
+    )
+    expect(folderSourceSection).toContain('!shouldPreserveWorkspaceSourceOnRepoChange(current)')
+
+    // No switch path may gate the linked-item clear on a Linear-only predicate
+    // again. (isLinearLinkedWorkItem itself may still appear — it drives the
+    // separate Linear branch-name feature — but never the preservation decision.)
+    expect(HOOK_SOURCE).not.toContain('if (!preserveLinearLinkedWorkItem)')
   })
 
   it('does not use local SSH gates for runtime-owned folder targets', () => {
@@ -128,6 +195,40 @@ describe('useComposerState host-context boundaries', () => {
       "launchSource: telemetrySource === 'onboarding' ? 'onboarding' : 'new_workspace_composer'"
     )
     expect(submitSection).toContain('runtimeEnvironmentId: folderTargetRuntimeEnvironmentId')
+  })
+
+  it('detects composer agents against the repo host: SSH, then runtime, then local (#7082)', () => {
+    // Why: a repo owned by a paired runtime must show the runtime's agents, not
+    // the local machine's. SSH stays first priority; runtime falls through before
+    // local so an SSH repo never double-detects. Regression guard for #7082.
+    const selectorSection = sourceBetween(
+      HOOK_SOURCE,
+      'const detectedAgentList = useAppStore',
+      'const ensureDetectedAgents = useAppStore'
+    )
+    expect(selectorSection).toContain('if (isRemote) {')
+    expect(selectorSection).toContain('s.remoteDetectedAgentIds[connectionId]')
+    expect(selectorSection).toContain('if (runtimeEnvironmentId) {')
+    expect(selectorSection).toContain('s.runtimeDetectedAgentIds[runtimeEnvironmentId]')
+    expect(selectorSection).toContain('return s.detectedAgentIds')
+    // SSH branch is checked before the runtime branch.
+    expect(selectorSection.indexOf('if (isRemote) {')).toBeLessThan(
+      selectorSection.indexOf('if (runtimeEnvironmentId) {')
+    )
+
+    expect(HOOK_SOURCE).toContain(
+      'const runtimeEnvironmentId = selectedRepoSettings?.activeRuntimeEnvironmentId?.trim() || null'
+    )
+
+    // Detection effect fans out to the same three hosts in the same order and
+    // re-runs when the runtime environment changes.
+    const detectSection = sourceBetween(HOOK_SOURCE, 'const detect = isRemote', 'void detect.then')
+    expect(detectSection).toContain('ensureRemoteDetectedAgents(connectionId)')
+    expect(detectSection).toContain('ensureRuntimeDetectedAgents(runtimeEnvironmentId)')
+    expect(detectSection).toContain('ensureDetectedAgents()')
+    expect(HOOK_SOURCE).toContain(
+      '}, [connectionId, runtimeEnvironmentId, isRemote, selectedRepoSshStatus, disabledTuiAgents])'
+    )
   })
 
   it('seeds initial workspace run target from the task source context', () => {
@@ -180,6 +281,8 @@ describe('useComposerState host-context boundaries', () => {
       'const applyLinkedWorkItem = useCallback'
     )
     expect(directLookup).toContain('sourceContext: selectedRepoGitHubSourceContext')
+    expect(directLookup).toContain('lookupGitHubWorkItemByOwnerRepoForSource')
+    expect(directLookup).toContain('type: normalizedLinkQuery.directLink.type')
 
     const submitLookup = sourceBetween(
       HOOK_SOURCE,
@@ -201,6 +304,21 @@ describe('useComposerState host-context boundaries', () => {
     expect(submitLookup).toContain("kind: 'metadata-only'")
     expect(submitLookup).toContain('baseBranch: prStartPoint.baseBranch')
     expect(submitLookup).toContain('branchNameOverride: prStartPoint.branchNameOverride')
+    const selectedPrSubmitLookup = sourceBetween(
+      submitLookup,
+      'if (linkedWorkItem) {',
+      'const intent = getSmartGitHubSubmitIntent(name)'
+    )
+    expect(selectedPrSubmitLookup).toContain('smartGitHubPrStartPointSelectionRef.current')
+    expect(selectedPrSubmitLookup).toContain("linkedWorkItemIdentity?.type === 'pr'")
+    expect(selectedPrSubmitLookup).toContain("startPointIdentity?.type === 'pr'")
+    expect(selectedPrSubmitLookup).toContain(
+      'startPointIdentity.number === linkedWorkItemIdentity.number'
+    )
+    expect(selectedPrSubmitLookup).toContain('resolveGitHubPrStartPointForRepo')
+    expect(selectedPrSubmitLookup.indexOf('resolveGitHubPrStartPointForRepo')).toBeLessThan(
+      selectedPrSubmitLookup.indexOf("return { kind: 'none' }")
+    )
 
     const fullSubmit = sourceBetween(
       HOOK_SOURCE,
@@ -299,6 +417,19 @@ describe('useComposerState host-context boundaries', () => {
     expect(section).not.toContain('folderSourceRequiresConnection')
   })
 
+  it('clears branch reuse state when manually editing the branch name', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const handleBranchNameOverrideChange = useCallback',
+      'const addComposerAttachments = useCallback'
+    )
+
+    expect(section).toContain('resolveComposerManualBranchNameChange')
+    expect(section).toContain('setReuseEligibleBranch(null)')
+    expect(section).toContain('setReuseSelectedBranch(false)')
+    expect(section).toContain("branchAutoNameRef.current = ''")
+  })
+
   it('forces repo-scoped source reset when returning from folder target to a repo with the same id', () => {
     const handleRepoChange = sourceBetween(
       HOOK_SOURCE,
@@ -316,6 +447,36 @@ describe('useComposerState host-context boundaries', () => {
     expect(handleProjectChange).toContain(
       'handleRepoChange(nextRepoId, { forceResetStartFrom: isProjectGroupTarget })'
     )
+  })
+
+  it('keeps a Linear branch override when its workspace-scoped issue survives a repo change', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const handleRepoChange = useCallback',
+      'const handleFolderSourceRepoChange = useCallback'
+    )
+
+    expect(section).toContain('const preservedLinearBranchName = preserveLinearLinkedWorkItem')
+    expect(section).toContain('getLinearLinkedWorkItemBranchName(linkedWorkItem)')
+    expect(section).toContain('setBranchNameOverride(preservedLinearBranchName)')
+    expect(section).toContain(
+      'setBranchNameOverridePreservesNameEdits(Boolean(preservedLinearBranchName))'
+    )
+    expect(section).toContain("branchAutoNameRef.current = preservedLinearBranchName ?? ''")
+  })
+
+  it('clears a Linear branch override when its linked issue is removed', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const handleRemoveLinkedWorkItem = useCallback',
+      'const handleNameValueChange = useCallback'
+    )
+
+    expect(section).toContain('const removedLinearItem = isLinearLinkedWorkItem(linkedWorkItem)')
+    expect(section).toContain('if (removedLinearItem)')
+    expect(section).toContain('setBranchNameOverride(undefined)')
+    expect(section).toContain('setBranchNameOverridePreservesNameEdits(false)')
+    expect(section).toContain("branchAutoNameRef.current = ''")
   })
 
   it('selects a project by its own host instead of pinning the current host', () => {
@@ -352,6 +513,8 @@ describe('useComposerState host-context boundaries', () => {
     )
     expect(githubApply).toContain('setLinkedGitLabIssue(null)')
     expect(githubApply).toContain('setLinkedGitLabMR(null)')
+    expect(githubApply).toContain('setBranchNameOverridePreservesNameEdits(false)')
+    expect(githubApply).toContain("branchAutoNameRef.current = ''")
 
     const gitlabApply = sourceBetween(
       HOOK_SOURCE,
@@ -360,6 +523,8 @@ describe('useComposerState host-context boundaries', () => {
     )
     expect(gitlabApply).toContain("setLinkedIssue('')")
     expect(gitlabApply).toContain('setLinkedPR(null)')
+    expect(gitlabApply).toContain('setBranchNameOverridePreservesNameEdits(false)')
+    expect(gitlabApply).toContain("branchAutoNameRef.current = ''")
 
     const projectGroupSmartHandlers = sourceBetween(
       HOOK_SOURCE,
@@ -368,8 +533,12 @@ describe('useComposerState host-context boundaries', () => {
     )
     expect(projectGroupSmartHandlers).toContain('setLinkedGitLabIssue(null)')
     expect(projectGroupSmartHandlers).toContain('setLinkedGitLabMR(null)')
-    expect(projectGroupSmartHandlers).toContain("setLinkedIssue('')")
-    expect(projectGroupSmartHandlers).toContain('setLinkedPR(null)')
+    expect(projectGroupSmartHandlers).toContain(
+      "setLinkedIssue(identity.type === 'issue' ? String(identity.number) : '')"
+    )
+    expect(projectGroupSmartHandlers).toContain(
+      "setLinkedPR(identity.type === 'pr' ? identity.number : null)"
+    )
   })
 
   it('disables repo-backed folder smart lookup when a folder target has no source repos', () => {
@@ -437,7 +606,7 @@ describe('useComposerState host-context boundaries', () => {
       'const handleProjectChange = useCallback',
       'const handleSmartGitHubItemSelect'
     )
-    expect(section).toContain("linkedProvider !== 'linear' && linkedProvider !== 'jira'")
+    expect(section).toContain('!shouldPreserveWorkspaceSourceOnRepoChange(linkedWorkItem)')
   })
 
   it('resolves quick-create base refs through the worktree-create precedence helper', () => {
@@ -449,8 +618,8 @@ describe('useComposerState host-context boundaries', () => {
 
     expect(section).toContain('resolveWorktreeCreateBaseBranch')
     expect(section).toContain('explicitBaseBranch: smartSubmitBaseBranch')
-    expect(section).toContain('repoWorktreeBaseRef: selectedRepo.worktreeBaseRef')
-    expect(section).toContain('getRuntimeRepoBaseRefDefault')
+    expect(section).not.toContain('repoWorktreeBaseRef: selectedRepo.worktreeBaseRef')
+    expect(section).not.toContain('getRuntimeRepoBaseRefDefault')
   })
 
   it('plans new workspace agent startup from the selected repo runtime', () => {
@@ -526,5 +695,32 @@ describe('useComposerState host-context boundaries', () => {
     )
     expect(quickSubmit).toContain('agent === null || !quickDraftPrompt')
     expect(quickSubmit).toContain('startupPlan.draftPrompt = quickDraftPrompt')
+  })
+
+  it('gates per-workspace environment recipe discovery behind the experimental setting', () => {
+    const recipeLoadSection = sourceBetween(
+      HOOK_SOURCE,
+      'const ephemeralVmsEnabled',
+      'const selectedRepoConnectionId'
+    )
+    expect(recipeLoadSection).toContain('settings?.experimentalEphemeralVms === true')
+    expect(recipeLoadSection).toContain('!ephemeralVmsEnabled')
+    expect(recipeLoadSection).toContain('window.api.ephemeralVm')
+
+    const submitSection = sourceBetween(
+      HOOK_SOURCE,
+      'let ephemeralVmRecipe',
+      'const request: WorktreeCreationRequest'
+    )
+    expect(submitSection).toContain(
+      'const activeEphemeralVmRecipeId = ephemeralVmsEnabled ? selectedEphemeralVmRecipeId : null'
+    )
+    expect(submitSection).toContain('recipeId: activeEphemeralVmRecipeId')
+
+    const cardPropsSection = sourceBetween(HOOK_SOURCE, 'const cardProps', 'return {')
+    expect(cardPropsSection).toContain('ephemeralVmRecipes:')
+    expect(cardPropsSection).toContain('!ephemeralVmsEnabled')
+    expect(cardPropsSection).toContain('selectedEphemeralVmRecipeId:')
+    expect(cardPropsSection).toContain('ephemeralVmRecipeError:')
   })
 })
