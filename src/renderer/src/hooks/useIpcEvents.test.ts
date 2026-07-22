@@ -4322,6 +4322,12 @@ describe('useIpcEvents CLI-created worktree activation', () => {
   it('routes local and runtime worktree events to their owning hosts', async () => {
     const fetchWorktrees = vi.fn()
     const fetchWorktreeLineage = vi.fn()
+    // Mutable so the test can drop the runtime mid-run and prove the local flag
+    // is origin-based, not a sample of runtime state.
+    const mockSettings: { activeRuntimeEnvironmentId: string | null; terminalFontSize: number } = {
+      activeRuntimeEnvironmentId: 'env-1',
+      terminalFontSize: 13
+    }
     let localWorktreesOnChanged: ((data: { repoId: string }) => void) | undefined
     let runtimeOnResponse: ((response: unknown) => void) | undefined
     const runtimeSubscribe = vi.fn(async (_args, callbacks) => {
@@ -4385,7 +4391,7 @@ describe('useIpcEvents CLI-created worktree activation', () => {
           enqueueSshCredentialRequest: vi.fn(),
           removeSshCredentialRequest: vi.fn(),
           clearTabPtyId: vi.fn(),
-          settings: { activeRuntimeEnvironmentId: 'env-1', terminalFontSize: 13 }
+          settings: mockSettings
         })
       }
     }))
@@ -4543,6 +4549,19 @@ describe('useIpcEvents CLI-created worktree activation', () => {
 
     fetchWorktrees.mockClear()
     fetchWorktreeLineage.mockClear()
+    // With no runtime active the flag must still be true — it marks the event's
+    // local origin; sampling runtime state here would regress to false.
+    mockSettings.activeRuntimeEnvironmentId = null
+    localWorktreesOnChanged({ repoId: 'repo-1' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fetchWorktrees).toHaveBeenCalledWith('repo-1', { forceLocalOwner: true })
+    expect(fetchWorktreeLineage).toHaveBeenCalledWith({ forceLocalOwner: true })
+
+    fetchWorktrees.mockClear()
+    fetchWorktreeLineage.mockClear()
+    mockSettings.activeRuntimeEnvironmentId = 'env-1'
     if (!runtimeOnResponse) {
       throw new Error('Expected runtime client event callbacks')
     }
