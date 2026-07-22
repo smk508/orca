@@ -876,12 +876,9 @@ export function useIpcEvents(): void {
       if (renamedWasActive && renamed) {
         useAppStore.getState().setActiveWorktree(renamed.newWorktreeId)
       }
-      // Why: the deletion diff below is repo-wide (getAuthoritativeDetectedWorktreeIds
-      // is not host-scoped). On the forceLocalOwner path a remote runtime is active
-      // and only the local host was just listed, so a remote-host worktree absent
-      // from this local scan must not be read as a deletion. Skip the purge here and
-      // refresh additively — a genuinely-removed local worktree is reclaimed by the
-      // next unguarded full refresh. This path only adds local worktrees to the list.
+      // Why: the deletion diff below is repo-wide, but forceLocalOwner listed only the
+      // local host — a remote-host worktree absent from that scan is not a deletion.
+      // Skip the purge so the local-pinned refresh stays additive.
       if (options?.forceLocalOwner) {
         return
       }
@@ -1108,15 +1105,12 @@ export function useIpcEvents(): void {
           repoId: string
           renamed?: { oldWorktreeId: string; newWorktreeId: string }
         }) => {
-          // Why: when a remote runtime is active, an unbound repo's list fetch
-          // would otherwise route to the runtime host and query it with local
-          // worktree ids — so this event used to be dropped, leaving
-          // CLI-created local worktrees invisible until an app restart. Instead
-          // pin the refresh to the local host (forceLocalOwner) so the local
-          // worktree appears live. The refresh is host-scoped and additive, so
-          // it never purges or overwrites the active runtime's worktree state.
-          // A folder rename changes the worktree id; handleWorktreesChanged
-          // re-keys state and shields it from the deletion diff (see there).
+          // Why: with a remote runtime active, an unbound repo's list fetch routes to
+          // the runtime host, so this event used to be dropped — leaving CLI-created
+          // local worktrees invisible until restart. Pin the refresh to the local host
+          // instead; it is host-scoped and additive, so runtime state is never touched.
+          // A folder rename changes the worktree id; handleWorktreesChanged re-keys
+          // state and shields it from the deletion diff.
           worktreeChangeRefreshQueue.enqueue({
             ...data,
             forceLocalOwner: isRuntimeEnvironmentActive()
@@ -1129,7 +1123,8 @@ export function useIpcEvents(): void {
       unsubs.push(
         window.api.worktrees.onHeadIdentitiesChanged((data) => {
           if (isRuntimeEnvironmentActive()) {
-            // Why: local worktree events carry local repo ids (see onChanged).
+            // Why: local worktree events carry local repo ids; the local-pinned list
+            // refresh (onChanged) covers local rows while a runtime is active.
             return
           }
           const state = useAppStore.getState()

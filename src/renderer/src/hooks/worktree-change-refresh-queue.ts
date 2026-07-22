@@ -6,9 +6,8 @@ type WorktreeRename = {
 type WorktreeChangeEvent = {
   repoId: string
   renamed?: WorktreeRename
-  // Why: a remote runtime being active routes an unbound repo's list fetch to
-  // the runtime host. Set on local `worktrees:changed` events so the refresh
-  // pins to the local host instead of dropping the event (see useIpcEvents).
+  // Why: set on local worktrees:changed while a remote runtime is active, so the
+  // refresh pins to the local host instead of dropping the event (see useIpcEvents).
   forceLocalOwner?: boolean
 }
 
@@ -87,7 +86,7 @@ export function createWorktreeChangeRefreshQueue(
         if (
           !lastQueued ||
           lastQueued.renamed !== undefined ||
-          lastQueued.forceLocalOwner !== event.forceLocalOwner
+          Boolean(lastQueued.forceLocalOwner) !== Boolean(event.forceLocalOwner)
         ) {
           state.queue.push({ forceLocalOwner: event.forceLocalOwner })
         }
