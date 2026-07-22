@@ -4319,9 +4319,10 @@ describe('useIpcEvents CLI-created worktree activation', () => {
     })
   })
 
-  it('refreshes active runtime worktrees from remote client events', async () => {
+  it('routes local and runtime worktree events to their owning hosts', async () => {
     const fetchWorktrees = vi.fn()
     const fetchWorktreeLineage = vi.fn()
+    let localWorktreesOnChanged: ((data: { repoId: string }) => void) | undefined
     let runtimeOnResponse: ((response: unknown) => void) | undefined
     const runtimeSubscribe = vi.fn(async (_args, callbacks) => {
       runtimeOnResponse = (callbacks as { onResponse: (response: unknown) => void }).onResponse
@@ -4416,7 +4417,10 @@ describe('useIpcEvents CLI-created worktree activation', () => {
       api: {
         repos: { onChanged: () => () => {} },
         worktrees: {
-          onChanged: () => () => {},
+          onChanged: (callback: (data: { repoId: string }) => void) => {
+            localWorktreesOnChanged = callback
+            return () => {}
+          },
           onBaseStatus: () => () => {},
           onRemoteBranchConflict: () => () => {}
         },
@@ -4527,6 +4531,18 @@ describe('useIpcEvents CLI-created worktree activation', () => {
       },
       expect.any(Object)
     )
+    if (!localWorktreesOnChanged) {
+      throw new Error('Expected local worktree event callback')
+    }
+    localWorktreesOnChanged({ repoId: 'repo-1' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fetchWorktrees).toHaveBeenCalledWith('repo-1', { forceLocalOwner: true })
+    expect(fetchWorktreeLineage).toHaveBeenCalledWith({ forceLocalOwner: true })
+
+    fetchWorktrees.mockClear()
+    fetchWorktreeLineage.mockClear()
     if (!runtimeOnResponse) {
       throw new Error('Expected runtime client event callbacks')
     }
@@ -4538,7 +4554,7 @@ describe('useIpcEvents CLI-created worktree activation', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(fetchWorktrees).toHaveBeenCalledWith('repo-1', undefined)
-    expect(fetchWorktreeLineage).toHaveBeenCalledTimes(1)
+    expect(fetchWorktreeLineage).toHaveBeenCalledWith(undefined)
   })
 })
 
