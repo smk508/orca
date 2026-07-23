@@ -12,7 +12,12 @@ vi.mock('electron', () => ({
 
 vi.mock('node:fs', () => ({
   existsSync: () => fsState.credentials !== null,
-  readFileSync: () => {
+  writeFileSync: () => {},
+  renameSync: () => {}
+}))
+
+vi.mock('../integration-credential-file', () => ({
+  readIntegrationCredentialFileSyncText: () => {
     if (fsState.readError) {
       throw fsState.readError
     }
@@ -20,9 +25,7 @@ vi.mock('node:fs', () => ({
       throw new Error('ENOENT')
     }
     return fsState.credentials
-  },
-  writeFileSync: () => {},
-  renameSync: () => {}
+  }
 }))
 
 vi.mock('node:os', () => ({ homedir: () => '/home/test' }))
@@ -140,6 +143,11 @@ describe('fetchKimiRateLimits', () => {
     const result = await fetchKimiRateLimits()
     expect(result.status).toBe('error')
     expect(result.error).toMatch(/expired/i)
+    expect(result.error).toMatch(/run kimi on the computer running Orca/i)
+    expect(result.usageMetadata).toEqual({
+      failureKind: 'delegated-refresh-required',
+      source: 'oauth'
+    })
     expect(netFetchMock).not.toHaveBeenCalled()
   })
 })

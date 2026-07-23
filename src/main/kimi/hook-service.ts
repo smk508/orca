@@ -1,17 +1,14 @@
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync
-} from 'fs'
-import { homedir } from 'os'
-import { dirname, join, posix as pathPosix } from 'path'
-import { randomUUID } from 'crypto'
+import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, posix as pathPosix } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import type { SFTPWrapper } from 'ssh2'
 import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared/agent-hook-types'
+import {
+  NodeFileReadTooLargeError,
+  readNodeFileSyncWithinLimit
+} from '../../shared/node-bounded-file-reader'
+import { AGENT_HOOK_CONFIG_MAX_BYTES } from '../agent-hooks/agent-hook-file-limits'
 import {
   createManagedCommandMatcher,
   getSharedManagedScriptPath,
@@ -23,6 +20,7 @@ import {
   writeManagedScriptRemote,
   writeTextFileRemoteAtomic
 } from '../agent-hooks/installer-utils-remote'
+import { buildPosixHookPayloadCapture } from '../agent-hooks/hook-stdin-contract'
 import {
   applyManagedKimiHooks,
   KIMI_HOOK_EVENTS,
@@ -59,6 +57,7 @@ function getManagedCommand(scriptPath: string): string {
 function getManagedScript(): string {
   return [
     '#!/bin/sh',
+    ...buildPosixHookPayloadCapture(),
     // Why: refresh PORT/TOKEN/ENV/VERSION from the current Orca install so a PTY
     // that survived an Orca restart still reaches the live listener. See
     // claude/hook-service.ts for the full rationale.
@@ -68,14 +67,13 @@ function getManagedScript(): string {
     'if [ -z "$ORCA_AGENT_HOOK_PORT" ] || [ -z "$ORCA_AGENT_HOOK_TOKEN" ] || [ -z "$ORCA_PANE_KEY" ]; then',
     '  exit 0',
     'fi',
-    'payload=$(cat)',
-    'if [ -z "$payload" ]; then',
-    '  exit 0',
-    'fi',
     // Why: worktreeId embeds a filesystem path, so hand-building JSON in POSIX
     // shell is not safe once a path contains quotes or newlines. Post the raw
     // hook payload plus metadata as form fields and let the receiver parse it.
-    'curl -sS -X POST "http://127.0.0.1:${ORCA_AGENT_HOOK_PORT}/hook/kimi" \\',
+    // Why: pipe payload to curl's stdin (`payload@-`) instead of an inline
+    // `payload=$VALUE` arg, so tens-of-KB tool output stays off the curl
+    // command line (EDR command-line false positives). Wire body is identical.
+    'printf \'%s\' "$payload" | curl -sS -X POST "http://127.0.0.1:${ORCA_AGENT_HOOK_PORT}/hook/kimi" \\',
     '  --connect-timeout 0.5 --max-time 1.5 \\',
     '  -H "Content-Type: application/x-www-form-urlencoded" \\',
     '  -H "X-Orca-Agent-Hook-Token: ${ORCA_AGENT_HOOK_TOKEN}" \\',
@@ -85,7 +83,7 @@ function getManagedScript(): string {
     '  --data-urlencode "worktreeId=${ORCA_WORKTREE_ID}" \\',
     '  --data-urlencode "env=${ORCA_AGENT_HOOK_ENV}" \\',
     '  --data-urlencode "version=${ORCA_AGENT_HOOK_VERSION}" \\',
-    '  --data-urlencode "payload=${payload}" >/dev/null 2>&1 || true',
+    '  --data-urlencode "payload@-" >/dev/null 2>&1 || true',
     'exit 0',
     ''
   ].join('\n')
@@ -98,7 +96,9 @@ function readConfigToml(configPath: string): string | null {
     return ''
   }
   try {
-    return readFileSync(configPath, 'utf-8')
+    return readNodeFileSyncWithinLimit(configPath, AGENT_HOOK_CONFIG_MAX_BYTES).buffer.toString(
+      'utf8'
+    )
   } catch {
     return null
   }
@@ -111,10 +111,17 @@ function writeConfigToml(configPath: string, text: string): void {
   mkdirSync(dir, { recursive: true })
   if (existsSync(configPath)) {
     try {
-      if (readFileSync(configPath, 'utf-8') === text) {
+      const existing = readNodeFileSyncWithinLimit(
+        configPath,
+        AGENT_HOOK_CONFIG_MAX_BYTES
+      ).buffer.toString('utf8')
+      if (existing === text) {
         return
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof NodeFileReadTooLargeError) {
+        throw error
+      }
       // Fall through to the atomic write path.
     }
   }

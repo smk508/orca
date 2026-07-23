@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
-import { dirname, join } from 'path'
-import { randomUUID } from 'crypto'
+import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import type { CommandHandler } from '../dispatch'
 import { printResult } from '../format'
 import { RuntimeClientError, type RuntimeClient, type RuntimeRpcSuccess } from '../runtime-client'
@@ -13,6 +13,11 @@ import {
   getManagedAgentHookStatuses
 } from '../../main/agent-hooks/managed-agent-hook-controls'
 import { getDefaultUserDataPath } from '../runtime-client'
+import {
+  ORCA_PERSISTED_STATE_MAX_BYTES,
+  readPersistedStateJsonFileSync,
+  stringifyPrettyPersistedStateWithinLimit
+} from '../../shared/persisted-state-file-bounds'
 
 type AgentHookCommandResult = {
   enabled: boolean
@@ -31,19 +36,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readPersistedState(dataPath: string): PersistedState {
   if (!existsSync(dataPath)) {
-    const defaults = getDefaultPersistedState(homedir())
-    return {
-      ...defaults,
-      settings: {
-        ...defaults.settings,
-        // Why: offline CLI can create the first profile before desktop load;
-        // match the Store fresh-install default instead of pinning old cards.
-        experimentalNewWorktreeCardStyle: true
-      }
-    }
+    return getDefaultPersistedState(homedir())
   }
   try {
-    const parsed = JSON.parse(readFileSync(dataPath, 'utf-8'))
+    const { value: parsed } = readPersistedStateJsonFileSync<unknown>(dataPath)
     if (!isRecord(parsed)) {
       throw new Error('file does not contain a JSON object')
     }
@@ -61,7 +57,11 @@ function writePersistedState(dataPath: string, state: PersistedState): void {
   const tmpPath = join(dirname(dataPath), `.${Date.now()}-${randomUUID()}.tmp`)
   let renamed = false
   try {
-    writeFileSync(tmpPath, `${JSON.stringify(state, null, 2)}\n`, 'utf-8')
+    const { serialized } = stringifyPrettyPersistedStateWithinLimit(
+      state,
+      ORCA_PERSISTED_STATE_MAX_BYTES - 1
+    )
+    writeFileSync(tmpPath, `${serialized}\n`, 'utf-8')
     renameSync(tmpPath, dataPath)
     renamed = true
   } finally {
@@ -83,14 +83,9 @@ function readEnabledFromDisk(): boolean {
 function updateEnabledOnDisk(enabled: boolean): string {
   const dataPath = getDataPath()
   const state = readPersistedState(dataPath)
-  const experimentalNewWorktreeCardStyle =
-    state.settings?.experimentalNewWorktreeCardStyle ?? state.onboarding?.closedAt === null
   state.settings = {
     ...getDefaultPersistedState(homedir()).settings,
     ...state.settings,
-    // Why: offline CLI can run before Store.load(); mirror its open-onboarding
-    // default without overriding a saved user opt-out.
-    experimentalNewWorktreeCardStyle,
     agentStatusHooksEnabled: enabled
   }
   writePersistedState(dataPath, state)

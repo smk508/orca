@@ -1,207 +1,146 @@
-import * as Notifications from 'expo-notifications'
-import { Platform } from 'react-native'
 import type { RpcClient } from '../transport/rpc-client'
-import { loadPushNotificationsEnabled } from '../storage/preferences'
-import { buildLocalNotificationData, type DesktopNotificationSource } from './notification-routing'
+import {
+  configureNotificationChannel,
+  startLocalNotificationDelivery,
+  type DismissNotificationEvent,
+  type NotificationEvent
+} from './mobile-notification-delivery'
+import {
+  isMobileNotificationHostIdRetainable,
+  measureMobileNotificationDeliveryBytes
+} from './mobile-notification-retention'
+import {
+  createSeenNotificationGuard,
+  loadLastSeenSeq,
+  saveLastSeenSeq,
+  seenKeyForEvent
+} from './notification-reconnect-catchup'
 
-type NotificationEvent = {
-  type: 'notification'
-  source: DesktopNotificationSource
-  title: string
-  body: string
-  worktreeId?: string
-  notificationId?: string
-}
-
-type DismissNotificationEvent = {
-  type: 'dismiss'
-  notificationId: string
-}
+export {
+  ensureNotificationPermissions,
+  getNotificationPermissionState,
+  setScheduledNotificationsMaxForTests
+} from './mobile-notification-delivery'
+export type { NotificationPermissionState } from './mobile-notification-delivery'
 
 type SubscribeResult = {
   type: 'ready'
   subscriptionId: string
 }
 
-type ScheduledNotificationState = {
-  identifier?: string
-  pending?: Promise<string | null>
-  dismissAfterSchedule?: boolean
-}
-
-const scheduledNotificationsByHostAndNotificationId = new Map<string, ScheduledNotificationState>()
-
-function getStoredNotificationKey(hostId: string, notificationId: string): string {
-  return `${encodeURIComponent(hostId)}:${encodeURIComponent(notificationId)}`
-}
-
-export type NotificationPermissionState = {
-  granted: boolean
-  status: string
-  canAskAgain: boolean
-}
-
-export async function getNotificationPermissionState(): Promise<NotificationPermissionState> {
-  const { status, canAskAgain } = await Notifications.getPermissionsAsync()
-  return {
-    granted: status === 'granted',
-    status,
-    canAskAgain
-  }
-}
-
-// Why: permissions must be requested before scheduling any local notification.
-// Read the OS state every time because users can change it in Settings while
-// Orca remains alive in the background.
-export async function ensureNotificationPermissions(): Promise<boolean> {
-  const existing = await getNotificationPermissionState()
-  if (existing.granted) {
-    return true
-  }
-
-  const { status } = await Notifications.requestPermissionsAsync()
-  return status === 'granted'
-}
-
-function configureNotificationChannel(): void {
-  if (Platform.OS === 'android') {
-    void Notifications.setNotificationChannelAsync('orca-desktop', {
-      name: 'Desktop Notifications',
-      importance: Notifications.AndroidImportance.HIGH,
-      vibrationPattern: [0, 250],
-      lightColor: '#6366f1'
-    })
-  }
-}
-
-async function showLocalNotification(event: NotificationEvent, hostId: string): Promise<void> {
-  const storedKey = event.notificationId
-    ? getStoredNotificationKey(hostId, event.notificationId)
-    : null
-
-  if (!storedKey) {
-    const enabled = await loadPushNotificationsEnabled()
-    if (!enabled) {
-      return
-    }
-
-    const granted = await ensureNotificationPermissions()
-    if (!granted) {
-      return
-    }
-
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: event.title,
-        body: event.body,
-        data: buildLocalNotificationData(event, hostId),
-        ...(Platform.OS === 'android' ? { channelId: 'orca-desktop' } : {})
-      },
-      trigger: null
-    })
-    return
-  }
-
-  let state = scheduledNotificationsByHostAndNotificationId.get(storedKey)
-  if (state?.pending) {
-    return
-  }
-  if (!state) {
-    state = {}
-    scheduledNotificationsByHostAndNotificationId.set(storedKey, state)
-  }
-  const notificationState = state
-
-  const pending = (async () => {
-    const enabled = await loadPushNotificationsEnabled()
-    if (!enabled) {
-      return null
-    }
-
-    const granted = await ensureNotificationPermissions()
-    if (!granted) {
-      return null
-    }
-
-    if (notificationState.identifier) {
-      await Notifications.dismissNotificationAsync(notificationState.identifier).catch(() => {})
-      notificationState.identifier = undefined
-    }
-
-    return Notifications.scheduleNotificationAsync({
-      content: {
-        title: event.title,
-        body: event.body,
-        data: buildLocalNotificationData(event, hostId),
-        ...(Platform.OS === 'android' ? { channelId: 'orca-desktop' } : {})
-      },
-      trigger: null
-    })
-  })()
-  notificationState.pending = pending
-
-  try {
-    const scheduledIdentifier = await pending
-    if (!scheduledIdentifier) {
-      if (!notificationState.identifier) {
-        scheduledNotificationsByHostAndNotificationId.delete(storedKey)
-      }
-      return
-    }
-    if (notificationState.dismissAfterSchedule) {
-      notificationState.dismissAfterSchedule = false
-      scheduledNotificationsByHostAndNotificationId.delete(storedKey)
-      await Notifications.dismissNotificationAsync(scheduledIdentifier).catch(() => {})
-      return
-    }
-    notificationState.identifier = scheduledIdentifier
-  } finally {
-    if (notificationState.pending === pending) {
-      notificationState.pending = undefined
-      notificationState.dismissAfterSchedule = false
-    }
-  }
-}
-
-async function dismissLocalNotification(
-  event: DismissNotificationEvent,
-  hostId: string
-): Promise<void> {
-  if (!event.notificationId) {
-    return
-  }
-  const storedKey = getStoredNotificationKey(hostId, event.notificationId)
-  const state = scheduledNotificationsByHostAndNotificationId.get(storedKey)
-  if (!state) {
-    return
-  }
-  if (state.pending) {
-    // Why: desktop can send dismiss while iOS/Android is still scheduling the
-    // matching local notification. Remember it so no stale banner survives.
-    state.dismissAfterSchedule = true
-    return
-  }
-  if (!state.identifier) {
-    return
-  }
-  scheduledNotificationsByHostAndNotificationId.delete(storedKey)
-  await Notifications.dismissNotificationAsync(state.identifier).catch(() => {})
-}
-
-// Why: each host connection gets its own notification subscription. When the
-// connection drops, the unsubscribe function cleans up the streaming RPC.
-// Returns an unsubscribe function.
+// Per-connection subscription; a reconnect `ready` triggers watermarked catch-up (#8129) so already-pushed events aren't re-sent.
 export function subscribeToDesktopNotifications(client: RpcClient, hostId: string): () => void {
+  if (!isMobileNotificationHostIdRetainable(hostId)) {
+    return () => {}
+  }
   configureNotificationChannel()
 
   let subscriptionId: string | null = null
   let disposed = false
+  // Highest seq delivered (live or replay) this connection; persisted per-host so cold start resumes from the right cut.
+  let lastDeliveredSeq = 0
+  let watermarkBlockedThroughSeq: number | null = null
+  // Why: defense-in-depth dedup for replayed events if the desktop's bounded buffer evicted across a reconnect boundary.
+  const seenReplay = createSeenNotificationGuard()
+
+  function eventSequence(event: NotificationEvent | DismissNotificationEvent): number | null {
+    return typeof event.notificationSeq === 'number' && Number.isSafeInteger(event.notificationSeq)
+      ? event.notificationSeq
+      : null
+  }
+
+  function advanceDeliveredWatermark(
+    event: NotificationEvent | DismissNotificationEvent,
+    replay: boolean
+  ): void {
+    const seq = eventSequence(event)
+    if (seq == null || seq <= lastDeliveredSeq) {
+      return
+    }
+    if (watermarkBlockedThroughSeq !== null) {
+      if (!replay) {
+        watermarkBlockedThroughSeq = Math.max(watermarkBlockedThroughSeq, seq)
+        return
+      }
+      if (seq < watermarkBlockedThroughSeq) {
+        return
+      }
+      watermarkBlockedThroughSeq = null
+    }
+    lastDeliveredSeq = seq
+    void saveLastSeenSeq(hostId, lastDeliveredSeq)
+  }
+
+  function deliverLive(
+    event: NotificationEvent | DismissNotificationEvent,
+    replay = false
+  ): Promise<void> {
+    const delivery = startLocalNotificationDelivery(event, hostId)
+    if (!delivery) {
+      const seq = eventSequence(event)
+      if (seq !== null && seq > lastDeliveredSeq) {
+        // Why: advancing past a dropped event would make reconnect catch-up permanently skip it.
+        watermarkBlockedThroughSeq = Math.max(watermarkBlockedThroughSeq ?? seq, seq)
+      }
+      return Promise.resolve()
+    }
+    // Why (#8129): only accepted work is seen; overload drops remain eligible for reconnect catch-up.
+    const key = seenKeyForEvent(event)
+    if (key) {
+      seenReplay.add(key)
+    }
+    advanceDeliveredWatermark(event, replay)
+    return delivery
+  }
+
+  // Why: desktop cuts by seq > lastSeenSeq, so re-fetching from the watermark is idempotent (seenReplay guards residual overlap).
+  async function fetchMissed(): Promise<void> {
+    if (disposed) {
+      return
+    }
+    const missed = await client
+      .sendRequest('notifications.getMissedSince', { lastSeenSeq: lastDeliveredSeq })
+      .then((response) => {
+        if (!response.ok) {
+          return []
+        }
+        const result = response.result as { notifications?: unknown[] } | undefined
+        return Array.isArray(result?.notifications) ? result.notifications : []
+      })
+      .catch(() => [])
+    for (const raw of missed) {
+      const event = raw as NotificationEvent | DismissNotificationEvent
+      if (measureMobileNotificationDeliveryBytes(event, hostId) === null) {
+        await deliverLive(event, true)
+        continue
+      }
+      const key = seenKeyForEvent(event)
+      if (key && seenReplay.has(key)) {
+        advanceDeliveredWatermark(event, true)
+        continue
+      }
+      if (event.type === 'notification') {
+        await deliverLive(event, true)
+      } else if (event.type === 'dismiss') {
+        await deliverLive(event, true)
+      }
+    }
+  }
+
+  // Why: seed the watermark lazily so subscribe() doesn't block on an AsyncStorage read.
+  let watermarkLoaded = false
+  void loadLastSeenSeq(hostId).then((seq) => {
+    lastDeliveredSeq = Math.max(lastDeliveredSeq, seq)
+    watermarkLoaded = true
+  })
+
   function unsubscribeServer(id: string) {
     if (client.getState() === 'connected') {
       client.sendRequest('notifications.unsubscribe', { subscriptionId: id }).catch(() => {})
     }
   }
 
+  let reconnectReadyCount = 0
   const unsubscribeStream = client.subscribe('notifications.subscribe', {}, (data: unknown) => {
     const event = data as
       | NotificationEvent
@@ -210,9 +149,15 @@ export function subscribeToDesktopNotifications(client: RpcClient, hostId: strin
       | { type: 'end' }
     if (event.type === 'ready') {
       subscriptionId = (event as SubscribeResult).subscriptionId
+      reconnectReadyCount += 1
       if (disposed) {
         unsubscribeServer(subscriptionId)
         unsubscribeStream()
+        return
+      }
+      // Why: only reconnects fetch missed; watermarkLoaded guards against fetching from a stale 0 (which re-pushes everything).
+      if (reconnectReadyCount > 1 && watermarkLoaded) {
+        void fetchMissed()
       }
       return
     }
@@ -226,20 +171,15 @@ export function subscribeToDesktopNotifications(client: RpcClient, hostId: strin
       return
     }
     if (event.type === 'notification') {
-      void showLocalNotification(event as NotificationEvent, hostId)
+      void deliverLive(event as NotificationEvent)
     } else if (event.type === 'dismiss') {
-      void dismissLocalNotification(event as DismissNotificationEvent, hostId)
+      void deliverLive(event as DismissNotificationEvent)
     }
   })
 
   return () => {
     disposed = true
-    // Why: the client may already be closed when this cleanup runs (component
-    // unmount races with disconnect). sendRequest rejects immediately on a
-    // closed client — swallow it since server-side cleanup happens via
-    // connection-close anyway.
-    // Always drop the local stream first; readiness can race unmount and we
-    // must not retain the callback while waiting for a subscription id.
+    // Why: drop the local stream first — readiness can race unmount; don't hold the callback while a subscription id is pending.
     unsubscribeStream()
     if (subscriptionId) {
       unsubscribeServer(subscriptionId)

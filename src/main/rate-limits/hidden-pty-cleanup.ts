@@ -7,6 +7,36 @@ type Disposable = {
   dispose: () => void
 }
 
+export const MAX_ACTIVE_HIDDEN_RATE_LIMIT_PTYS = 16
+const activeHiddenRateLimitPtys = new Set<HiddenPty>()
+
+export class HiddenRateLimitPtyCapacityError extends Error {
+  constructor() {
+    super(`Hidden rate-limit PTY capacity exceeds ${MAX_ACTIVE_HIDDEN_RATE_LIMIT_PTYS}`)
+    this.name = 'HiddenRateLimitPtyCapacityError'
+  }
+}
+
+export function registerHiddenRateLimitPty(term: HiddenPty): Disposable {
+  if (
+    !activeHiddenRateLimitPtys.has(term) &&
+    activeHiddenRateLimitPtys.size >= MAX_ACTIVE_HIDDEN_RATE_LIMIT_PTYS
+  ) {
+    cleanupHiddenRateLimitPty(term, [], { kill: true })
+    throw new HiddenRateLimitPtyCapacityError()
+  }
+  activeHiddenRateLimitPtys.add(term)
+  return {
+    dispose: () => {
+      activeHiddenRateLimitPtys.delete(term)
+    }
+  }
+}
+
+export function getActiveHiddenRateLimitPtyCount(): number {
+  return activeHiddenRateLimitPtys.size
+}
+
 export function cleanupHiddenRateLimitPty(
   term: HiddenPty,
   disposables: Disposable[],

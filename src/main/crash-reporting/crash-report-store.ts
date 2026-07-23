@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { app } from 'electron'
+import { grantDirAclAsync, isPermissionError } from '../win32-utils'
 import {
   formatCrashReportText,
   sanitizeCrashReportBreadcrumbs,
@@ -11,9 +12,16 @@ import {
   type CrashReportRecord,
   type CrashReportStatus
 } from '../../shared/crash-reporting'
+import * as boundedFileReader from '../../shared/node-bounded-file-reader'
+import { stringifyJsonWithinByteLimit } from '../../shared/node-bounded-json-stringify'
+import { assertJsonTextStructureWithinLimits } from '../../shared/json-text-structure-limit'
 
 const MAX_REPORTS = 5
+export const MAX_CRASH_REPORT_FILE_BYTES = 4 * 1024 * 1024
+export const MAX_CRASH_REPORT_JSON_STRUCTURAL_TOKENS = 1_000_000
+export const MAX_CRASH_REPORT_JSON_NESTING_DEPTH = 128
 const RELATED_CRASH_WINDOW_MS = 5_000
+const WINDOWS_FILE_OPERATION_RETRY_DELAYS_MS = [50, 100, 150, 200, 250]
 
 type CrashReportFile = {
   reports: CrashReportRecord[]
@@ -35,6 +43,46 @@ function isRelatedCrashEvent(anchor: CrashReportRecord, candidate: CrashReportRe
     anchor.appVersion === candidate.appVersion &&
     anchor.platform === candidate.platform
   )
+}
+
+function isRetryableWindowsFileOperationError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY'
+}
+
+async function wait(delayMs: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+}
+
+async function runCrashReportFileOperationWithWindowsRecovery<T>(
+  directory: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  let repairedAcl = false
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (
+        process.platform !== 'win32' ||
+        !isRetryableWindowsFileOperationError(error) ||
+        attempt >= WINDOWS_FILE_OPERATION_RETRY_DELAYS_MS.length
+      ) {
+        throw error
+      }
+      if (!repairedAcl && isPermissionError(error)) {
+        repairedAcl = true
+        try {
+          // Why: Chromium can reset userData ACLs before startup capture or
+          // recovery, so both the crash write and next prompt must repair it.
+          await grantDirAclAsync(directory)
+        } catch {
+          // The bounded retry below still handles transient file locks.
+        }
+      }
+      await wait(WINDOWS_FILE_OPERATION_RETRY_DELAYS_MS[attempt])
+    }
+  }
 }
 
 export class CrashReportStore {
@@ -135,7 +183,9 @@ export class CrashReportStore {
     mutate: (reports: CrashReportRecord[]) => Promise<{ reports: CrashReportRecord[]; result: T }>
   ): Promise<T> {
     const run = this.writeChain.then(async () => {
-      const reports = await this.readReports()
+      // Why: awaiting writeChain from inside its own callback would deadlock;
+      // this writer already has exclusive ownership and can read disk directly.
+      const reports = await this.readReportsFromDisk()
       const { reports: nextReports, result } = await mutate(reports)
       await this.writeReports(nextReports)
       return result
@@ -148,8 +198,28 @@ export class CrashReportStore {
   }
 
   private async readReports(): Promise<CrashReportRecord[]> {
+    // Why: renderer recovery can query the one-shot startup prompt while the
+    // crash write is still in flight. Wait so a successful capture is visible.
+    await this.writeChain
+    return this.readReportsFromDisk()
+  }
+
+  private async readReportsFromDisk(): Promise<CrashReportRecord[]> {
     try {
-      const raw = await fs.readFile(this.filePath, 'utf8')
+      const raw = await runCrashReportFileOperationWithWindowsRecovery(
+        path.dirname(this.filePath),
+        async () =>
+          (
+            await boundedFileReader.readNodeFileWithinLimit(
+              this.filePath,
+              MAX_CRASH_REPORT_FILE_BYTES
+            )
+          ).buffer.toString('utf8')
+      )
+      assertJsonTextStructureWithinLimits(raw, {
+        structuralTokens: MAX_CRASH_REPORT_JSON_STRUCTURAL_TOKENS,
+        nestingDepth: MAX_CRASH_REPORT_JSON_NESTING_DEPTH
+      })
       const parsed = JSON.parse(raw) as Partial<CrashReportFile>
       return Array.isArray(parsed.reports) ? parsed.reports.slice(0, MAX_REPORTS) : []
     } catch (error) {
@@ -161,9 +231,23 @@ export class CrashReportStore {
   }
 
   private async writeReports(reports: CrashReportRecord[]): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true })
+    const directory = path.dirname(this.filePath)
     const tmpPath = `${this.filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`
-    await fs.writeFile(tmpPath, `${JSON.stringify({ reports }, null, 2)}${os.EOL}`, 'utf8')
-    await fs.rename(tmpPath, this.filePath)
+    try {
+      await runCrashReportFileOperationWithWindowsRecovery(directory, async () => {
+        const { serialized } = stringifyJsonWithinByteLimit(
+          { reports },
+          MAX_CRASH_REPORT_FILE_BYTES - Buffer.byteLength(os.EOL),
+          2
+        )
+        await fs.mkdir(directory, { recursive: true })
+        await fs.writeFile(tmpPath, `${serialized}${os.EOL}`, 'utf8')
+        await fs.rename(tmpPath, this.filePath)
+      })
+    } finally {
+      // Why: disk-full and terminal rename failures must not accumulate a new
+      // orphaned multi-report temp file after every crash.
+      await fs.rm(tmpPath, { force: true }).catch(() => {})
+    }
   }
 }

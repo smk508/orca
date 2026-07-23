@@ -2,22 +2,31 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 
 const PINS_PREFIX = 'orca:pins:'
 const NOTIF_KEY = 'orca:pushNotificationsEnabled'
+export const MOBILE_STORED_ID_SET_MAX_ENTRIES = 10_000
+export const MOBILE_STORED_ID_SET_MAX_STORAGE_CHARACTERS = 1024 * 1024
+export const MOBILE_STORED_ID_MAX_CHARACTERS = 4_096
 
-// Why: default-off so the iOS notification permission prompt never
-// fires until the user explicitly opts in via Settings → Notifications.
-// Apple's review guideline 4.5.4 and HIG both prefer user-initiated
-// permission prompts; default-on would fire the prompt the moment the
-// desktop sent its first notification, which can read as unsolicited.
-export async function loadPushNotificationsEnabled(): Promise<boolean> {
+export type PushNotificationsPreference = {
+  readonly value: boolean | null
+  readonly loaded: boolean
+}
+
+// Why: null distinguishes people who have never made the one-time onboarding
+// decision from people who explicitly chose Not now or disabled notifications.
+export async function readPushNotificationsPreference(): Promise<PushNotificationsPreference> {
   try {
     const raw = await AsyncStorage.getItem(NOTIF_KEY)
-    if (raw === null) {
-      return false
-    }
-    return raw === 'true'
+    return { value: raw === null ? null : raw === 'true', loaded: true }
   } catch {
-    return false
+    return { value: null, loaded: false }
   }
+}
+
+// Why: default-off prevents background notification events from opening the
+// system prompt; only the onboarding CTA or Settings switch requests permission.
+export async function loadPushNotificationsEnabled(): Promise<boolean> {
+  const preference = await readPushNotificationsPreference()
+  return preference.value ?? false
 }
 
 export async function savePushNotificationsEnabled(enabled: boolean): Promise<void> {
@@ -71,6 +80,56 @@ export async function loadTerminalAutocompleteEnabled(): Promise<boolean> {
 
 export async function saveTerminalAutocompleteEnabled(enabled: boolean): Promise<void> {
   await AsyncStorage.setItem(AUTOCOMPLETE_KEY, String(enabled))
+}
+
+const TERMINAL_LIVE_INPUT_DISABLED_PREFIX = 'orca:terminalLiveInputDisabled:'
+
+export type DisabledTerminalLiveInputHandlesPreference = {
+  readonly handles: Set<string>
+  readonly loaded: boolean
+}
+
+function terminalLiveInputDisabledKey(hostId: string, worktreeId: string): string {
+  return `${TERMINAL_LIVE_INPUT_DISABLED_PREFIX}${encodeURIComponent(hostId)}:${encodeURIComponent(
+    worktreeId
+  )}`
+}
+
+export async function readDisabledTerminalLiveInputHandlesPreference(
+  hostId: string,
+  worktreeId: string
+): Promise<DisabledTerminalLiveInputHandlesPreference> {
+  try {
+    const raw = await AsyncStorage.getItem(terminalLiveInputDisabledKey(hostId, worktreeId))
+    if (!raw) {
+      return { handles: new Set(), loaded: true }
+    }
+    if (raw.length > MOBILE_STORED_ID_SET_MAX_STORAGE_CHARACTERS) {
+      return { handles: new Set(), loaded: false }
+    }
+    return { handles: new Set(retainStoredPreferenceIds(JSON.parse(raw)).ids), loaded: true }
+  } catch {
+    return { handles: new Set(), loaded: false }
+  }
+}
+
+export async function loadDisabledTerminalLiveInputHandles(
+  hostId: string,
+  worktreeId: string
+): Promise<Set<string>> {
+  const preference = await readDisabledTerminalLiveInputHandlesPreference(hostId, worktreeId)
+  return preference.handles
+}
+
+export async function saveDisabledTerminalLiveInputHandles(
+  hostId: string,
+  worktreeId: string,
+  handles: ReadonlySet<string>
+): Promise<void> {
+  await AsyncStorage.setItem(
+    terminalLiveInputDisabledKey(hostId, worktreeId),
+    retainStoredPreferenceIds(handles).serialized
+  )
 }
 
 const SIDEBAR_WIDTH_KEY = 'orca:hostSidebarWidth'
@@ -205,24 +264,59 @@ export async function saveTerminalColorScheme(scheme: TerminalColorScheme): Prom
   await AsyncStorage.setItem(TERMINAL_COLOR_SCHEME_KEY, scheme)
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : []
-}
-
 export async function loadPinnedIds(hostId: string): Promise<Set<string>> {
   try {
     const raw = await AsyncStorage.getItem(PINS_PREFIX + hostId)
     if (!raw) {
       return new Set()
     }
-    return new Set(stringArray(JSON.parse(raw)))
+    if (raw.length > MOBILE_STORED_ID_SET_MAX_STORAGE_CHARACTERS) {
+      return new Set()
+    }
+    return new Set(retainStoredPreferenceIds(JSON.parse(raw)).ids)
   } catch {
     return new Set()
   }
 }
 
 export async function savePinnedIds(hostId: string, ids: Set<string>): Promise<void> {
-  await AsyncStorage.setItem(PINS_PREFIX + hostId, JSON.stringify([...ids]))
+  await AsyncStorage.setItem(PINS_PREFIX + hostId, retainStoredPreferenceIds(ids).serialized)
+}
+
+function retainStoredPreferenceIds(value: unknown): { ids: string[]; serialized: string } {
+  const values = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Symbol.iterator in value
+      ? (value as Iterable<unknown>)
+      : []
+  const retained = new Map<string, string>()
+  let entryCharacters = 0
+  for (const candidate of values) {
+    if (
+      typeof candidate !== 'string' ||
+      candidate.length > MOBILE_STORED_ID_MAX_CHARACTERS ||
+      retained.has(candidate)
+    ) {
+      continue
+    }
+    const serialized = JSON.stringify(candidate)
+    retained.set(candidate, serialized)
+    entryCharacters += serialized.length
+    while (
+      retained.size > MOBILE_STORED_ID_SET_MAX_ENTRIES ||
+      2 + entryCharacters + Math.max(0, retained.size - 1) >
+        MOBILE_STORED_ID_SET_MAX_STORAGE_CHARACTERS
+    ) {
+      const oldestId = retained.keys().next().value
+      if (typeof oldestId !== 'string') {
+        break
+      }
+      entryCharacters -= retained.get(oldestId)?.length ?? 0
+      retained.delete(oldestId)
+    }
+  }
+  return {
+    ids: [...retained.keys()],
+    serialized: `[${[...retained.values()].join(',')}]`
+  }
 }

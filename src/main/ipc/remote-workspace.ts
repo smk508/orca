@@ -1,14 +1,11 @@
 /* oxlint-disable max-lines -- Why: remote workspace IPC keeps snapshot normalization, relay compatibility, and handler registration together so revision/cache semantics stay auditable. */
-import { randomUUID } from 'crypto'
+import { randomUUID } from 'node:crypto'
 import { ipcMain, type BrowserWindow } from 'electron'
-import { hostname } from 'os'
-import { isDeepStrictEqual } from 'util'
+import { hostname } from 'node:os'
+import { isDeepStrictEqual } from 'node:util'
 import type { Store } from '../persistence'
 import { getActiveMultiplexer, getSshConnectionStore } from './ssh'
-import {
-  exportRemoteWorkspaceSession,
-  importRemoteWorkspaceSession
-} from '../../shared/remote-workspace-session-projection'
+import { exportRemoteWorkspaceSession } from '../../shared/remote-workspace-session-projection'
 import type {
   RemoteWorkspaceChangedEvent,
   RemoteWorkspaceConnectedClient,
@@ -18,7 +15,8 @@ import type {
 } from '../../shared/remote-workspace-types'
 import type { SshTarget } from '../../shared/ssh-types'
 import type { WorkspaceSessionState } from '../../shared/types'
-import { getRepoIdFromWorktreeId, splitWorktreeId } from '../../shared/worktree-id'
+import { getRepoIdFromWorktreeId } from '../../shared/worktree-id'
+import { mapWithConcurrency } from '../../shared/map-with-concurrency'
 import { getRemoteWorkspaceNamespace } from './remote-workspace-namespace'
 import { registerRemoteWorkspaceNotificationHandler } from './remote-workspace-events'
 
@@ -26,6 +24,7 @@ const CLIENT_ID = randomUUID()
 const CLIENT_NAME = hostname() || 'This device'
 const SNAPSHOT_SCHEMA_VERSION = 1
 export const REMOTE_WORKSPACE_SNAPSHOT_CACHE_MAX_ENTRIES = 64
+export const REMOTE_WORKSPACE_PATCH_CONCURRENCY = 4
 
 let mainWindowGetter: (() => BrowserWindow | null) | null = null
 const latestSnapshotByTargetId = new Map<string, RemoteWorkspaceSnapshot>()
@@ -238,29 +237,6 @@ function exportSessionForTarget(
   })
 }
 
-function importSessionForTarget(
-  store: Store,
-  targetId: string,
-  remote: RemoteWorkspaceSession
-): WorkspaceSessionState {
-  const repos = store.getRepos().filter((repo) => repo.connectionId === targetId)
-  const repoById = new Map(repos.map((repo) => [repo.id, repo]))
-  return importRemoteWorkspaceSession(remote, {
-    resolveWorktreeId: (worktreePath) => {
-      for (const repo of repoById.values()) {
-        const candidate = `${repo.id}::${worktreePath}`
-        // Main does not own the live worktree list for SSH repos, so resolve
-        // against repo identity only. Renderer hydration later validates IDs
-        // against its fetched worktree list before panes mount.
-        if (splitWorktreeId(candidate)) {
-          return candidate
-        }
-      }
-      return null
-    }
-  })
-}
-
 async function getRemoteSnapshot(target: SshTarget): Promise<RemoteWorkspaceSnapshot | null> {
   const mux = getActiveMultiplexer(target.id)
   if (!mux) {
@@ -446,8 +422,10 @@ export function registerRemoteWorkspaceHandlers(
           ) ?? []
 
       const workspaceSession = args.session ?? store.getWorkspaceSession()
-      const results = await Promise.all(
-        targets.map(async (target) => {
+      const results = await mapWithConcurrency(
+        targets,
+        REMOTE_WORKSPACE_PATCH_CONCURRENCY,
+        async (target) => {
           // Why: each target has its own revision stream. Keep same-target
           // writes queued, but do not let one slow relay block others.
           const session = exportSessionForTarget(store, target.id, workspaceSession)
@@ -455,7 +433,7 @@ export function registerRemoteWorkspaceHandlers(
             patchRemoteWorkspaceSession(target, session)
           )
           return result ? { targetId: target.id, result } : null
-        })
+        }
       )
       return results.filter(
         (entry): entry is { targetId: string; result: RemoteWorkspacePatchResult } => entry !== null
@@ -510,12 +488,4 @@ export function registerRemoteWorkspaceHandlers(
   )
 
   ipcMain.handle('remoteWorkspace:clientId', () => CLIENT_ID)
-}
-
-export function materializeRemoteWorkspaceForTarget(
-  store: Store,
-  targetId: string,
-  snapshot: RemoteWorkspaceSnapshot
-): WorkspaceSessionState {
-  return importSessionForTarget(store, targetId, snapshot.session)
 }

@@ -50,6 +50,7 @@ type FloatingPanelStoreState = {
       activate?: boolean
       focusAddressBar?: boolean
       sessionProfileId?: string | null
+      sessionPartition?: string | null
       title?: string
       targetGroupId?: string
     }
@@ -105,12 +106,14 @@ const mocks = vi.hoisted(() => ({
   getFloatingMarkdownDirectory: vi.fn(),
   getFloatingTerminalCwd: vi.fn(),
   getInstallStatus: vi.fn(),
+  isTerminalImeInputContextRefreshing: vi.fn(),
   isWebRuntimeSessionActive: vi.fn(),
   markFileDirty: vi.fn(),
   makePreviewFilePermanent: vi.fn(),
   openFile: vi.fn(),
   pickFloatingMarkdownDocument: vi.fn(),
   pinFile: vi.fn(),
+  setFloatingTerminalInputFocused: vi.fn(),
   setActiveTab: vi.fn(),
   setRenamingTabId: vi.fn(),
   setTabColor: vi.fn(),
@@ -182,6 +185,10 @@ vi.mock('@/components/terminal-pane/TerminalPane', () => ({
   default: function TerminalPane() {
     return null
   }
+}))
+
+vi.mock('@/components/terminal-pane/terminal-ime-input-context-refresh', () => ({
+  isTerminalImeInputContextRefreshing: mocks.isTerminalImeInputContextRefreshing
 }))
 
 vi.mock('@/components/browser-pane/BrowserPane', () => ({
@@ -743,6 +750,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     mocks.getFloatingMarkdownDirectory.mockResolvedValue('/tmp/orca/floating-notes')
     mocks.getFloatingTerminalCwd.mockResolvedValue('/tmp/orca')
     mocks.getInstallStatus.mockResolvedValue({ state: 'installed', pathConfigured: true })
+    mocks.isTerminalImeInputContextRefreshing.mockReturnValue(false)
     mocks.isWebRuntimeSessionActive.mockReturnValue(false)
     mocks.pickFloatingMarkdownDocument.mockResolvedValue(null)
     const localStorage = {
@@ -761,7 +769,7 @@ describe('FloatingTerminalPanel close behavior', () => {
         },
         browser: { notifyActiveTabChanged: vi.fn() },
         cli: { getInstallStatus: mocks.getInstallStatus },
-        ui: { setFloatingTerminalInputFocused: vi.fn() }
+        ui: { setFloatingTerminalInputFocused: mocks.setFloatingTerminalInputFocused }
       },
       innerHeight: 800,
       innerWidth: 1200,
@@ -792,10 +800,114 @@ describe('FloatingTerminalPanel close behavior', () => {
     expect(getPanelStyleBounds(element)).toEqual(savedBounds)
   })
 
-  it('layers below root notification cards', async () => {
+  it('layers above root notification cards but below the modal layer', async () => {
     const element = await renderPanel(true)
 
-    expect(getPanelClassName(element)).toContain('z-30')
+    expect(getPanelClassName(element)).toContain('z-[45]')
+  })
+
+  it('refreshes terminal native input focus when the floating panel opens', async () => {
+    setFloatingTabs([makeTab({ id: 'tab-1' })])
+
+    await renderPanel(true)
+    runEffects()
+
+    expect(mocks.focusTerminalTabSurface).toHaveBeenCalledWith(
+      'tab-1',
+      null,
+      expect.objectContaining({
+        onImeRefocusSkipped: expect.any(Function),
+        refreshImeContext: true
+      })
+    )
+    mocks.setFloatingTerminalInputFocused.mockClear()
+    mocks.focusTerminalTabSurface.mock.calls[0]?.[2].onImeRefocusSkipped()
+    expect(mocks.setFloatingTerminalInputFocused).toHaveBeenCalledWith(false)
+
+    const newerFloatingInput = {
+      classList: { contains: (token: string) => token === 'xterm-helper-textarea' },
+      closest: vi.fn().mockReturnValue({})
+    }
+    Object.setPrototypeOf(newerFloatingInput, HTMLElement.prototype)
+    mocks.focusTerminalTabSurface.mock.calls[0]?.[2].onImeRefocusSkipped(newerFloatingInput)
+    expect(mocks.setFloatingTerminalInputFocused).toHaveBeenLastCalledWith(true)
+  })
+
+  it('preserves and reclaims terminal input ownership across window blur', async () => {
+    setFloatingTabs([makeTab({ id: 'tab-1' })])
+    const element = await renderPanel(true)
+    const panel = findByProp(element, 'data-floating-terminal-panel')
+    const panelElement = { contains: vi.fn().mockReturnValue(true), focus: vi.fn() }
+    const terminalInput = {
+      blur: vi.fn(),
+      classList: { contains: vi.fn((token: string) => token === 'xterm-helper-textarea') },
+      closest: vi.fn((selector: string) => {
+        if (selector === '[data-floating-terminal-panel]') {
+          return panelElement
+        }
+        return selector === '[data-leaf-id]'
+          ? {
+              getAttribute: (attribute: string) => (attribute === 'data-leaf-id' ? 'leaf-1' : null)
+            }
+          : null
+      }),
+      isConnected: true
+    }
+    Object.setPrototypeOf(panelElement, HTMLElement.prototype)
+    Object.setPrototypeOf(terminalInput, HTMLElement.prototype)
+    attachRef(panel.props.ref, panelElement)
+    mocks.isTerminalImeInputContextRefreshing.mockReturnValueOnce(true)
+    const onBlurCapture = panel.props.onBlurCapture as (event: unknown) => void
+    onBlurCapture({
+      relatedTarget: null,
+      target: terminalInput
+    })
+    expect(mocks.setFloatingTerminalInputFocused).not.toHaveBeenCalled()
+    const documentState = {
+      activeElement: terminalInput as unknown as HTMLElement | null,
+      addEventListener: vi.fn(),
+      body: {} as HTMLElement,
+      removeEventListener: vi.fn()
+    }
+    vi.stubGlobal('document', documentState)
+    runEffects()
+    const blurListener = vi
+      .mocked(window.addEventListener)
+      .mock.calls.findLast(([type]) => type === 'blur')?.[1] as (() => void) | undefined
+    const focusListener = vi
+      .mocked(window.addEventListener)
+      .mock.calls.find(([type]) => type === 'focus')?.[1] as (() => void) | undefined
+    if (!blurListener || !focusListener) {
+      throw new Error('floating terminal window focus listeners not registered')
+    }
+
+    blurListener()
+    expect(terminalInput.blur).not.toHaveBeenCalled()
+
+    focusListener()
+    expect(mocks.setFloatingTerminalInputFocused).toHaveBeenCalledWith(true)
+
+    documentState.activeElement = terminalInput as unknown as HTMLElement
+    blurListener()
+    documentState.activeElement = documentState.body
+    mocks.focusTerminalTabSurface.mockClear()
+    focusListener()
+    expect(mocks.focusTerminalTabSurface).not.toHaveBeenCalled()
+
+    documentState.activeElement = terminalInput as unknown as HTMLElement
+    blurListener()
+    terminalInput.isConnected = false
+    documentState.activeElement = documentState.body
+    focusListener()
+    expect(mocks.focusTerminalTabSurface).toHaveBeenCalledWith(
+      'tab-1',
+      'leaf-1',
+      expect.objectContaining({
+        onlyIfFocusUnclaimed: true,
+        onImeRefocusSkipped: expect.any(Function),
+        refreshImeContext: true
+      })
+    )
   })
 
   it('falls back to default bounds when persisted geometry is malformed', async () => {
@@ -1223,6 +1335,61 @@ describe('FloatingTerminalPanel close behavior', () => {
     )
     expect(mocks.activateTab).toHaveBeenCalledWith('created-tab')
     expect(mocks.focusTerminalTabSurface).toHaveBeenCalledWith('created-tab')
+  })
+
+  it('keeps floating browser create and duplicate local during active web runtime sessions', async () => {
+    setFloatingTabs([makeTab({ id: 'tab-1' })])
+    ;(storeBox.state as FloatingPanelStoreState).settings.activeRuntimeEnvironmentId = 'runtime-1'
+    ;(storeBox.state as FloatingPanelStoreState).browserTabsByWorktree = {
+      [FLOATING_TERMINAL_WORKTREE_ID]: [
+        {
+          id: 'browser-1',
+          worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
+          url: 'https://example.com',
+          title: 'Example',
+          loading: false,
+          faviconUrl: null,
+          canGoBack: false,
+          canGoForward: false,
+          loadError: null,
+          sessionProfileId: 'profile-1',
+          sessionPartition: 'persist:orca-browser-session-profile-1',
+          createdAt: 1
+        }
+      ]
+    }
+    mocks.isWebRuntimeSessionActive.mockReturnValue(true)
+    mocks.createWebRuntimeSessionBrowserTab.mockResolvedValue(true)
+
+    const element = await renderPanel(true)
+    const tabBar = findByTypeName(element, 'TabBar')
+    ;(tabBar.props.onNewBrowserTab as () => void)()
+    ;(tabBar.props.onDuplicateBrowserTab as (browserTabId: string) => void)('browser-1')
+
+    expect(mocks.createWebRuntimeSessionBrowserTab).not.toHaveBeenCalled()
+    expect(mocks.createBrowserTab).toHaveBeenNthCalledWith(
+      1,
+      FLOATING_TERMINAL_WORKTREE_ID,
+      'about:blank',
+      {
+        title: 'New Browser Tab',
+        focusAddressBar: true,
+        targetGroupId: 'floating-group',
+        browserRuntimeEnvironmentId: null
+      }
+    )
+    expect(mocks.createBrowserTab).toHaveBeenNthCalledWith(
+      2,
+      FLOATING_TERMINAL_WORKTREE_ID,
+      'https://example.com',
+      {
+        title: 'Example',
+        sessionProfileId: 'profile-1',
+        sessionPartition: 'persist:orca-browser-session-profile-1',
+        targetGroupId: 'floating-group',
+        browserRuntimeEnvironmentId: null
+      }
+    )
   })
 
   it('hides the active terminal pane from the renderer while the panel is closed', async () => {
@@ -1899,7 +2066,7 @@ describe('FloatingTerminalPanel close behavior', () => {
       target
     })
 
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1', { reason: 'cleanup' })
     expect(panelElement.focus).toHaveBeenCalledWith({ preventScroll: true })
   })
 
@@ -1946,7 +2113,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     })
     attachRef(panel.props.ref, null)
 
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1', { reason: 'cleanup' })
     expect(cancelAnimationFrame).toHaveBeenCalledWith(42)
     expect(panelElement.focus).not.toHaveBeenCalled()
   })
@@ -1990,7 +2157,7 @@ describe('FloatingTerminalPanel close behavior', () => {
       target
     })
 
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1', { reason: 'cleanup' })
     expect(panelElement.focus).not.toHaveBeenCalled()
   })
 
@@ -2141,7 +2308,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     const tabBar = findByTypeName(element, 'TabBar')
     ;(tabBar.props.onClose as (tabId: string) => void)('tab-1')
 
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1', { reason: 'cleanup' })
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
@@ -2156,7 +2323,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     const tabBar = findByTypeName(element, 'TabBar')
     ;(tabBar.props.onClose as (tabId: string) => void)('tab-2')
 
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-2')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-2', { reason: 'cleanup' })
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
@@ -2171,12 +2338,12 @@ describe('FloatingTerminalPanel close behavior', () => {
     const terminalPane = findByTypeName(element, 'TerminalPane')
 
     ;(terminalPane.props.onPtyExit as () => void)()
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1', { reason: 'pty-exit' })
     expect(onOpenChange).not.toHaveBeenCalled()
 
     mocks.closeTab.mockClear()
     ;(terminalPane.props.onCloseTab as () => void)()
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1', { reason: 'cleanup' })
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
@@ -2251,7 +2418,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     expect(mocks.closeUnifiedTab).not.toHaveBeenCalledWith(simulatorTab.id)
   })
 
-  it('routes floating terminal create and close through active web runtime sessions', async () => {
+  it('keeps floating terminal create and close local during active web runtime sessions', async () => {
     const onOpenChange = vi.fn()
     setFloatingTabs([makeTab({ id: 'tab-1' })])
     ;(storeBox.state as FloatingPanelStoreState).settings.activeRuntimeEnvironmentId = 'runtime-1'
@@ -2263,22 +2430,19 @@ describe('FloatingTerminalPanel close behavior', () => {
     ;(tabBar.props.onNewTerminalTab as () => void)()
     await flushAsyncWork()
 
-    expect(mocks.createWebRuntimeSessionTerminal).toHaveBeenCalledWith({
-      worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-      targetGroupId: 'floating-group',
-      command: undefined,
-      activate: true,
-      selectWorktree: false
-    })
-    expect(mocks.createTab).not.toHaveBeenCalled()
+    expect(mocks.createWebRuntimeSessionTerminal).not.toHaveBeenCalled()
+    expect(mocks.createTab).toHaveBeenCalledWith(
+      FLOATING_TERMINAL_WORKTREE_ID,
+      'floating-group',
+      undefined,
+      { activate: false }
+    )
+    expect(mocks.activateTab).toHaveBeenCalledWith('created-tab')
+    expect(mocks.focusTerminalTabSurface).toHaveBeenCalledWith('created-tab')
 
     ;(tabBar.props.onClose as (tabId: string) => void)('tab-1')
-    expect(mocks.closeWebRuntimeSessionTab).toHaveBeenCalledWith({
-      worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-      tabId: 'tab-1',
-      environmentId: 'runtime-1'
-    })
-    expect(mocks.closeTab).not.toHaveBeenCalled()
+    expect(mocks.closeWebRuntimeSessionTab).not.toHaveBeenCalled()
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-1', { reason: 'cleanup' })
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 
@@ -2331,14 +2495,14 @@ describe('FloatingTerminalPanel close behavior', () => {
     ])
 
     ;(tabBar.props.onCloseOthers as (tabId: string) => void)('new-keep')
-    expect(mocks.closeTab).toHaveBeenCalledWith('new-left')
-    expect(mocks.closeTab).toHaveBeenCalledWith('new-right')
+    expect(mocks.closeTab).toHaveBeenCalledWith('new-left', { reason: 'cleanup' })
+    expect(mocks.closeTab).toHaveBeenCalledWith('new-right', { reason: 'cleanup' })
     expect(mocks.closeTab).not.toHaveBeenCalledWith('old-left')
 
     mocks.closeTab.mockClear()
     ;(tabBar.props.onCloseToRight as (tabId: string) => void)('new-left')
-    expect(mocks.closeTab).toHaveBeenCalledWith('new-keep')
-    expect(mocks.closeTab).toHaveBeenCalledWith('new-right')
+    expect(mocks.closeTab).toHaveBeenCalledWith('new-keep', { reason: 'cleanup' })
+    expect(mocks.closeTab).toHaveBeenCalledWith('new-right', { reason: 'cleanup' })
     expect(mocks.closeTab).not.toHaveBeenCalledWith('old-keep')
   })
 
@@ -2359,8 +2523,8 @@ describe('FloatingTerminalPanel close behavior', () => {
     const tabBar = findByTypeName(element, 'TabBar')
     ;(tabBar.props.onCloseToRight as (tabId: string) => void)('tab-c')
 
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-a')
-    expect(mocks.closeTab).toHaveBeenCalledWith('tab-b')
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-a', { reason: 'cleanup' })
+    expect(mocks.closeTab).toHaveBeenCalledWith('tab-b', { reason: 'cleanup' })
     expect(mocks.closeTab).not.toHaveBeenCalledWith('tab-c')
   })
 })

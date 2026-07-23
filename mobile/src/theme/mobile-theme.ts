@@ -13,7 +13,9 @@ export type ThemeColors = {
   textPrimary: string
   textSecondary: string
   textMuted: string
+  surfaceBright: string
   accentBlue: string
+  onAccent: string
   statusGreen: string
   statusAmber: string
   statusRed: string
@@ -50,7 +52,15 @@ export const darkColors: ThemeColors = {
   textSecondary: '#888888',
   textMuted: '#555555',
 
+  // Crisp near-white surface for the single primary action on a screen (the
+  // worktree FAB). Brighter than textPrimary so it reads as a solid button, not
+  // disabled chrome, while staying monochrome (STYLEGUIDE: color is for state).
+  surfaceBright: '#f5f5f5',
+
   accentBlue: '#3b82f6',
+  // Text/icon color on a filled accent (accentBlue) button, where the muted
+  // textPrimary would lack contrast against the saturated fill.
+  onAccent: '#ffffff',
 
   statusGreen: '#22c55e',
   statusAmber: '#f59e0b',
@@ -97,7 +107,13 @@ export const lightColors: ThemeColors = {
   textSecondary: '#5c6066',
   textMuted: '#9a9ea4',
 
+  // Light-mode inversion of the dark palette's near-white surfaceBright: still
+  // the monochrome, high-contrast primary-action surface, just flipped to a
+  // near-black fill so it reads as solid against the light canvas.
+  surfaceBright: '#1a1a1a',
+
   accentBlue: '#2563eb',
+  onAccent: '#ffffff',
 
   statusGreen: '#16a34a',
   statusAmber: '#d97706',

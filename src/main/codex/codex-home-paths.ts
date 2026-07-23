@@ -3,24 +3,31 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
   readlinkSync,
   rmdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { nodeSourceAndCopyContentsEqualSync } from '../../shared/node-source-copy-content-equality'
+import { readNodeFileSyncWithinLimit } from '../../shared/node-bounded-file-reader'
+
+const CODEX_GLOBAL_INSTRUCTIONS_ENTRY = 'AGENTS.md'
+const CODEX_RESOURCE_COPY_MARKER_MAX_BYTES = 64 * 1024
 
 const CODEX_SYSTEM_RESOURCE_ENTRIES = [
   'skills',
+  'hooks',
   'plugins',
   'plugin-state',
   'profile-v2',
   'themes',
-  'prompts'
+  'prompts',
+  CODEX_GLOBAL_INSTRUCTIONS_ENTRY
 ] as const
 
 export function getSystemCodexHomePath(): string {
@@ -33,7 +40,11 @@ export function getOrcaManagedCodexHomePath(): string {
   return managedHomePath
 }
 
-function getOrcaUserDataPath(): string {
+export function getCodexSessionBackfillStateDirPath(): string {
+  return join(getOrcaUserDataPath(), 'codex-session-backfill')
+}
+
+export function getOrcaUserDataPath(): string {
   if (process.env.ORCA_USER_DATA_PATH) {
     return process.env.ORCA_USER_DATA_PATH
   }
@@ -48,18 +59,40 @@ function getOrcaUserDataPath(): string {
   return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'orca')
 }
 
-export function syncSystemCodexResourcesIntoManagedHome(): void {
+// Why: each managed home (the shared runtime mirror, or a per-account
+// self-contained CODEX_HOME that the caller has already created) links the same
+// system resources with its own ownership markers, so a per-account launch home
+// is complete without ever symlinking into or mutating the user's real ~/.codex.
+export function syncSystemCodexResourcesIntoManagedHome(managedHomePath?: string): void {
+  const targetHome = managedHomePath ?? getOrcaManagedCodexHomePath()
   const systemHomePath = getSystemCodexHomePath()
-  const managedHomePath = getOrcaManagedCodexHomePath()
   for (const entryName of CODEX_SYSTEM_RESOURCE_ENTRIES) {
-    linkSystemCodexResource(systemHomePath, managedHomePath, entryName)
+    linkSystemCodexResource(systemHomePath, targetHome, entryName)
   }
+}
+
+export function syncCodexGlobalInstructionsIntoManagedHome({
+  systemHomePath,
+  managedHomePath
+}: {
+  systemHomePath: string
+  managedHomePath: string
+}): void {
+  mkdirSync(managedHomePath, { recursive: true })
+  // Why: this only runs for WSL runtime homes, whose system + managed homes are
+  // both \\wsl.localhost UNC paths. A host-side symlink there stores a Windows
+  // UNC target the distro cannot resolve, so copy the file like the config
+  // mirror does across the same boundary.
+  linkSystemCodexResource(systemHomePath, managedHomePath, CODEX_GLOBAL_INSTRUCTIONS_ENTRY, {
+    preferCopy: true
+  })
 }
 
 function linkSystemCodexResource(
   systemHomePath: string,
   managedHomePath: string,
-  entryName: string
+  entryName: string,
+  { preferCopy = false }: { preferCopy?: boolean } = {}
 ): void {
   const sourcePath = join(systemHomePath, entryName)
   const targetPath = join(managedHomePath, entryName)
@@ -67,10 +100,17 @@ function linkSystemCodexResource(
     removeCopiedResourceIfOwned(targetPath, managedHomePath, entryName, sourcePath)
     return
   }
+  if (entryName === CODEX_GLOBAL_INSTRUCTIONS_ENTRY && !systemResourceIsRegularFile(sourcePath)) {
+    removeCopiedResourceIfOwned(targetPath, managedHomePath, entryName, sourcePath)
+    console.warn('[codex-home] Ignoring non-file system Codex resource:', entryName)
+    return
+  }
 
   if (targetAlreadyPointsToSource(targetPath, sourcePath)) {
     clearCopiedResourceMarker(managedHomePath, entryName)
-    return
+    if (!preferCopy || !removeSymlinkEntry(targetPath)) {
+      return
+    }
   }
   const shouldRefreshFallbackCopy = targetIsOwnedFallbackCopy(
     targetPath,
@@ -78,11 +118,24 @@ function linkSystemCodexResource(
     entryName,
     sourcePath
   )
-  if (existsSync(targetPath) && !shouldRefreshFallbackCopy) {
+  if (pathEntryExists(targetPath) && !shouldRefreshFallbackCopy) {
     return
   }
   if (shouldRefreshFallbackCopy) {
+    // Why: WSL launch preparation runs before every Codex start. Avoid
+    // rewriting an unchanged file across the UNC boundary on every launch.
+    if (
+      entryName === CODEX_GLOBAL_INSTRUCTIONS_ENTRY &&
+      nodeSourceAndCopyContentsEqualSync(sourcePath, targetPath)
+    ) {
+      return
+    }
     rmSync(targetPath, { recursive: true, force: true })
+  }
+
+  if (preferCopy) {
+    copySystemCodexResourceAsOwnedFallback(sourcePath, targetPath, managedHomePath, entryName)
+    return
   }
 
   try {
@@ -94,16 +147,71 @@ function linkSystemCodexResource(
     )
     clearCopiedResourceMarker(managedHomePath, entryName)
   } catch (error) {
+    // Why: Windows can reject file symlinks outside developer mode. Copy is
+    // a fallback for launch-time resources; mark ownership so later syncs can
+    // refresh the copy without touching user-created runtime resources.
+    copySystemCodexResourceAsOwnedFallback(
+      sourcePath,
+      targetPath,
+      managedHomePath,
+      entryName,
+      error
+    )
+  }
+}
+
+function copySystemCodexResourceAsOwnedFallback(
+  sourcePath: string,
+  targetPath: string,
+  managedHomePath: string,
+  entryName: string,
+  symlinkError?: unknown
+): void {
+  try {
+    rmSync(targetPath, { recursive: true, force: true })
+    cpSync(sourcePath, targetPath, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      // Why: dotfile managers commonly symlink AGENTS.md. WSL needs the file
+      // contents because a copied host-side link is not usable in the distro.
+      dereference: entryName === CODEX_GLOBAL_INSTRUCTIONS_ENTRY
+    })
+    markCopiedResource(managedHomePath, entryName, sourcePath)
+  } catch (copyError) {
+    // Why: an unmarked copy cannot be refreshed or safely removed later.
+    // Roll it back instead of stranding stale instructions in the runtime home.
     try {
       rmSync(targetPath, { recursive: true, force: true })
-      // Why: Windows can reject file symlinks outside developer mode. Copy is
-      // a fallback for launch-time resources; mark ownership so later syncs can
-      // refresh the copy without touching user-created runtime resources.
-      cpSync(sourcePath, targetPath, { recursive: true, force: false, errorOnExist: true })
-      markCopiedResource(managedHomePath, entryName, sourcePath)
-    } catch {
-      console.warn('[codex-home] Failed to link system Codex resource:', entryName, error)
+    } catch (cleanupError) {
+      console.warn(
+        '[codex-home] Failed to remove incomplete resource copy:',
+        entryName,
+        cleanupError
+      )
     }
+    console.warn(
+      '[codex-home] Failed to mirror system Codex resource:',
+      entryName,
+      symlinkError ?? copyError
+    )
+  }
+}
+
+function systemResourceIsRegularFile(sourcePath: string): boolean {
+  try {
+    return statSync(sourcePath).isFile()
+  } catch {
+    return false
+  }
+}
+
+function pathEntryExists(entryPath: string): boolean {
+  try {
+    lstatSync(entryPath)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -145,7 +253,10 @@ function markCopiedResource(managedHomePath: string, entryName: string, sourcePa
 function readCopiedResourceSourcePath(managedHomePath: string, entryName: string): string | null {
   try {
     const parsed: unknown = JSON.parse(
-      readFileSync(getResourceCopyMarkerPath(managedHomePath, entryName), 'utf-8')
+      readNodeFileSyncWithinLimit(
+        getResourceCopyMarkerPath(managedHomePath, entryName),
+        CODEX_RESOURCE_COPY_MARKER_MAX_BYTES
+      ).buffer.toString('utf8')
     )
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return null
@@ -158,7 +269,12 @@ function readCopiedResourceSourcePath(managedHomePath: string, entryName: string
 }
 
 function clearCopiedResourceMarker(managedHomePath: string, entryName: string): void {
-  rmSync(getResourceCopyMarkerPath(managedHomePath, entryName), { force: true })
+  // Why: a malformed marker directory must not block Codex launch or prevent
+  // an owned resource from being repaired.
+  rmSync(getResourceCopyMarkerPath(managedHomePath, entryName), {
+    recursive: true,
+    force: true
+  })
 }
 
 function targetIsOwnedFallbackCopy(

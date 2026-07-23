@@ -1,9 +1,11 @@
+import { createGitConfigSnapshotRunner } from '../shared/git-config-snapshot-runner'
 import { getEffectiveGitUpstreamStatus } from '../shared/git-effective-upstream'
 import type { GitCommandRunner } from '../shared/git-effective-upstream'
 import type { GitUpstreamStatus } from '../shared/types'
 
 const NO_EFFECTIVE_UPSTREAM_CACHE_TTL_MS = 5 * 60_000
 const MAX_NO_EFFECTIVE_UPSTREAM_CACHE_ENTRIES = 512
+export const MAX_NO_EFFECTIVE_UPSTREAM_CACHE_KEY_BYTES = 64 * 1024
 
 type NoEffectiveUpstreamCacheIdentity = {
   worktreePath: string
@@ -23,6 +25,10 @@ const noEffectiveUpstreamWriteGeneration = new Map<string, number>()
 
 function noEffectiveUpstreamCacheKey(identity: NoEffectiveUpstreamCacheIdentity): string {
   return [identity.worktreePath, identity.branchName, identity.upstreamName ?? ''].join('\0')
+}
+
+function canRetainNoEffectiveUpstreamCacheKey(cacheKey: string): boolean {
+  return Buffer.byteLength(cacheKey, 'utf8') <= MAX_NO_EFFECTIVE_UPSTREAM_CACHE_KEY_BYTES
 }
 
 function readCachedNoEffectiveUpstreamStatus(
@@ -65,6 +71,11 @@ function cacheNoEffectiveUpstreamStatus(
   writeGeneration: number,
   nowMs = Date.now()
 ): void {
+  if (!canRetainNoEffectiveUpstreamCacheKey(cacheKey)) {
+    noEffectiveUpstreamByIdentity.delete(cacheKey)
+    noEffectiveUpstreamWriteGeneration.delete(cacheKey)
+    return
+  }
   // Why: hasConfiguredPushTarget controls publish behavior; keep that signal
   // fresh rather than serving a stale positive from status polling.
   if (status.hasUpstream || status.hasConfiguredPushTarget) {
@@ -115,12 +126,13 @@ export async function readOrProbeNoEffectiveUpstreamStatus(
   }
 
   let probedSameNameOriginRef = false
+  const snapshotRunner = createGitConfigSnapshotRunner(runGit)
   const writeGeneration = noEffectiveUpstreamWriteGeneration.get(cacheKey) ?? 0
   const probe = getEffectiveGitUpstreamStatus((args) => {
     if (args[0] === 'rev-parse' && args.includes(`refs/remotes/origin/${identity.branchName}`)) {
       probedSameNameOriginRef = true
     }
-    return runGit(args)
+    return snapshotRunner(args)
   }).then((status) => {
     cacheNoEffectiveUpstreamStatus(cacheKey, status, probedSameNameOriginRef, writeGeneration)
     return status
@@ -152,6 +164,10 @@ export function clearNoEffectiveUpstreamStatusCacheEntry(
   retireNoEffectiveUpstreamProbe(cacheKey)
   noEffectiveUpstreamByIdentity.delete(cacheKey)
   noEffectiveUpstreamInFlight.delete(cacheKey)
+  if (!canRetainNoEffectiveUpstreamCacheKey(cacheKey)) {
+    noEffectiveUpstreamWriteGeneration.delete(cacheKey)
+    return
+  }
   noEffectiveUpstreamWriteGeneration.set(
     cacheKey,
     (noEffectiveUpstreamWriteGeneration.get(cacheKey) ?? 0) + 1

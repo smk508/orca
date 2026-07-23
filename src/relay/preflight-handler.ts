@@ -1,9 +1,14 @@
-import { execFile } from 'child_process'
-import { userInfo } from 'os'
-import { promisify } from 'util'
-import path, { win32 } from 'path'
+import { execFile } from 'node:child_process'
+import { userInfo } from 'node:os'
+import { promisify } from 'node:util'
+import path, { win32 } from 'node:path'
 import type { RelayDispatcher } from './dispatcher'
 import { buildRelayCommandEnv } from './relay-command-env'
+import { isPwshAvailable } from '../main/pwsh'
+import { isWslAvailable, listWslDistros } from '../main/wsl'
+import { isGitBashAvailable } from '../main/git-bash'
+import { buildPosixCommandPathLookupScript } from '../shared/posix-command-path-lookup'
+import { mapWithConcurrency } from '../shared/map-with-concurrency'
 
 const execFileAsync = promisify(execFile)
 
@@ -19,9 +24,19 @@ type RelayCommandLookupOptions = {
   accountLoginShell?: string | null
 }
 
+type AgentDetectionRuntime = NodeJS.Platform | 'wsl'
+
+type AgentDetectionCommand = {
+  id: string
+  cmd: string
+  requiredCommands?: readonly string[]
+  unsupportedRuntimes?: readonly AgentDetectionRuntime[]
+}
+
 const SUPPORTED_POSIX_SHELLS = new Set(['sh', 'dash', 'bash', 'zsh', 'fish'])
 const CONSERVATIVE_SYSTEM_SHELL_DIRS = new Set(['/bin', '/usr/bin'])
 const AGENT_PATH_PREFIX = '__ORCA_AGENT_PATH__'
+export const RELAY_AGENT_PATH_PROBE_CONCURRENCY = 8
 
 export class PreflightHandler {
   private dispatcher: RelayDispatcher
@@ -33,25 +48,75 @@ export class PreflightHandler {
 
   private registerHandlers(): void {
     this.dispatcher.onRequest('preflight.detectAgents', (p) => this.detectAgents(p))
+    this.dispatcher.onRequest('preflight.detectWindowsTerminalCapabilities', () =>
+      this.detectWindowsTerminalCapabilities()
+    )
   }
 
   // Why: the client sends the command list rather than importing TUI_AGENT_CONFIG
   // on the relay side. This keeps the relay bundle minimal and makes the protocol
   // self-describing — the relay doesn't need to know the agent catalog.
   private async detectAgents(params: Record<string, unknown>): Promise<{ agents: string[] }> {
-    const commands = params.commands as { id: string; cmd: string }[]
+    const commands = params.commands as AgentDetectionCommand[]
     if (!Array.isArray(commands)) {
       return { agents: [] }
     }
+    const probeCommands = [
+      ...new Set(
+        commands
+          .filter((command) => !isDetectionUnsupportedInRuntime(command, process.platform))
+          .flatMap((command) => [command.cmd, ...(command.requiredCommands ?? [])])
+      )
+    ]
 
-    const results = await Promise.all(
-      commands.map(async ({ id, cmd }) => ({
-        id,
+    const results = await mapWithConcurrency(
+      probeCommands,
+      RELAY_AGENT_PATH_PROBE_CONCURRENCY,
+      async (cmd) => ({
+        cmd,
         installed: await this.isCommandOnPath(cmd)
-      }))
+      })
+    )
+    const foundCommands = new Set(
+      results.filter((result) => result.installed).map(({ cmd }) => cmd)
     )
 
-    return { agents: [...new Set(results.filter((r) => r.installed).map((r) => r.id))] }
+    return {
+      agents: [
+        ...new Set(
+          commands
+            .filter(
+              (command) =>
+                !isDetectionUnsupportedInRuntime(command, process.platform) &&
+                foundCommands.has(command.cmd) &&
+                (command.requiredCommands ?? []).every((required) => foundCommands.has(required))
+            )
+            .map(({ id }) => id)
+        )
+      ]
+    }
+  }
+
+  private async detectWindowsTerminalCapabilities(): Promise<{
+    wslAvailable: boolean
+    wslDistros: string[]
+    pwshAvailable: boolean
+    gitBashAvailable: boolean
+    hostPlatform: NodeJS.Platform | null
+  }> {
+    const [wslAvailable, pwshAvailable, gitBashAvailable] = await Promise.all([
+      Promise.resolve(isWslAvailable()).catch(() => false),
+      Promise.resolve(isPwshAvailable()).catch(() => false),
+      Promise.resolve(isGitBashAvailable()).catch(() => false)
+    ])
+    const wslDistros = wslAvailable ? await Promise.resolve(listWslDistros()).catch(() => []) : []
+    return {
+      wslAvailable,
+      wslDistros,
+      pwshAvailable,
+      gitBashAvailable,
+      hostPlatform: process.platform
+    }
   }
 
   // Why: SSH exec channels give the relay a minimal environment without shell
@@ -61,6 +126,13 @@ export class PreflightHandler {
   private async isCommandOnPath(command: string): Promise<boolean> {
     return isCommandOnPathForRelay(command)
   }
+}
+
+function isDetectionUnsupportedInRuntime(
+  command: AgentDetectionCommand,
+  runtime: AgentDetectionRuntime
+): boolean {
+  return command.unsupportedRuntimes?.includes(runtime) === true
 }
 
 export function buildCommandLookupSpec(
@@ -152,9 +224,10 @@ function buildPosixCommandLookupSpec(command: string, shell: string): CommandLoo
 }
 
 function buildShCommandLookupScript(command: string): string {
-  const quotedCommand = shellQuote(command)
+  // Why: login shells may define aliases or functions that mask the PATH executable.
   return [
-    `if resolved=$(command -v ${quotedCommand} 2>/dev/null); then`,
+    buildPosixCommandPathLookupScript({ kind: 'literal', value: command }),
+    'if [ -n "$resolved" ]; then',
     `printf '${AGENT_PATH_PREFIX}%s\\n' "$resolved"`,
     'fi'
   ].join('\n')

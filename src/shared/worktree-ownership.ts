@@ -1,5 +1,4 @@
 import {
-  getRuntimePathBasename,
   isRuntimePathAbsolute,
   isWindowsAbsolutePathLike,
   normalizeRuntimePathForComparison,
@@ -8,6 +7,11 @@ import {
   resolveRuntimePath
 } from './cross-platform-path'
 import { parseWslUncPath } from './wsl-paths'
+import {
+  isAgentScratchWorktreePath,
+  type AgentScratchWorktreePathMatcher
+} from './agent-scratch-worktrees'
+import { isExplicitlyImportedExternalWorktreePath } from './external-worktree-inbox'
 import type {
   DetectedWorktree,
   ExternalWorktreeVisibility,
@@ -154,13 +158,19 @@ export function classifyWorktreeOwnership(args: {
   meta?: WorktreeMeta
   settings: Pick<GlobalSettings, 'workspaceDir' | 'nestWorkspaces' | 'workspaceDirHistory'>
   knownOrcaLayouts: OrcaWorkspaceLayout[]
+  agentScratchWorktreePathMatcher?: AgentScratchWorktreePathMatcher
 }): WorktreeOwnership {
   if (hasStrongOrcaMetadata(args.meta)) {
     return 'orca-managed'
   }
 
-  if (matchesStrongOrcaCreatePath(args.worktree.path, args.knownOrcaLayouts, args.repo)) {
-    return 'orca-managed'
+  // Why: sub-agent scratch worktrees (e.g. .claude/worktrees) are tool
+  // plumbing, not workspaces; classify before layout heuristics (#9388).
+  if (
+    args.agentScratchWorktreePathMatcher?.(args.worktree.path) ??
+    isAgentScratchWorktreePath(args.repo.path, args.worktree.path)
+  ) {
+    return 'agent-scratch'
   }
 
   if (isUnderFlatOrUntrustedOrcaRoot(args.worktree.path, args.knownOrcaLayouts)) {
@@ -168,6 +178,8 @@ export function classifyWorktreeOwnership(args: {
   }
 
   if (canClassifyAsExternal(args.worktree.path, args.knownOrcaLayouts)) {
+    // Why: a plain `git worktree add` can target Orca's nested workspace
+    // folder. Only metadata proves Orca created it.
     return 'external'
   }
 
@@ -181,6 +193,7 @@ export function toDetectedWorktree(args: {
   settings: Pick<GlobalSettings, 'workspaceDir' | 'nestWorkspaces' | 'workspaceDirHistory'>
   knownOrcaLayouts: OrcaWorkspaceLayout[]
   isLegacyRepoForVisibility?: boolean
+  agentScratchWorktreePathMatcher?: AgentScratchWorktreePathMatcher
 }): DetectedWorktree {
   const ownership = classifyWorktreeOwnership(args)
   const selectedCheckout = areRuntimePathsEqual(args.worktree.path, args.repo.path)
@@ -191,7 +204,8 @@ export function toDetectedWorktree(args: {
     ownership,
     repo: args.repo,
     isLegacyRepoForVisibility,
-    isSelectedCheckout: selectedCheckout
+    isSelectedCheckout: selectedCheckout,
+    importedExternalWorktreePaths: args.repo.importedExternalWorktreePaths
   })
 
   return {
@@ -208,6 +222,7 @@ export function shouldShowWorktree(args: {
   repo: Repo
   isLegacyRepoForVisibility: boolean
   isSelectedCheckout: boolean
+  importedExternalWorktreePaths?: readonly string[] | undefined
 }): boolean {
   if (args.isSelectedCheckout) {
     return true
@@ -215,10 +230,34 @@ export function shouldShowWorktree(args: {
   if (args.ownership === 'orca-managed') {
     return true
   }
+  if (
+    isExplicitlyImportedExternalWorktreePath(args.worktree.path, {
+      importedExternalWorktreePaths: args.importedExternalWorktreePaths
+    })
+  ) {
+    return true
+  }
+  // Why: agent scratch stays hidden even when the repo shows non-Orca
+  // worktrees; only an explicit import or selected checkout reveals it.
+  if (args.ownership === 'agent-scratch') {
+    return false
+  }
   if (args.ownership === 'unknown-legacy' && args.isLegacyRepoForVisibility) {
     return true
   }
   return effectiveExternalWorktreeVisibility(args.repo, args.isLegacyRepoForVisibility) === 'show'
+}
+
+export function applyMetadataFallbackVisibility(detected: DetectedWorktree): DetectedWorktree {
+  if (detected.ownership === 'agent-scratch') {
+    // Why: retain scratch policy, including explicit imports, while ordinary fallback fails open.
+    return detected
+  }
+  return {
+    ...detected,
+    visible: true,
+    ownership: detected.ownership === 'orca-managed' ? 'orca-managed' : 'unknown-legacy'
+  }
 }
 
 export function areRuntimePathsEqual(leftPath: string, rightPath: string): boolean {
@@ -230,6 +269,7 @@ export function areRuntimePathsEqual(leftPath: string, rightPath: string): boole
 function hasStrongOrcaMetadata(meta: WorktreeMeta | undefined): boolean {
   return Boolean(
     meta?.orcaCreatedAt ||
+    meta?.orcaCreationWorkspaceLayout ||
     meta?.createdAt ||
     meta?.createdWithAgent ||
     meta?.pushTarget ||
@@ -237,38 +277,6 @@ function hasStrongOrcaMetadata(meta: WorktreeMeta | undefined): boolean {
     meta?.sparsePresetId ||
     meta?.preserveBranchOnDelete
   )
-}
-
-export function matchesStrongOrcaCreatePath(
-  worktreePath: string,
-  knownOrcaLayouts: readonly OrcaWorkspaceLayout[],
-  repo: Pick<Repo, 'path'>
-): boolean {
-  const repoName = getRuntimePathBasename(repo.path).replace(/\.git$/i, '')
-  if (!repoName) {
-    return false
-  }
-  for (const layout of knownOrcaLayouts) {
-    if (!layout.nestWorkspaces) {
-      continue
-    }
-    const relative = relativePathInsideRoot(layout.path, worktreePath)
-    if (relative === null) {
-      continue
-    }
-    const segments = splitNormalizedPath(relative)
-    const caseInsensitive =
-      isWindowsAbsolutePathLike(layout.path) || isWindowsAbsolutePathLike(worktreePath)
-    if (
-      segments.length === 2 &&
-      normalizePathSegment(segments[0], caseInsensitive) ===
-        normalizePathSegment(repoName, caseInsensitive) &&
-      segments[1].length > 0
-    ) {
-      return true
-    }
-  }
-  return false
 }
 
 function isUnderFlatOrUntrustedOrcaRoot(
@@ -302,13 +310,4 @@ function canClassifyAsExternal(
     return layout.nestWorkspaces
   }
   return true
-}
-
-function splitNormalizedPath(value: string): string[] {
-  return normalizeRuntimePathSeparators(value).split('/').filter(Boolean)
-}
-
-function normalizePathSegment(value: string, caseInsensitive: boolean): string {
-  const normalized = normalizeRuntimePathSeparators(value)
-  return caseInsensitive ? normalized.toLowerCase() : normalized
 }

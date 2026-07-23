@@ -4,8 +4,17 @@ import {
   clearNoEffectiveUpstreamStatusCacheEntry,
   getNoEffectiveUpstreamStatusCacheCountForTests,
   getNoEffectiveUpstreamStatusGenerationCountForTests,
+  MAX_NO_EFFECTIVE_UPSTREAM_CACHE_KEY_BYTES,
   readOrProbeNoEffectiveUpstreamStatus
 } from './git-status-upstream-negative-cache'
+
+function isConfigListSnapshotCommand(args: string[]): boolean {
+  return args[0] === 'config' && args[1] === '--list' && args[2] === '-z'
+}
+
+function emptyGitConfigSnapshot(): { stdout: string } {
+  return { stdout: 'core.repositoryformatversion\n0\0' }
+}
 
 describe('relay upstream negative cache', () => {
   beforeEach(() => {
@@ -24,6 +33,9 @@ describe('relay upstream negative cache', () => {
       }
       if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
         throw new Error('fatal: no upstream configured for branch feature')
+      }
+      if (isConfigListSnapshotCommand(args)) {
+        return emptyGitConfigSnapshot()
       }
       if (args[0] === 'rev-parse' && args.includes('refs/remotes/origin/feature')) {
         if (originBranchExists) {
@@ -64,6 +76,9 @@ describe('relay upstream negative cache', () => {
       }
       if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
         throw new Error('fatal: no upstream configured for branch feature')
+      }
+      if (isConfigListSnapshotCommand(args)) {
+        return emptyGitConfigSnapshot()
       }
       if (args[0] === 'rev-parse' && args.includes('refs/remotes/origin/feature')) {
         if (originBranchExists) {
@@ -114,6 +129,9 @@ describe('relay upstream negative cache', () => {
       if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
         throw new Error('fatal: no upstream configured for branch feature')
       }
+      if (isConfigListSnapshotCommand(args)) {
+        return emptyGitConfigSnapshot()
+      }
       if (args[0] === 'rev-parse' && args.includes('refs/remotes/origin/feature')) {
         if (originBranchExists) {
           return { stdout: 'abc123\n' }
@@ -146,6 +164,9 @@ describe('relay upstream negative cache', () => {
           }
           if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
             throw new Error(`fatal: no upstream configured for branch ${branchName}`)
+          }
+          if (isConfigListSnapshotCommand(args)) {
+            return emptyGitConfigSnapshot()
           }
           if (args[0] === 'rev-parse' && args.includes(`refs/remotes/origin/${branchName}`)) {
             return { stdout: 'abc123\n' }
@@ -185,6 +206,9 @@ describe('relay upstream negative cache', () => {
       if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
         throw new Error('fatal: no upstream configured for branch feature')
       }
+      if (isConfigListSnapshotCommand(args)) {
+        return emptyGitConfigSnapshot()
+      }
       if (args[0] === 'rev-parse' && args.includes('refs/remotes/origin/feature')) {
         if (originBranchExists) {
           return { stdout: 'abc123\n' }
@@ -215,6 +239,9 @@ describe('relay upstream negative cache', () => {
           }
           if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
             throw new Error(`fatal: no upstream configured for branch ${branchName}`)
+          }
+          if (isConfigListSnapshotCommand(args)) {
+            return emptyGitConfigSnapshot()
           }
           if (args[0] === 'rev-parse' && args.includes(`refs/remotes/origin/${branchName}`)) {
             return { stdout: 'abc123\n' }
@@ -255,6 +282,9 @@ describe('relay upstream negative cache', () => {
           if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
             throw new Error(`fatal: no upstream configured for branch ${branchName}`)
           }
+          if (isConfigListSnapshotCommand(args)) {
+            return emptyGitConfigSnapshot()
+          }
           if (args[0] === 'rev-parse' && args.includes(`refs/remotes/origin/${branchName}`)) {
             throw new Error('missing remote branch')
           }
@@ -279,6 +309,9 @@ describe('relay upstream negative cache', () => {
           if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
             throw new Error(`fatal: no upstream configured for branch ${branchName}`)
           }
+          if (isConfigListSnapshotCommand(args)) {
+            return emptyGitConfigSnapshot()
+          }
           if (args[0] === 'rev-parse' && args.includes(`refs/remotes/origin/${branchName}`)) {
             return { stdout: 'abc123\n' }
           }
@@ -293,5 +326,92 @@ describe('relay upstream negative cache', () => {
 
     expect(getNoEffectiveUpstreamStatusCacheCountForTests()).toBe(0)
     expect(getNoEffectiveUpstreamStatusGenerationCountForTests()).toBe(512)
+  })
+
+  it('retains the exact key-byte boundary but not oversized identities', async () => {
+    const worktreePath = '/r'
+    const keyOverheadBytes = Buffer.byteLength(`${worktreePath}\0\0`, 'utf8')
+    const exactBranch = 'x'.repeat(MAX_NO_EFFECTIVE_UPSTREAM_CACHE_KEY_BYTES - keyOverheadBytes)
+    const oversizedBranch = `${exactBranch}x`
+    const createRunner = (branchName: string) =>
+      vi.fn(async (args: string[]): Promise<{ stdout: string }> => {
+        if (args[0] === 'symbolic-ref') {
+          return { stdout: `${branchName}\n` }
+        }
+        if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
+          throw new Error(`fatal: no upstream configured for branch ${branchName}`)
+        }
+        if (isConfigListSnapshotCommand(args)) {
+          return emptyGitConfigSnapshot()
+        }
+        if (args[0] === 'rev-parse') {
+          throw new Error('missing remote branch')
+        }
+        throw new Error(`No upstream fixture for git ${args.join(' ')}`)
+      })
+    const exactRunner = createRunner(exactBranch)
+    const oversizedRunner = createRunner(oversizedBranch)
+
+    await readOrProbeNoEffectiveUpstreamStatus(
+      { worktreePath, branchName: exactBranch },
+      exactRunner
+    )
+    await readOrProbeNoEffectiveUpstreamStatus(
+      { worktreePath, branchName: exactBranch },
+      exactRunner
+    )
+    await readOrProbeNoEffectiveUpstreamStatus(
+      { worktreePath, branchName: oversizedBranch },
+      oversizedRunner
+    )
+    await readOrProbeNoEffectiveUpstreamStatus(
+      { worktreePath, branchName: oversizedBranch },
+      oversizedRunner
+    )
+    clearNoEffectiveUpstreamStatusCacheEntry({
+      worktreePath,
+      branchName: oversizedBranch
+    })
+
+    expect(exactRunner.mock.calls.filter(([args]) => args[0] === 'symbolic-ref')).toHaveLength(1)
+    expect(oversizedRunner.mock.calls.filter(([args]) => args[0] === 'symbolic-ref')).toHaveLength(
+      2
+    )
+    expect(getNoEffectiveUpstreamStatusCacheCountForTests()).toBe(1)
+    expect(getNoEffectiveUpstreamStatusGenerationCountForTests()).toBe(0)
+  })
+
+  it('coalesces no-upstream config reads into one snapshot subprocess', async () => {
+    const runGit = vi.fn(async (args: string[]): Promise<{ stdout: string }> => {
+      if (args[0] === 'symbolic-ref') {
+        return { stdout: 'feature\n' }
+      }
+      if (args[0] === 'rev-parse' && args.includes('HEAD@{u}')) {
+        throw new Error('fatal: no upstream configured for branch feature')
+      }
+      if (isConfigListSnapshotCommand(args)) {
+        return emptyGitConfigSnapshot()
+      }
+      if (args[0] === 'rev-parse' && args.includes('refs/remotes/origin/feature')) {
+        throw new Error('missing remote branch')
+      }
+      throw new Error(`No upstream fixture for git ${args.join(' ')}`)
+    })
+
+    const status = await readOrProbeNoEffectiveUpstreamStatus(
+      { worktreePath: '/repo', branchName: 'feature' },
+      runGit
+    )
+    const configListCalls = runGit.mock.calls.filter((call) =>
+      isConfigListSnapshotCommand(call[0] as string[])
+    )
+    const configGetCalls = runGit.mock.calls.filter((call) => {
+      const args = call[0] as string[]
+      return args[0] === 'config' && args[1] === '--get'
+    })
+
+    expect(configListCalls).toHaveLength(1)
+    expect(configGetCalls).toHaveLength(0)
+    expect(status.hasUpstream).toBe(false)
   })
 })

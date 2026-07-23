@@ -1,7 +1,6 @@
 /* eslint-disable max-lines -- Why: this store owns OpenCode analytics persistence, scan policy, and renderer query semantics. Keeping range/scope queries next to scan persistence prevents UI totals from drifting from the SQLite projection. */
 import { app } from 'electron'
-import { dirname, join } from 'path'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { join } from 'node:path'
 import type {
   OpenCodeUsageBreakdownKind,
   OpenCodeUsageBreakdownRow,
@@ -14,11 +13,17 @@ import type {
   OpenCodeUsageSummary
 } from '../../shared/opencode-usage-types'
 import type { Store } from '../persistence'
+import {
+  readUsageProjectionStateFile,
+  writeUsageProjectionStateFileWithRecovery
+} from '../usage-projection-state-file'
 import { loadKnownUsageWorktreesByRepo, type UsageWorktreeRef } from '../usage-worktree-metadata'
 import type { OpenCodeUsageDailyAggregate, OpenCodeUsagePersistedState } from './types'
 import { createWorktreeRefs, scanOpenCodeUsageDatabases } from './scanner'
 
-const SCHEMA_VERSION = 1
+// Why: v2 adds per-database session ownership (stale sibling-copy dedupe).
+// Older caches were built without it and can carry doubled sessions (#8006).
+const SCHEMA_VERSION = 2
 const STALE_MS = 5 * 60_000
 
 let _openCodeUsageFile: string | null = null
@@ -159,10 +164,11 @@ export class OpenCodeUsageStore {
   private load(): OpenCodeUsagePersistedState {
     try {
       const usageFile = getOpenCodeUsageFile()
-      if (!existsSync(usageFile)) {
+      const raw = readUsageProjectionStateFile(usageFile)
+      if (raw === null) {
         return getDefaultState()
       }
-      const parsed = JSON.parse(readFileSync(usageFile, 'utf-8')) as OpenCodeUsagePersistedState
+      const parsed = JSON.parse(raw) as OpenCodeUsagePersistedState
       return normalizePersistedState({
         ...getDefaultState(),
         ...parsed,
@@ -179,13 +185,12 @@ export class OpenCodeUsageStore {
 
   private writeToDisk(): void {
     const usageFile = getOpenCodeUsageFile()
-    const dir = dirname(usageFile)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
-    const tmpFile = `${usageFile}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
-    writeFileSync(tmpFile, JSON.stringify(this.state, null, 2), 'utf-8')
-    renameSync(tmpFile, usageFile)
+    this.state = writeUsageProjectionStateFileWithRecovery(usageFile, this.state, (error) => {
+      const reset = getDefaultState()
+      reset.scanState.enabled = this.state.scanState.enabled
+      reset.scanState.lastScanError = error.message
+      return reset
+    })
   }
 
   async setEnabled(enabled: boolean): Promise<OpenCodeUsageScanState> {

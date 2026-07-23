@@ -1,10 +1,12 @@
 import type { AgentStatusEntry } from '../../../shared/agent-status-types'
 import {
+  agentProviderSessionsEqual,
   getAgentResumeArgv,
   isResumableTuiAgent,
   type SleepingAgentSessionRecord
 } from '../../../shared/agent-session-resume'
 import { parsePaneKey } from '../../../shared/stable-pane-id'
+import { lastInputBlocksHibernation } from './agent-hibernation-input-guard'
 import type { GlobalSettings, TerminalLayoutSnapshot, TerminalTab } from '../../../shared/types'
 import { parseRemoteRuntimePtyId } from '@/runtime/runtime-terminal-stream'
 
@@ -130,10 +132,21 @@ function getEligiblePane(args: {
     foregroundTerminalLastSeenAtByTabId,
     mobileLockedPtyIds
   } = args
+  const sleepingRecord = sleepingAgentSessionsByPaneKey[entry.paneKey]
+  // Why: Pi's done hook ends a turn, not its TUI. Its live recovery checkpoint
+  // must not make the still-running pane look already hibernated.
+  const hasOnlyLivePiRecoveryIdentity = Boolean(
+    entry.agentType === 'pi' &&
+    entry.providerSession &&
+    sleepingRecord?.agent === 'pi' &&
+    sleepingRecord.origin === 'live' &&
+    sleepingRecord.worktreeId === tab.worktreeId &&
+    agentProviderSessionsEqual('pi', entry.providerSession, sleepingRecord.providerSession)
+  )
   if (
     entry.state !== 'done' ||
     entry.interrupted === true ||
-    sleepingAgentSessionsByPaneKey[entry.paneKey]
+    (sleepingRecord && !hasOnlyLivePiRecoveryIdentity)
   ) {
     return null
   }
@@ -162,7 +175,14 @@ function getEligiblePane(args: {
     return null
   }
   const inputAt = lastTerminalInputAtByPaneKey[entry.paneKey]
-  if (typeof inputAt === 'number' && Number.isFinite(inputAt) && inputAt > entry.updatedAt) {
+  // Why: killing the PTY discards the TUI composer's draft and any queued
+  // messages. The old input-after-done compare missed drafts typed while the
+  // agent was still working — the class that lost a user's draft in prod.
+  if (
+    typeof inputAt === 'number' &&
+    Number.isFinite(inputAt) &&
+    lastInputBlocksHibernation(entry, inputAt)
+  ) {
     return null
   }
   const livePane = getPaneLivePtyId(entry, layout)

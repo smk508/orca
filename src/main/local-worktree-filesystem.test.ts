@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { execFileMock, lstatMock, readFileMock, rmMock } = vi.hoisted(() => ({
+const { execFileMock, lstatMock, readNodeFileWithinLimitMock, rmMock } = vi.hoisted(() => ({
   execFileMock: vi.fn(),
   lstatMock: vi.fn(),
-  readFileMock: vi.fn(),
+  readNodeFileWithinLimitMock: vi.fn(),
   rmMock: vi.fn()
 }))
 
@@ -13,8 +13,11 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('node:fs/promises', () => ({
   lstat: lstatMock,
-  readFile: readFileMock,
   rm: rmMock
+}))
+
+vi.mock('../shared/node-bounded-file-reader', () => ({
+  readNodeFileWithinLimit: readNodeFileWithinLimitMock
 }))
 
 import {
@@ -26,6 +29,12 @@ import {
 function completeExecFile(stdout = ''): void {
   execFileMock.mockImplementation((_file, _args, _options, callback) => {
     callback(null, stdout, '')
+  })
+}
+
+function failExecFile(error: Error & { code?: number | string }): void {
+  execFileMock.mockImplementation((_file, _args, _options, callback) => {
+    callback(error, '', '')
   })
 }
 
@@ -43,18 +52,21 @@ describe('local worktree filesystem runtime access', () => {
   beforeEach(() => {
     execFileMock.mockReset()
     lstatMock.mockReset()
-    readFileMock.mockReset()
+    readNodeFileWithinLimitMock.mockReset()
     rmMock.mockReset()
     completeExecFile()
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
   it('uses host filesystem operations when no WSL distro is selected', async () => {
     lstatMock.mockResolvedValue({ type: 'file' })
-    readFileMock.mockResolvedValue('gitdir: ../.git/worktrees/feature')
+    readNodeFileWithinLimitMock.mockResolvedValue({
+      buffer: Buffer.from('gitdir: ../.git/worktrees/feature')
+    })
 
     const access = getLocalWorktreePathAccess()
     await access.statPath('C:\\repo\\.git')
@@ -62,11 +74,14 @@ describe('local worktree filesystem runtime access', () => {
     await removeLocalWorktreePath('C:\\repo\\feature')
 
     expect(lstatMock).toHaveBeenCalledWith('C:\\repo\\.git')
-    expect(readFileMock).toHaveBeenCalledWith('C:\\repo\\.git', 'utf8')
-    expect(rmMock).toHaveBeenCalledWith(toHostRemovalPath('C:\\repo\\feature'), {
-      recursive: true,
-      force: true
-    })
+    expect(readNodeFileWithinLimitMock).toHaveBeenCalledWith('C:\\repo\\.git', 64 * 1024)
+    expect(rmMock).toHaveBeenCalledWith(
+      toHostRemovalPath('C:\\repo\\feature'),
+      expect.objectContaining({
+        recursive: true,
+        force: true
+      })
+    )
     expect(execFileMock).not.toHaveBeenCalled()
   })
 
@@ -77,10 +92,59 @@ describe('local worktree filesystem runtime access', () => {
       await removeLocalWorktreePath(longPath)
 
       expect(toHostRemovalPath(longPath)).toBe(`\\\\?\\${longPath}`)
-      expect(rmMock).toHaveBeenCalledWith(`\\\\?\\${longPath}`, {
-        recursive: true,
-        force: true
-      })
+      expect(rmMock).toHaveBeenCalledWith(
+        `\\\\?\\${longPath}`,
+        expect.objectContaining({
+          recursive: true,
+          force: true,
+          maxRetries: expect.any(Number),
+          retryDelay: expect.any(Number)
+        })
+      )
+    })
+  })
+
+  it('retries transient host removal failures on Windows', async () => {
+    vi.useFakeTimers()
+    await withPlatform('win32', async () => {
+      const error = Object.assign(new Error('Directory not empty'), { code: 'ENOTEMPTY' })
+      rmMock.mockRejectedValueOnce(error).mockResolvedValueOnce(undefined)
+
+      const removal = removeLocalWorktreePath('C:\\repo\\feature')
+      await vi.advanceTimersByTimeAsync(250)
+
+      await expect(removal).resolves.toBeUndefined()
+      expect(rmMock).toHaveBeenCalledTimes(2)
+      expect(rmMock).toHaveBeenNthCalledWith(
+        1,
+        toHostRemovalPath('C:\\repo\\feature'),
+        expect.objectContaining({
+          recursive: true,
+          force: true,
+          maxRetries: expect.any(Number),
+          retryDelay: expect.any(Number)
+        })
+      )
+      expect(rmMock).toHaveBeenNthCalledWith(
+        2,
+        toHostRemovalPath('C:\\repo\\feature'),
+        expect.objectContaining({
+          recursive: true,
+          force: true,
+          maxRetries: expect.any(Number),
+          retryDelay: expect.any(Number)
+        })
+      )
+    })
+  })
+
+  it('does not retry host removal failures outside Windows', async () => {
+    await withPlatform('linux', async () => {
+      const error = Object.assign(new Error('Directory not empty'), { code: 'ENOTEMPTY' })
+      rmMock.mockRejectedValue(error)
+
+      await expect(removeLocalWorktreePath('/repo/feature')).rejects.toBe(error)
+      expect(rmMock).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -106,12 +170,36 @@ describe('local worktree filesystem runtime access', () => {
         expect.objectContaining({ encoding: 'utf8' }),
         expect.any(Function)
       )
+      const readArgs = execFileMock.mock.calls[1]?.[1] as string[]
+      expect(readArgs.at(-1)).toContain('head -c 65537 --')
       const removeArgs = execFileMock.mock.calls[2]?.[1] as string[]
       expect(removeArgs.at(-1)).toContain('rm -rf --')
       expect(removeArgs.at(-1)).toContain(
         String.raw`rm -rf -- '\''/mnt/c/Users/me/repo feature'\''`
       )
       expect(rmMock).not.toHaveBeenCalled()
+    })
+  })
+
+  it('rejects oversized WSL Git pointer output', async () => {
+    await withPlatform('win32', async () => {
+      completeExecFile('x'.repeat(64 * 1024 + 1))
+      const access = getLocalWorktreePathAccess({ wslDistro: 'Ubuntu' })
+
+      await expect(access.readPath('/home/me/repo/.git')).rejects.toThrow(
+        'Worktree Git pointer exceeds the safe read limit'
+      )
+    })
+  })
+
+  it('reports missing WSL stat targets with an ENOENT-shaped error', async () => {
+    await withPlatform('win32', async () => {
+      failExecFile(Object.assign(new Error('missing'), { code: 2 }))
+      const access = getLocalWorktreePathAccess({ wslDistro: 'Ubuntu' })
+
+      await expect(access.statPath('/mnt/c/repo/missing/.git')).rejects.toMatchObject({
+        code: 'ENOENT'
+      })
     })
   })
 })

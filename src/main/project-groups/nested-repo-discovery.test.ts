@@ -1,10 +1,8 @@
-/* eslint-disable max-lines -- Why: nested scan behavior is intentionally covered in one
-suite so traversal order, ignore rules, cancellation, and filesystem fixtures stay aligned. */
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'fs/promises'
-import { join } from 'path'
-import { tmpdir } from 'os'
+import { mkdtemp, mkdir, writeFile, rm, symlink, truncate } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { scanNestedRepos } from './nested-repo-discovery'
+import { NESTED_REPO_GITIGNORE_MAX_BYTES, scanNestedRepos } from './nested-repo-discovery'
 
 let tempDirs: string[] = []
 
@@ -304,6 +302,34 @@ describe('scanNestedRepos', () => {
     expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/active/repo'])
   })
 
+  it('ignores an oversized gitignore payload instead of retaining its rules', async () => {
+    const directories = new Map([
+      ['/workspace', ['.gitignore', 'repo']],
+      ['/workspace/repo', []]
+    ])
+    const files = new Map([['/workspace/.gitignore', `repo\n${'x'.repeat(1024 * 1024)}`]])
+    const gitRepos = new Set(['/workspace/repo'])
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      filesystem: posixTestFilesystem({ directories, gitRepos, files })
+    })
+
+    expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/repo'])
+  })
+
+  it('skips a sparse oversized local gitignore before reading its payload', async () => {
+    const root = await tempRoot()
+    const ignorePath = join(root, '.gitignore')
+    await writeFile(ignorePath, '')
+    await truncate(ignorePath, NESTED_REPO_GITIGNORE_MAX_BYTES + 1)
+    await makeGitRepo(join(root, 'repo'))
+
+    const result = await scanNestedRepos({ path: root })
+
+    expect(result.repos.map((repo) => repo.displayName)).toEqual(['repo'])
+  })
+
   it('keeps root-anchored gitignore rules scoped to their base directory', async () => {
     const directories = new Map([
       ['/workspace', ['.gitignore', 'active', 'ignored']],
@@ -354,6 +380,49 @@ describe('scanNestedRepos', () => {
 
     expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/repo'])
     expect(selectedPathChecks).toEqual(['/workspace'])
+  })
+
+  it('accepts the exact aggregate entry capacity without truncation', async () => {
+    const directories = new Map([['/workspace', ['api', 'web']]])
+    const gitRepos = new Set(['/workspace/api', '/workspace/web'])
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      filesystem: posixTestFilesystem({ directories, gitRepos }),
+      limits: { maxEntries: 2 }
+    })
+
+    expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/api', '/workspace/web'])
+    expect(result.truncated).toBe(false)
+  })
+
+  it('returns bounded partial results and closes the iterator on entry overflow', async () => {
+    let iteratorClosed = false
+    const filesystem = {
+      ...posixTestFilesystem({
+        directories: new Map(),
+        gitRepos: new Set(['/workspace/api', '/workspace/web', '/workspace/worker'])
+      }),
+      readDirectory: async function* () {
+        try {
+          yield { name: 'api', isDirectory: true }
+          yield { name: 'web', isDirectory: true }
+          yield { name: 'worker', isDirectory: true }
+        } finally {
+          iteratorClosed = true
+        }
+      }
+    }
+
+    const result = await scanNestedRepos({
+      path: '/workspace',
+      filesystem,
+      limits: { maxEntries: 2 }
+    })
+
+    expect(result.repos.map((repo) => repo.path)).toEqual(['/workspace/api', '/workspace/web'])
+    expect(result.truncated).toBe(true)
+    expect(iteratorClosed).toBe(true)
   })
 
   it('skips heavy directories and respects result caps', async () => {

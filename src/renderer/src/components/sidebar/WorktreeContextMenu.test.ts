@@ -7,11 +7,41 @@ import {
   shouldRemoveProjectFromContextMenu,
   shouldSuppressContextMenuFollowUpClick,
   shouldContinueDeleteSiblingPositionRestore,
-  shouldShowReadToggleContextMenuItem,
   getWorktreeParentPickerAnchor,
   getWorktreeParentPickerLabel,
-  isWorktreeParentPickerDisabled
+  hasWorktreeParentLink,
+  isWorktreeParentPickerDisabled,
+  selectMenuScopedMap
 } from './WorktreeContextMenu'
+import type { Worktree, WorktreeLineage } from '../../../../shared/types'
+
+describe('selectMenuScopedMap (delete-teardown re-render guard)', () => {
+  // Why: the closed menu wrapper must stay inert to delete teardown's high-churn
+  // set()s. The guard is referential stability — when closed, the selector must
+  // return the SAME `empty` reference even as the live map identity changes each
+  // teardown set(), so Zustand's Object.is equality short-circuits the subscription
+  // and the (common) closed wrapper does not re-render. These assertions pin that
+  // contract; if they regress, every visible card re-renders on every teardown set()
+  // and worktree-card hover popovers stall during a delete.
+  it('returns the stable empty sentinel when the menu is closed', () => {
+    const empty = Object.freeze({})
+    const liveA = { 'wt-1': ['pty-1'] }
+    const liveB = { 'wt-2': ['pty-2'] }
+    // Live map identity churns across teardown set()s, yet a closed wrapper keeps
+    // the same reference — no subscription wakeup.
+    expect(selectMenuScopedMap(false, liveA, empty)).toBe(empty)
+    expect(selectMenuScopedMap(false, liveB, empty)).toBe(empty)
+    expect(selectMenuScopedMap(false, liveA, empty)).toBe(selectMenuScopedMap(false, liveB, empty))
+  })
+
+  it('returns the live map synchronously once the menu is open', () => {
+    const empty = Object.freeze({})
+    const live = { 'wt-1': ['pty-1'] }
+    // The render where menuOpen flips true must read real data so menu items
+    // (sleep/delete/lineage) reflect live tabs/ptys/delete state.
+    expect(selectMenuScopedMap(true, live, empty)).toBe(live)
+  })
+})
 
 describe('shouldUseNativeContextMenu', () => {
   it('uses the browser context menu for marked hovercard content', () => {
@@ -99,16 +129,6 @@ describe('shouldSuppressContextMenuFollowUpClick', () => {
   })
 })
 
-describe('shouldShowReadToggleContextMenuItem', () => {
-  it('keeps the read toggle in legacy card menus', () => {
-    expect(shouldShowReadToggleContextMenuItem({ newCardStyle: false })).toBe(true)
-  })
-
-  it('hides the read toggle in experimental card menus', () => {
-    expect(shouldShowReadToggleContextMenuItem({ newCardStyle: true })).toBe(false)
-  })
-})
-
 describe('shouldContinueDeleteSiblingPositionRestore', () => {
   it('stops once the delete row position has settled even when the row remains mounted', () => {
     expect(
@@ -121,6 +141,26 @@ describe('shouldContinueDeleteSiblingPositionRestore', () => {
 })
 
 describe('parent picker context menu affordance', () => {
+  it('offers unlink for valid inline-only legacy lineage after stable-update hydration', () => {
+    const parent = { id: 'repo::parent', instanceId: 'parent-instance' }
+    const lineage: WorktreeLineage = {
+      worktreeId: 'repo::child',
+      worktreeInstanceId: 'child-instance',
+      parentWorktreeId: parent.id,
+      parentWorktreeInstanceId: parent.instanceId,
+      origin: 'cli',
+      capture: { source: 'explicit-cli-flag', confidence: 'explicit' },
+      createdAt: 1
+    }
+    const child = {
+      id: lineage.worktreeId,
+      instanceId: lineage.worktreeInstanceId,
+      lineage
+    } as Worktree & { lineage: WorktreeLineage }
+
+    expect(hasWorktreeParentLink(child, {}, {})).toBe(true)
+  })
+
   it('uses set/change labels based on valid parent presence', () => {
     expect(getWorktreeParentPickerLabel(null)).toBe('Set Parent Worktree...')
     expect(getWorktreeParentPickerLabel('parent-1')).toBe('Change Parent Worktree...')

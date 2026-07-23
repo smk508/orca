@@ -1,13 +1,14 @@
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'fs/promises'
-import { accessSync, constants, existsSync } from 'fs'
-import { homedir } from 'os'
-import { delimiter, dirname, join } from 'path'
+import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { accessSync, constants, existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { delimiter, dirname, join } from 'node:path'
 import {
   addClaudeTeammateModeAuto,
   addClaudeTeammateModeInProcess,
   isDirectClaudeCommand,
   type ClaudeAgentTeamsMode
 } from '../../shared/claude-agent-teams-tmux-compat'
+import { nodeFileContentsEqual } from '../../shared/node-file-content-equality'
 import { getOrcaCliCommandNameForPlatform } from '../../shared/orca-cli-command-name'
 
 export type ClaudeAgentTeamsLaunchPlan = {
@@ -83,7 +84,7 @@ function bundledLauncherPath(): string | null {
     return join(process.resourcesPath, 'bin', 'orca-ide')
   }
   if (process.platform === 'win32') {
-    return join(process.resourcesPath, 'bin', 'orca.cmd')
+    return join(process.resourcesPath, 'bin', 'orca.exe')
   }
   return null
 }
@@ -136,7 +137,7 @@ function windowsShimScript(): string {
 
 async function writeIfChanged(path: string, content: string): Promise<void> {
   try {
-    if ((await readFile(path, 'utf8')) === content) {
+    if (await nodeFileContentsEqual(path, content)) {
       return
     }
   } catch {

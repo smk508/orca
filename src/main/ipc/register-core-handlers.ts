@@ -1,3 +1,4 @@
+import { app } from 'electron'
 import { registerAppHandlers } from './app'
 import { registerCliHandlers } from './cli'
 import { registerPreflightHandlers } from './preflight'
@@ -23,10 +24,14 @@ import { registerMemoryHandlers } from './memory'
 import { registerRateLimitHandlers } from './rate-limits'
 import { registerRuntimeHandlers } from './runtime'
 import { registerRuntimeEnvironmentHandlers } from './runtime-environments'
+import { registerEphemeralVmHandlers } from './ephemeral-vm'
 import { registerAiVaultHandlers } from './ai-vault'
+import { registerNativeChatHandlers } from './native-chat'
 import { registerNotificationHandlers } from './notifications'
 import { registerNotebookHandlers } from './notebook'
 import { registerOnboardingHandlers } from './onboarding'
+import { registerDashboardPopoutHandlers } from './dashboard-popout'
+import { registerTerminalPreviewHandlers } from './terminal-preview'
 import { registerDeveloperPermissionHandlers } from './developer-permissions'
 import { registerComputerUsePermissionHandlers } from './computer-use-permissions'
 import { setTrustedBrowserRendererWebContentsId, setAgentBrowserBridgeRef } from './browser'
@@ -36,6 +41,7 @@ import { registerDiagnosticsHandlers } from './diagnostics'
 import { registerSkillsHandlers } from './skills'
 import { registerWorkspaceSpaceHandlers } from './workspace-space'
 import { registerWorkspacePortHandlers } from './workspace-ports'
+import { registerLocalhostWorktreeLabelHandlers } from './localhost-worktree-labels'
 import { registerAutomationHandlers } from './automations'
 import { registerKeybindingHandlers } from './keybindings'
 import { registerTelemetryHandlers } from './telemetry'
@@ -44,11 +50,17 @@ import { registerShellHandlers } from './shell'
 import { registerPetHandlers } from './pet'
 import { registerUIHandlers, setTrustedUIRendererWebContentsId } from './ui'
 import { registerEmulatorFrameStreamHandlers } from './emulator-frame-stream'
+import { registerEmulatorVideoStreamHandlers } from './emulator-video-stream'
 import { registerSpeechHandlers } from './speech'
+import { registerTerminalRenderDesyncEvidenceHandler } from './terminal-render-desync-evidence'
+import { registerOrcaProfileHandlers } from './orca-profiles'
 import { registerCodexAccountHandlers } from './codex-accounts'
 import { registerAgentHookHandlers } from './agent-hooks'
+import { getPtyIdForPaneKey } from './pty'
 import { registerAgentTrustHandlers } from './agent-trust'
 import { registerClaudeAccountHandlers } from './claude-accounts'
+import { registerMiniMaxCredentialsHandlers } from './minimax-credentials'
+import { registerGrokAccountHandlers } from './grok-accounts'
 import { registerUpdaterHandlers } from '../window/attach-main-window-services'
 import {
   registerClipboardHandlers,
@@ -64,12 +76,26 @@ import type { AutomationService } from '../automations/service'
 import type { AgentAwakeService } from '../agent-awake-service'
 import type { CrashReportStore } from '../crash-reporting/crash-report-store'
 import type { KeybindingService } from '../keybindings/keybinding-service'
+import type {
+  AiVaultPrepareSessionResumeArgs,
+  AiVaultPrepareSessionResumeResult
+} from '../../shared/ai-vault-resume-preparation'
+import {
+  getSavedRuntimeAiVaultHostInfos,
+  prepareRuntimeAiVaultSessionResume,
+  scanRuntimeAiVaultSessions
+} from '../ai-vault/runtime-session-scanner'
 
 let registered = false
 
 type CoreHandlerLifecycleOptions = {
   onBeforeRelaunch?: () => void | Promise<void>
+  onOrcaProfileAuthMutation?: () => void
+  onBeforeOrcaProfileSignOut?: () => void
   getAdditionalAiVaultCodexHomePaths?: () => readonly string[]
+  prepareAiVaultSessionResume?: (
+    args: AiVaultPrepareSessionResumeArgs
+  ) => Promise<AiVaultPrepareSessionResumeResult>
 }
 
 export function registerCoreHandlers(
@@ -110,9 +136,11 @@ export function registerCoreHandlers(
   registerCodexUsageHandlers(codexUsage)
   registerOpenCodeUsageHandlers(openCodeUsage)
   registerCodexAccountHandlers(codexAccounts)
-  registerAgentHookHandlers(runtime)
+  registerAgentHookHandlers(runtime, { getPtyIdForPaneKey })
   registerAgentTrustHandlers()
   registerClaudeAccountHandlers(claudeAccounts)
+  registerMiniMaxCredentialsHandlers(rateLimits)
+  registerGrokAccountHandlers()
   registerRateLimitHandlers(rateLimits)
   registerGitHubHandlers(store, stats)
   registerGitLabHandlers(store)
@@ -129,12 +157,15 @@ export function registerCoreHandlers(
   registerNotificationHandlers(store, runtime)
   registerNotebookHandlers(store)
   registerOnboardingHandlers(store)
+  registerDashboardPopoutHandlers(store, keybindings)
+  registerTerminalPreviewHandlers(runtime)
   registerDeveloperPermissionHandlers()
   // Why: diagnostics handlers are wired alongside telemetry but the two
   // lanes never share a code path — `ipc/diagnostics.ts` imports only from
   // `src/main/observability/`, never from `src/main/telemetry/`. Order is
   // not load-bearing; both register independent ipcMain channels.
   registerDiagnosticsHandlers()
+  registerTerminalRenderDesyncEvidenceHandler()
   registerComputerUsePermissionHandlers()
   registerSettingsHandlers(store, agentAwakeService)
   registerSkillsHandlers(store)
@@ -145,14 +176,21 @@ export function registerCoreHandlers(
     registerKeybindingHandlers(keybindings)
   }
   registerTelemetryHandlers(store)
+  registerOrcaProfileHandlers(store, {
+    onBeforeRelaunch: lifecycleOptions.onBeforeRelaunch,
+    onAuthMutation: lifecycleOptions.onOrcaProfileAuthMutation,
+    onBeforeSignOut: lifecycleOptions.onBeforeOrcaProfileSignOut
+  })
   registerBrowserHandlers()
-  registerShellHandlers()
+  registerShellHandlers(store)
   registerPetHandlers()
   registerSessionHandlers(store)
   registerUIHandlers(store)
   registerEmulatorFrameStreamHandlers()
+  registerEmulatorVideoStreamHandlers()
   registerWorkspaceSpaceHandlers(store)
   registerWorkspacePortHandlers(store)
+  registerLocalhostWorktreeLabelHandlers(store)
   if (commitMessageAgentEnv) {
     registerFilesystemHandlers(store, commitMessageAgentEnv)
   } else {
@@ -160,10 +198,19 @@ export function registerCoreHandlers(
   }
   registerFilesystemWatcherHandlers()
   registerRuntimeHandlers(runtime)
-  registerRuntimeEnvironmentHandlers()
+  registerRuntimeEnvironmentHandlers(store)
+  registerEphemeralVmHandlers(store)
   registerAiVaultHandlers({
-    getAdditionalCodexHomePaths: lifecycleOptions.getAdditionalAiVaultCodexHomePaths
+    getAdditionalCodexHomePaths: lifecycleOptions.getAdditionalAiVaultCodexHomePaths,
+    prepareSessionResume: lifecycleOptions.prepareAiVaultSessionResume,
+    getActiveRuntimeAiVaultHostInfos: () =>
+      getSavedRuntimeAiVaultHostInfos(app.getPath('userData')),
+    scanRuntimeAiVaultSessions: async (environmentId, args, options) =>
+      scanRuntimeAiVaultSessions(app.getPath('userData'), environmentId, args, options),
+    prepareRuntimeSessionResume: async (environmentId, args) =>
+      prepareRuntimeAiVaultSessionResume(app.getPath('userData'), environmentId, args)
   })
+  registerNativeChatHandlers()
   registerClipboardHandlers(store)
   registerUpdaterHandlers(store)
   registerSpeechHandlers(store)

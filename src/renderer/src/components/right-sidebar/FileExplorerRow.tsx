@@ -20,6 +20,7 @@ import {
   Loader2,
   Pencil,
   Search,
+  SquareTerminal,
   Trash2
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -78,6 +79,7 @@ export type InlineInput = {
   depth: number
   existingName?: string
   existingPath?: string
+  operationOwner?: TreeNode['operationOwner']
 }
 
 // ─── Inline Input Row ────────────────────────────────────────────
@@ -272,12 +274,14 @@ type FileExplorerRowProps = {
   deleteShortcutLabel: string
   connectionId?: string | null
   runtimeDownloadContext?: RuntimeFileOperationArgs | null
+  supportsFolderDownload?: boolean
   canCollapseFolderSubtree: boolean
   targetDir: string
   targetDepth: number
   selectionSize: number
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void
   onDoubleClick: () => void
+  onViewFile: () => void
   onContextMenuSelect: () => void
   onCopyPaths: (pathKind: 'absolute' | 'relative') => void
   onStartNew: (type: 'file' | 'folder', dir: string, depth: number) => void
@@ -285,6 +289,7 @@ type FileExplorerRowProps = {
   onDuplicate: (node: TreeNode) => void
   onAddFolderAsProject: () => void
   canAddAsProject: boolean
+  onOpenInTerminal: () => void
   onRequestDelete: () => void
   onCollapseFolderSubtree: () => void
   onFindInFolder: () => void
@@ -304,15 +309,29 @@ export function shouldShowFindInFolderAction(node: TreeNode): boolean {
   return node.isDirectory
 }
 
+export function shouldShowOpenInTerminalAction(node: TreeNode): boolean {
+  return node.isDirectory
+}
+
+export function shouldShowViewFileAction(node: TreeNode): boolean {
+  return !node.isDirectory
+}
+
 export function shouldShowRemoteDownloadAction(
   node: TreeNode,
   connectionId?: string | null,
-  runtimeDownloadContext?: RuntimeFileOperationArgs | null
+  runtimeDownloadContext?: RuntimeFileOperationArgs | null,
+  // Why: fail closed — only show folder download when the connection explicitly
+  // advertises SFTP recursive transfer (system-SSH and unknown states stay off).
+  supportsFolderDownload = false
 ): boolean {
-  // Why: Desktop-only because download depends on Electron's native save dialog.
+  // Why: Desktop-only because download depends on Electron's native save/folder dialogs;
+  // runtime and system-SSH folders have no recursive transfer contract.
+  const hasDownloadCapability = node.isDirectory
+    ? Boolean(connectionId && supportsFolderDownload)
+    : Boolean(connectionId || runtimeDownloadContext)
   return (
-    !node.isDirectory &&
-    Boolean(connectionId || runtimeDownloadContext) &&
+    hasDownloadCapability &&
     (globalThis as { __ORCA_WEB_CLIENT__?: boolean }).__ORCA_WEB_CLIENT__ !== true
   )
 }
@@ -338,21 +357,32 @@ export async function downloadRemoteFile(
   try {
     const result =
       typeof connectionIdOrRuntimeContext === 'string'
-        ? await window.api.fs.downloadFile({
-            filePath: node.path,
-            connectionId: connectionIdOrRuntimeContext
-          })
+        ? node.isDirectory
+          ? await window.api.fs.downloadFolder({
+              dirPath: node.path,
+              connectionId: connectionIdOrRuntimeContext
+            })
+          : await window.api.fs.downloadFile({
+              filePath: node.path,
+              connectionId: connectionIdOrRuntimeContext
+            })
         : await downloadRuntimeFile(connectionIdOrRuntimeContext, node.path, node.name)
     // Why: Suppress toasts when the user cancels the native save dialog per design.
     if (result.canceled) {
       return
     }
     toast.success(
-      translate(
-        'auto.components.right.sidebar.FileExplorerRow.bce4d4e44f',
-        "Downloaded '{{value0}}'",
-        { value0: node.name }
-      ),
+      node.isDirectory
+        ? translate(
+            'auto.components.right.sidebar.FileExplorerRow.a4029c996b',
+            "Downloaded folder '{{value0}}'",
+            { value0: node.name }
+          )
+        : translate(
+            'auto.components.right.sidebar.FileExplorerRow.bce4d4e44f',
+            "Downloaded '{{value0}}'",
+            { value0: node.name }
+          ),
       {
         action: {
           label: translate('auto.components.right.sidebar.FileExplorerRow.1a3df04ae1', 'Open'),
@@ -366,11 +396,17 @@ export async function downloadRemoteFile(
     toast.error(
       extractIpcErrorMessage(
         error,
-        translate(
-          'auto.components.right.sidebar.FileExplorerRow.b3e288bf41',
-          "Failed to download '{{value0}}'.",
-          { value0: node.name }
-        )
+        node.isDirectory
+          ? translate(
+              'auto.components.right.sidebar.FileExplorerRow.f729bcd97d',
+              "Failed to download folder '{{value0}}'.",
+              { value0: node.name }
+            )
+          : translate(
+              'auto.components.right.sidebar.FileExplorerRow.b3e288bf41',
+              "Failed to download '{{value0}}'.",
+              { value0: node.name }
+            )
       )
     )
   }
@@ -409,12 +445,14 @@ export function FileExplorerRow({
   deleteShortcutLabel,
   connectionId,
   runtimeDownloadContext,
+  supportsFolderDownload = false,
   canCollapseFolderSubtree,
   targetDir,
   targetDepth,
   selectionSize,
   onClick,
   onDoubleClick,
+  onViewFile,
   onContextMenuSelect,
   onCopyPaths,
   onStartNew,
@@ -422,6 +460,7 @@ export function FileExplorerRow({
   onDuplicate,
   onAddFolderAsProject,
   canAddAsProject,
+  onOpenInTerminal,
   onRequestDelete,
   onCollapseFolderSubtree,
   onFindInFolder,
@@ -442,7 +481,8 @@ export function FileExplorerRow({
   const showRemoteDownloadAction = shouldShowRemoteDownloadAction(
     node,
     connectionId,
-    runtimeDownloadContext
+    runtimeDownloadContext,
+    supportsFolderDownload
   )
   const showCopyFileAction = shouldShowCopyFileAction(node, connectionId, selectionSize)
   const { setRowDragNode, handleDragOver, handleDragEnter, handleDragLeave, handleDrop } =
@@ -598,7 +638,10 @@ export function FileExplorerRow({
             className={cn(
               'truncate',
               isSelected && !nodeStatus && !isIgnored && 'text-accent-foreground',
-              isIgnored && 'italic'
+              // Why: italic glyphs overhang their advance width; truncate's
+              // overflow:hidden clips it, shaving the last char (".md" → ".ma").
+              // pr-0.5 reserves room for the slant so the final letter survives.
+              isIgnored && 'italic pr-0.5'
             )}
             style={
               nodeStatus
@@ -696,6 +739,21 @@ export function FileExplorerRow({
             )}
           </ContextMenuItem>
         )}
+        {shouldShowOpenInTerminalAction(node) && (
+          <ContextMenuItem onSelect={onOpenInTerminal}>
+            <SquareTerminal />
+            {translate(
+              'auto.components.right.sidebar.FileExplorerRow.e887fa4b2e',
+              'Open in Terminal'
+            )}
+          </ContextMenuItem>
+        )}
+        {shouldShowViewFileAction(node) && (
+          <ContextMenuItem onSelect={onViewFile}>
+            <File />
+            {translate('auto.components.right.sidebar.FileExplorerRow.1d8e182c32', 'View File')}
+          </ContextMenuItem>
+        )}
         {!node.isDirectory && activeWorktreeId && (
           <ContextMenuItem onSelect={handleOpenInOrcaBrowser}>
             <Globe />
@@ -726,7 +784,12 @@ export function FileExplorerRow({
         {showRemoteDownloadAction && (
           <ContextMenuItem onSelect={handleDownload}>
             <Download />
-            {translate('auto.components.right.sidebar.FileExplorerRow.c2112579f6', 'Download')}
+            {node.isDirectory
+              ? translate(
+                  'auto.components.right.sidebar.FileExplorerRow.7ac885bd2f',
+                  'Download Folder'
+                )
+              : translate('auto.components.right.sidebar.FileExplorerRow.c2112579f6', 'Download')}
           </ContextMenuItem>
         )}
         {canCollapseFolderSubtree && shouldShowCollapseFolderAction(node, isExpanded) && (

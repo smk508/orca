@@ -1,11 +1,26 @@
-import { join } from 'path'
-import { readFileSync, existsSync, readdirSync } from 'fs'
+import { join } from 'node:path'
+import { existsSync, opendirSync } from 'node:fs'
 import type { SessionMeta } from './history-manager'
 import type { TerminalCheckpointFile, TerminalModes } from './types'
 import type { TerminalOscLinkRange } from '../../shared/terminal-osc-link-ranges'
 import { getHistorySessionDirName } from './history-paths'
 import { decodeTerminalHistoryLog } from './terminal-history-log'
 import { HeadlessEmulator } from './headless-emulator'
+import {
+  readTerminalHistoryBuffer,
+  readTerminalHistoryJson,
+  readTerminalHistoryText
+} from './terminal-history-file-reader'
+import {
+  TERMINAL_HISTORY_CHECKPOINT_MAX_BYTES,
+  TERMINAL_HISTORY_LEGACY_SCROLLBACK_MAX_BYTES,
+  TERMINAL_HISTORY_LOG_MAX_BYTES,
+  TERMINAL_HISTORY_META_MAX_BYTES
+} from './terminal-history-file-limits'
+import {
+  retainNewestRestorableTerminalHistorySessions,
+  type RestorableTerminalHistorySession
+} from './terminal-history-restorable-retention'
 
 export type ColdRestoreInfo = {
   snapshotAnsi: string
@@ -28,12 +43,28 @@ export class HistoryReader {
     this.basePath = basePath
   }
 
-  detectColdRestore(sessionId: string): ColdRestoreInfo | null {
+  // Why: spawn needs a cheap "could this cold-restore?" predicate before
+  // deciding to pay detectColdRestore's full checkpoint+log replay. Reads only
+  // the small meta.json, using the same unclean-shutdown test detectColdRestore
+  // starts with.
+  hasRestorableHistory(sessionId: string): boolean {
+    const meta = this.readMeta(sessionId)
+    return meta !== null && meta.endedAt === null
+  }
+
+  detectColdRestore(
+    sessionId: string,
+    opts?: { ignoreCleanEnd?: boolean; wslDistro?: string }
+  ): ColdRestoreInfo | null {
     const meta = this.readMeta(sessionId)
     if (!meta) {
       return null
     }
-    if (meta.endedAt !== null) {
+    // Why ignoreCleanEnd: in the spawn probe race, the dying session's exit
+    // event can write endedAt between the aliveness probe and the post-spawn
+    // fallback detect. The caller established restore eligibility before the
+    // probe, so the just-written clean end must not downgrade the restore.
+    if (meta.endedAt !== null && !opts?.ignoreCleanEnd) {
       return null
     }
 
@@ -43,16 +74,20 @@ export class HistoryReader {
     let checkpoint: TerminalCheckpointFile | null = null
     if (checkpointExists) {
       try {
-        checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf-8'))
+        checkpoint = readTerminalHistoryJson<TerminalCheckpointFile>(
+          checkpointPath,
+          TERMINAL_HISTORY_CHECKPOINT_MAX_BYTES
+        )
       } catch {
         checkpoint = null
       }
     }
 
     // Why log replay is preferred over the checkpoint alone: the log carries
-    // byte-exact output up to ~5s before the crash, while the checkpoint can
-    // be a full log-cap (~5MB of output) stale.
-    const logRestore = this.restoreFromIncrementalLog(sessionDir, meta, checkpoint)
+    // byte-exact output up to ~5s before the crash (up to the full-snapshot
+    // cooldown, ~45s, for a streaming session mid-deferral), while the
+    // checkpoint can be a full log-cap (~5MB of output) stale.
+    const logRestore = this.restoreFromIncrementalLog(sessionDir, meta, checkpoint, opts?.wslDistro)
     if (logRestore) {
       return logRestore
     }
@@ -71,31 +106,55 @@ export class HistoryReader {
       return []
     }
 
-    let entries: { isDirectory(): boolean; name: string }[]
+    let directory: ReturnType<typeof opendirSync>
     try {
-      entries = readdirSync(this.basePath, { withFileTypes: true })
+      directory = opendirSync(this.basePath)
     } catch {
       return []
     }
-    const restorable: string[] = []
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue
-      }
-      let sessionId: string
-      try {
-        sessionId = decodeURIComponent(entry.name)
-      } catch {
-        continue
-      }
-      const meta = this.readMeta(sessionId)
-      if (meta && meta.endedAt === null) {
-        restorable.push(sessionId)
+    const sessions = function* (
+      reader: HistoryReader
+    ): Generator<RestorableTerminalHistorySession> {
+      let order = 0
+      while (true) {
+        const entry = directory.readSync()
+        if (!entry) {
+          return
+        }
+        if (!entry.isDirectory()) {
+          continue
+        }
+        let sessionId: string
+        try {
+          sessionId = decodeURIComponent(entry.name)
+        } catch {
+          continue
+        }
+        const meta = reader.readMeta(sessionId)
+        if (meta && meta.endedAt === null) {
+          const parsedStartedAt = Date.parse(meta.startedAt)
+          yield {
+            sessionId,
+            startedAtMs: Number.isFinite(parsedStartedAt) ? parsedStartedAt : 0,
+            order
+          }
+          order += 1
+        }
       }
     }
 
-    return restorable
+    try {
+      return retainNewestRestorableTerminalHistorySessions(sessions(this))
+    } catch {
+      return []
+    } finally {
+      try {
+        directory.closeSync()
+      } catch {
+        // Best effort after a directory read failure.
+      }
+    }
   }
 
   // Why a scratch emulator: replaying base + raw records through the same
@@ -105,11 +164,15 @@ export class HistoryReader {
   private restoreFromIncrementalLog(
     sessionDir: string,
     meta: SessionMeta,
-    checkpoint: TerminalCheckpointFile | null
+    checkpoint: TerminalCheckpointFile | null,
+    wslDistro?: string
   ): ColdRestoreInfo | null {
     let logBuffer: Buffer
     try {
-      logBuffer = readFileSync(join(sessionDir, 'output.log'))
+      logBuffer = readTerminalHistoryBuffer(
+        join(sessionDir, 'output.log'),
+        TERMINAL_HISTORY_LOG_MAX_BYTES
+      )
     } catch {
       return null
     }
@@ -131,11 +194,18 @@ export class HistoryReader {
 
     const emulator = new HeadlessEmulator({
       cols: checkpoint?.cols ?? meta.cols,
-      rows: checkpoint?.rows ?? meta.rows
+      rows: checkpoint?.rows ?? meta.rows,
+      wslDistro
     })
     try {
       if (checkpoint) {
-        if (!emulator.writeSync(checkpoint.rehydrateSequences + checkpoint.snapshotAnsi)) {
+        if (
+          !emulator.writeSync(
+            (checkpoint.scrollbackAnsi ?? '') +
+              checkpoint.rehydrateSequences +
+              checkpoint.snapshotAnsi
+          )
+        ) {
           return null
         }
         emulator.setRestoredOscLinks(checkpoint.oscLinks)
@@ -181,12 +251,8 @@ export class HistoryReader {
     cwd: string | null,
     meta: SessionMeta
   ): ColdRestoreInfo {
-    // Why: HeadlessEmulator.getSnapshot() doesn't populate scrollbackAnsi
-    // (it's always ''). For non-alt-screen snapshots, snapshotAnsi IS the
-    // normal buffer content and is safe to use as scrollback. For alt-screen
-    // snapshots, snapshotAnsi is the serialized TUI buffer (not raw PTY
-    // stream); return empty instead — the adapter skips cold restore when
-    // scrollbackAnsi is falsy.
+    // Why: legacy normal snapshots stored their buffer only in snapshotAnsi;
+    // current alt snapshots carry their normal buffer in scrollbackAnsi.
     const scrollbackAnsi =
       snapshot.scrollbackAnsi || (snapshot.modes?.alternateScreen ? '' : snapshot.snapshotAnsi)
     return {
@@ -207,7 +273,7 @@ export class HistoryReader {
       return null
     }
     try {
-      return JSON.parse(readFileSync(metaPath, 'utf-8'))
+      return readTerminalHistoryJson<SessionMeta>(metaPath, TERMINAL_HISTORY_META_MAX_BYTES)
     } catch {
       return null
     }
@@ -228,7 +294,10 @@ export class HistoryReader {
       return null
     }
     try {
-      const scrollback = readFileSync(scrollbackPath, 'utf-8')
+      const scrollback = readTerminalHistoryText(
+        scrollbackPath,
+        TERMINAL_HISTORY_LEGACY_SCROLLBACK_MAX_BYTES
+      )
       const truncated = this.truncateAltScreen(scrollback)
       return {
         snapshotAnsi: truncated,

@@ -1,6 +1,6 @@
-import { EventEmitter } from 'events'
+import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Socket } from 'net'
+import type { Socket } from 'node:net'
 import { UnixSocketTransport } from './unix-socket-transport'
 
 class FakeSocket extends EventEmitter {
@@ -63,7 +63,7 @@ describe('UnixSocketTransport', () => {
     ;(transport as unknown as UnixSocketTransportInternals).handleConnection(
       socket as unknown as Socket
     )
-    socket.emit('data', '{"id":"pending","method":"wait"}\n')
+    socket.emit('data', Buffer.from('{"id":"pending","method":"wait"}\n'))
 
     vi.advanceTimersByTime(100)
     expect(socket.writes).toHaveLength(1)
@@ -73,5 +73,27 @@ describe('UnixSocketTransport', () => {
 
     vi.advanceTimersByTime(500)
     expect(socket.writes).toHaveLength(1)
+  })
+
+  it('parses a request delivered as 100,000 one-byte fragments', () => {
+    const transport = new UnixSocketTransport({
+      endpoint: '/tmp/orca-runtime-rpc-test.sock',
+      kind: 'unix'
+    })
+    const socket = new FakeSocket()
+    let received = ''
+    transport.onMessage((message) => {
+      received = message
+    })
+    ;(transport as unknown as UnixSocketTransportInternals).handleConnection(
+      socket as unknown as Socket
+    )
+
+    const request = Buffer.from(`${' '.repeat(99_960)}{"id":"tiny","method":"status"}\n`)
+    for (let index = 0; index < request.byteLength; index += 1) {
+      socket.emit('data', request.subarray(index, index + 1))
+    }
+
+    expect(received).toBe('{"id":"tiny","method":"status"}')
   })
 })

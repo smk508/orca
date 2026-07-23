@@ -1,13 +1,34 @@
-/* eslint-disable max-lines -- Why: cookie import tests share import-time Electron mocks plus
-   browser-specific cookie fixtures; splitting would duplicate brittle setup. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as NodeFs from 'node:fs'
 
-const { sessionFromPartitionMock, dialogShowOpenDialogMock } = vi.hoisted(() => ({
+const {
+  appGetPathMock,
+  copyFileSyncMock,
+  execFileSyncMock,
+  sessionFromPartitionMock,
+  dialogShowOpenDialogMock
+} = vi.hoisted(() => ({
+  appGetPathMock: vi.fn(),
+  copyFileSyncMock: vi.fn(),
+  execFileSyncMock: vi.fn(),
   sessionFromPartitionMock: vi.fn(),
   dialogShowOpenDialogMock: vi.fn()
 }))
 
+vi.mock('node:child_process', () => ({ execFileSync: execFileSyncMock }))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>()
+  return {
+    ...actual,
+    copyFileSync: (...args: Parameters<typeof actual.copyFileSync>) => {
+      copyFileSyncMock(...args)
+      return actual.copyFileSync(...args)
+    }
+  }
+})
+
 vi.mock('electron', () => ({
+  app: { getPath: appGetPathMock },
   BrowserWindow: { fromWebContents: vi.fn() },
   dialog: { showOpenDialog: dialogShowOpenDialogMock },
   session: { fromPartition: sessionFromPartitionMock }
@@ -15,6 +36,7 @@ vi.mock('electron', () => ({
 
 import {
   buildChromiumCookieInsertParams,
+  CHROMIUM_LOCAL_STATE_MAX_BYTES,
   importCookiesFromFile,
   importCookiesFromBrowser,
   detectInstalledBrowsers,
@@ -22,9 +44,72 @@ import {
   type ChromiumCookieColumnInfo,
   type DetectedBrowser
 } from './browser-cookie-import'
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import {
+  createChromiumCookieTestDatabase,
+  encryptMacChromiumCookie
+} from './browser-cookie-import-test-database'
+import { COOKIE_JSON_FILE_MAX_BYTES } from './browser-cookie-json-file-parser'
+import { INSTALLED_BROWSER_COOKIE_STORE_MAX_BYTES } from './installed-browser-cookie-store-limits'
+import { SAFARI_COOKIE_STORE_MAX_FILE_BYTES } from './safari-cookie-store-decoder'
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  truncateSync,
+  writeFileSync
+} from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+
+function chromeBrowser(cookiesPath: string): DetectedBrowser {
+  return {
+    family: 'chrome',
+    label: 'Google Chrome',
+    cookiesPath,
+    keychainService: 'Chrome Safe Storage',
+    keychainAccount: 'Chrome',
+    profiles: [{ name: 'Default', directory: 'Default' }],
+    selectedProfile: 'Default'
+  }
+}
+
+function firefoxBrowser(cookiesPath: string): DetectedBrowser {
+  return {
+    family: 'firefox',
+    label: 'Firefox',
+    cookiesPath,
+    profiles: [{ name: 'default', directory: 'default' }],
+    selectedProfile: 'default'
+  }
+}
+
+function createFirefoxCookieTestDatabase(
+  databasePath: string,
+  rows: { name: string; value: string; host: string }[]
+): void {
+  const database = new DatabaseSync(databasePath)
+  database.exec(`
+    CREATE TABLE moz_cookies (
+      name TEXT,
+      value TEXT,
+      host TEXT,
+      path TEXT,
+      expiry INTEGER,
+      isSecure INTEGER,
+      isHttpOnly INTEGER,
+      sameSite INTEGER
+    )
+  `)
+  const insert = database.prepare('INSERT INTO moz_cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+  for (const row of rows) {
+    insert.run(row.name, row.value, row.host, '/', 2_000_000_000, 0, 0, 0)
+  }
+  database.close()
+}
 
 const LARGE_SAFARI_COOKIE_COUNT = 150_000
 
@@ -244,6 +329,20 @@ describe('importCookiesFromFile', () => {
     expect(result.reason).toContain('Could not read')
   })
 
+  it('rejects an oversized JSON file before reading its bytes', async () => {
+    const filePath = join(tmpDir, 'oversized.json')
+    writeFileSync(filePath, '')
+    truncateSync(filePath, COOKIE_JSON_FILE_MAX_BYTES + 1)
+
+    const result = await importCookiesFromFile(filePath, 'persist:test')
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'Cookie file is too large to import safely (64 MiB file limit).'
+    })
+    expect(sessionFromPartitionMock).not.toHaveBeenCalled()
+  })
+
   it('normalizes sameSite values', async () => {
     const filePath = writeCookieFile([
       { domain: '.test.com', name: 'a', value: '1', sameSite: 'None' },
@@ -327,9 +426,333 @@ describe('importCookiesFromBrowser Safari', () => {
     expect(result).toEqual({ ok: false, reason: 'All Safari cookies are expired.' })
     expect(cookiesSetMock).not.toHaveBeenCalled()
   })
+
+  it('rejects an oversized Safari store before reading its bytes', async () => {
+    const cookiesPath = join(tmpDir, 'Cookies.binarycookies')
+    writeFileSync(cookiesPath, '')
+    truncateSync(cookiesPath, SAFARI_COOKIE_STORE_MAX_FILE_BYTES + 1)
+    const browser: DetectedBrowser = {
+      family: 'safari',
+      label: 'Safari',
+      cookiesPath,
+      profiles: [],
+      selectedProfile: 'Default'
+    }
+
+    const result = await importCookiesFromBrowser(browser, 'persist:test')
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'Safari cookie store is too large to import safely (64 MiB file limit).'
+    })
+    expect(sessionFromPartitionMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('importCookiesFromBrowser Firefox', () => {
+  let tmpDir: string
+  let cookiesSetMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'orca-firefox-cookie-test-'))
+    cookiesSetMock = vi.fn().mockResolvedValue(undefined)
+    sessionFromPartitionMock.mockReset()
+    sessionFromPartitionMock.mockReturnValue({
+      cookies: { set: cookiesSetMock }
+    })
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('streams ordinary cookies in source order without changing the summary', async () => {
+    const cookiesPath = join(tmpDir, 'cookies.sqlite')
+    createFirefoxCookieTestDatabase(cookiesPath, [
+      { name: 'first', value: 'one', host: '.first.example.com' },
+      { name: 'second', value: 'two', host: '.second.example.com' }
+    ])
+
+    const result = await importCookiesFromBrowser(firefoxBrowser(cookiesPath), 'persist:test')
+
+    expect(result).toEqual({
+      ok: true,
+      profileId: '',
+      summary: {
+        totalCookies: 2,
+        importedCookies: 2,
+        skippedCookies: 0,
+        domains: ['first.example.com', 'second.example.com']
+      }
+    })
+    expect(cookiesSetMock.mock.calls.map(([cookie]) => cookie.name)).toEqual(['first', 'second'])
+  })
+
+  it('rejects oversized cookie data before iterating or mutating the target session', async () => {
+    const cookiesPath = join(tmpDir, 'cookies.sqlite')
+    const database = new DatabaseSync(cookiesPath)
+    database.exec(`
+      CREATE VIEW moz_cookies AS
+      SELECT
+        'sid' AS name,
+        zeroblob(${INSTALLED_BROWSER_COOKIE_STORE_MAX_BYTES + 1}) AS value,
+        '.example.com' AS host,
+        '/' AS path,
+        0 AS expiry,
+        0 AS isSecure,
+        0 AS isHttpOnly,
+        0 AS sameSite
+    `)
+    database.close()
+
+    const result = await importCookiesFromBrowser(firefoxBrowser(cookiesPath), 'persist:test')
+
+    expect(result).toEqual({
+      ok: false,
+      reason:
+        'Firefox cookie store is too large to import safely (250,000-cookie and 64 MiB cookie-data limits).'
+    })
+    expect(sessionFromPartitionMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('importCookiesFromBrowser Chromium', () => {
+  let tmpDir: string
+  let cookiesSetMock: ReturnType<typeof vi.fn>
+  let cookiesRemoveMock: ReturnType<typeof vi.fn>
+  let cookiesFlushStoreMock: ReturnType<typeof vi.fn>
+  let clearStorageDataMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'orca-chromium-cookie-test-'))
+    cookiesSetMock = vi.fn().mockResolvedValue(undefined)
+    cookiesRemoveMock = vi.fn().mockResolvedValue(undefined)
+    cookiesFlushStoreMock = vi.fn().mockResolvedValue(undefined)
+    clearStorageDataMock = vi.fn().mockResolvedValue(undefined)
+    appGetPathMock.mockReset()
+    appGetPathMock.mockReturnValue(join(tmpDir, 'userData'))
+    copyFileSyncMock.mockClear()
+    execFileSyncMock.mockReset()
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error('OS credential commands are unavailable in this test')
+    })
+    sessionFromPartitionMock.mockReset()
+    sessionFromPartitionMock.mockReturnValue({
+      cookies: {
+        set: cookiesSetMock,
+        remove: cookiesRemoveMock,
+        flushStore: cookiesFlushStoreMock
+      },
+      clearStorageData: clearStorageDataMock
+    })
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('imports from a live Chromium source DB into a Network/Cookies target profile', async () => {
+    const sourceCookiesPath = join(tmpDir, 'Chrome', 'Default', 'Network', 'Cookies')
+    const targetCookiesPath = join(tmpDir, 'userData', 'Partitions', 'test', 'Network', 'Cookies')
+    // Why: keeping the writer open leaves the committed row in WAL, matching a
+    // running Chromium profile whose latest auth cookies are not checkpointed.
+    const sourceDb = createChromiumCookieTestDatabase(
+      sourceCookiesPath,
+      [{ name: 'sid', value: 'source-value' }],
+      { journalMode: 'wal' }
+    )
+    createChromiumCookieTestDatabase(targetCookiesPath, [
+      { name: 'old', value: 'target-value' }
+    ]).close()
+
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    try {
+      expect(existsSync(`${sourceCookiesPath}-wal`)).toBe(true)
+      const sourceFilesBefore = ['', '-wal', '-shm'].map((suffix) =>
+        readFileSync(sourceCookiesPath + suffix)
+      )
+
+      const result = await importCookiesFromBrowser(
+        chromeBrowser(sourceCookiesPath),
+        'persist:test'
+      )
+
+      expect(result.ok).toBe(true)
+      expect(cookiesSetMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          domain: '.example.com',
+          name: 'sid',
+          value: 'source-value'
+        })
+      )
+      expect(execFileSyncMock.mock.calls.some(([command]) => command === 'security')).toBe(false)
+      expect(copyFileSyncMock.mock.calls.some(([source]) => source === sourceCookiesPath)).toBe(
+        true
+      )
+      expect(
+        copyFileSyncMock.mock.calls.some(([source]) => source === `${sourceCookiesPath}-wal`)
+      ).toBe(true)
+      expect(
+        ['', '-wal', '-shm'].map((suffix) => readFileSync(sourceCookiesPath + suffix))
+      ).toEqual(sourceFilesBefore)
+      expect(cookiesRemoveMock).not.toHaveBeenCalled()
+      expect(clearStorageDataMock).toHaveBeenCalledWith({ storages: ['cookies'] })
+    } finally {
+      platformSpy.mockRestore()
+      sourceDb.close()
+    }
+  })
+
+  it('uses the OS key for encrypted Chromium rows', async () => {
+    const password = 'test-password'
+    const sourceCookiesPath = join(tmpDir, 'Chrome', 'Default', 'Network', 'Cookies')
+    const targetCookiesPath = join(tmpDir, 'userData', 'Partitions', 'test', 'Network', 'Cookies')
+    createChromiumCookieTestDatabase(sourceCookiesPath, [
+      {
+        name: 'sid',
+        value: '',
+        encryptedValue: encryptMacChromiumCookie('encrypted-value', password)
+      }
+    ]).close()
+    createChromiumCookieTestDatabase(targetCookiesPath, []).close()
+    execFileSyncMock.mockImplementation((command: string) => {
+      if (command === 'security') {
+        return `${password}\n`
+      }
+      throw new Error(`Unexpected command: ${command}`)
+    })
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+
+    try {
+      const result = await importCookiesFromBrowser(
+        chromeBrowser(sourceCookiesPath),
+        'persist:test'
+      )
+
+      expect(result.ok).toBe(true)
+      expect(execFileSyncMock).toHaveBeenCalledWith(
+        'security',
+        expect.any(Array),
+        expect.any(Object)
+      )
+      expect(cookiesSetMock).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'sid', value: 'encrypted-value' })
+      )
+    } finally {
+      platformSpy.mockRestore()
+    }
+  })
+
+  it('removes staging data when the OS key is unavailable', async () => {
+    const sourceCookiesPath = join(tmpDir, 'Chrome', 'Default', 'Network', 'Cookies')
+    const targetCookiesPath = join(tmpDir, 'userData', 'Partitions', 'test', 'Network', 'Cookies')
+    createChromiumCookieTestDatabase(sourceCookiesPath, [
+      { name: 'sid', value: '', encryptedValue: Buffer.from('v10-encrypted') }
+    ]).close()
+    createChromiumCookieTestDatabase(targetCookiesPath, []).close()
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+
+    try {
+      const result = await importCookiesFromBrowser(
+        chromeBrowser(sourceCookiesPath),
+        'persist:test'
+      )
+
+      expect(result.ok).toBe(false)
+      expect(readdirSync(join(tmpDir, 'userData', 'cookie-import-staging'))).toEqual([])
+    } finally {
+      platformSpy.mockRestore()
+    }
+  })
+
+  it('removes partial staging data when the target database copy fails', async () => {
+    const sourceCookiesPath = join(tmpDir, 'Chrome', 'Default', 'Network', 'Cookies')
+    const targetCookiesPath = join(tmpDir, 'userData', 'Partitions', 'test', 'Network', 'Cookies')
+    createChromiumCookieTestDatabase(sourceCookiesPath, []).close()
+    createChromiumCookieTestDatabase(targetCookiesPath, []).close()
+    copyFileSyncMock.mockImplementationOnce((_source: string, destination: string) => {
+      writeFileSync(destination, 'partial cookie database')
+      throw new Error('simulated copy failure')
+    })
+
+    const result = await importCookiesFromBrowser(chromeBrowser(sourceCookiesPath), 'persist:test')
+
+    expect(result).toEqual({ ok: false, reason: 'Could not create staging cookie database.' })
+    expect(readdirSync(join(tmpDir, 'userData', 'cookie-import-staging'))).toEqual([])
+  })
+
+  it('rejects oversized source data before decrypting or clearing target cookies', async () => {
+    const sourceCookiesPath = join(tmpDir, 'Chrome', 'Default', 'Network', 'Cookies')
+    const targetCookiesPath = join(tmpDir, 'userData', 'Partitions', 'test', 'Network', 'Cookies')
+    mkdirSync(join(sourceCookiesPath, '..'), { recursive: true })
+    const sourceDatabase = new DatabaseSync(sourceCookiesPath)
+    sourceDatabase.exec(`
+      CREATE VIEW cookies AS
+      SELECT
+        1 AS creation_utc,
+        '.example.com' AS host_key,
+        '' AS top_frame_site_key,
+        'sid' AS name,
+        zeroblob(${INSTALLED_BROWSER_COOKIE_STORE_MAX_BYTES + 1}) AS value,
+        X'' AS encrypted_value,
+        '/' AS path,
+        0 AS expires_utc,
+        0 AS is_secure,
+        0 AS is_httponly,
+        0 AS samesite,
+        0 AS source_scheme,
+        -1 AS source_port,
+        0 AS last_update_utc,
+        0 AS has_cross_site_ancestor
+    `)
+    sourceDatabase.close()
+    createChromiumCookieTestDatabase(targetCookiesPath, []).close()
+
+    const result = await importCookiesFromBrowser(chromeBrowser(sourceCookiesPath), 'persist:test')
+
+    expect(result).toEqual({
+      ok: false,
+      reason:
+        'Google Chrome cookie store is too large to import safely (250,000-cookie and 64 MiB cookie-data limits).'
+    })
+    expect(clearStorageDataMock).not.toHaveBeenCalled()
+    expect(cookiesSetMock).not.toHaveBeenCalled()
+    expect(readdirSync(join(tmpDir, 'userData', 'cookie-import-staging'))).toEqual([])
+  })
 })
 
 describe('detectInstalledBrowsers', () => {
+  it('falls back safely when Chromium Local State exceeds its read cap', () => {
+    const root = mkdtempSync(join(tmpdir(), 'orca-browser-detection-bounds-'))
+    const originalConfigHome = process.env.XDG_CONFIG_HOME
+    const originalPlatform = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
+      process.env.XDG_CONFIG_HOME = root
+      const browserRoot = join(root, 'google-chrome')
+      mkdirSync(join(browserRoot, 'Default'), { recursive: true })
+      writeFileSync(join(browserRoot, 'Default', 'Cookies'), '')
+      writeFileSync(join(browserRoot, 'Local State'), '')
+      truncateSync(join(browserRoot, 'Local State'), CHROMIUM_LOCAL_STATE_MAX_BYTES + 1)
+
+      const chrome = detectInstalledBrowsers().find((browser) => browser.family === 'chrome')
+
+      expect(chrome?.profiles).toEqual([{ name: 'Default', directory: 'Default' }])
+      expect(chrome?.selectedProfile).toBe('Default')
+    } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
+      if (originalConfigHome === undefined) {
+        delete process.env.XDG_CONFIG_HOME
+      } else {
+        process.env.XDG_CONFIG_HOME = originalConfigHome
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('returns an array of detected browsers', () => {
     const browsers = detectInstalledBrowsers()
     expect(Array.isArray(browsers)).toBe(true)
@@ -347,7 +770,16 @@ describe('detectInstalledBrowsers', () => {
 
   it('each detected browser has a valid family', () => {
     const browsers = detectInstalledBrowsers()
-    const validFamilies = ['chrome', 'edge', 'arc', 'chromium', 'firefox', 'safari', 'comet']
+    const validFamilies = [
+      'chrome',
+      'edge',
+      'arc',
+      'chromium',
+      'firefox',
+      'safari',
+      'comet',
+      'helium'
+    ]
     for (const browser of browsers) {
       expect(validFamilies).toContain(browser.family)
     }

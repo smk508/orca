@@ -1,13 +1,21 @@
 /* eslint-disable max-lines -- Why: Codex discovery, incremental parsing, attribution, and aggregation all depend on the same event-normalization rules. Keeping them together makes the duplicate-snapshot logic easier to audit when usage totals look wrong. */
-import { basename, join, win32, posix } from 'path'
-import { createReadStream, existsSync } from 'fs'
-import { realpath, readdir, stat } from 'fs/promises'
-import { createInterface } from 'readline'
+import { basename, join, win32, posix } from 'node:path'
+import { existsSync } from 'node:fs'
+import { realpath, stat } from 'node:fs/promises'
 import type { Repo } from '../../shared/types'
 import { areWorktreePathsEqual } from '../ipc/worktree-logic'
 import { getOrcaManagedCodexHomePath, getSystemCodexHomePath } from '../codex/codex-home-paths'
+import { getCodexAccountHomeSessionDirectories } from '../codex/codex-account-home-discovery'
 import { getLegacyCopiedCodexSessionBridgeScanPreference } from '../codex/codex-session-bridge'
 import { canonicalizeUsageWorktreePaths } from '../usage-worktree-canonicalizer'
+import { walkUsageHistoryJsonlFiles } from '../usage-history-file-discovery'
+import { readUsageHistoryJsonlLines } from '../usage-history-jsonl-reader'
+import {
+  MAX_USAGE_HISTORY_FILES,
+  UsageHistoryScanBudget,
+  UsageHistoryScanCapacityError,
+  getUsageHistoryRetainedBytes
+} from '../usage-history-scan-budget'
 import type {
   CodexUsageAttributedEvent,
   CodexUsageDailyAggregate,
@@ -92,39 +100,6 @@ async function yieldToEventLoop(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve))
 }
 
-async function walkJsonlFiles(
-  dirPath: string,
-  progress: { entriesVisited: number } = { entriesVisited: 0 }
-): Promise<string[]> {
-  const entries = await readdir(dirPath, { withFileTypes: true })
-  const files: string[] = []
-
-  for (const entry of entries) {
-    progress.entriesVisited += 1
-    if (progress.entriesVisited % YIELD_EVERY_DISCOVERY_ENTRIES === 0) {
-      await yieldToEventLoop()
-    }
-    const fullPath = join(dirPath, entry.name)
-    if (entry.isDirectory()) {
-      appendDiscoveredFiles(files, await walkJsonlFiles(fullPath, progress))
-      continue
-    }
-    if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-      files.push(fullPath)
-    }
-  }
-
-  return files
-}
-
-function appendDiscoveredFiles(target: string[], source: readonly string[]): void {
-  // Why: large session directories can exceed V8's argument limit if child
-  // file arrays are spread into push().
-  for (const filePath of source) {
-    target.push(filePath)
-  }
-}
-
 export function getCodexSessionsDirectory(): string {
   // Why: Orca-launched Codex processes receive an Orca-owned CODEX_HOME, so
   // callers that need the primary runtime path should not consult ambient
@@ -133,23 +108,33 @@ export function getCodexSessionsDirectory(): string {
 }
 
 export function getCodexSessionDirectories(): string[] {
-  // Why: upgraded users still have ordinary Codex history under ~/.codex, while
-  // new Orca-launched sessions are written under Orca's managed runtime home.
-  return [getCodexSessionsDirectory(), join(getSystemCodexHomePath(), 'sessions')].filter(
-    (dirPath, index, allDirPaths) => allDirPaths.indexOf(dirPath) === index
-  )
+  // Why: sessions now live in three lanes — the shared runtime mirror, the real
+  // ~/.codex, and per-account self-contained homes; missing any lane silently
+  // undercounts usage for multi-account users.
+  return [
+    getCodexSessionsDirectory(),
+    join(getSystemCodexHomePath(), 'sessions'),
+    ...getCodexAccountHomeSessionDirectories()
+  ].filter((dirPath, index, allDirPaths) => allDirPaths.indexOf(dirPath) === index)
 }
 
 function hasLegacyCopiedSessionBridgeMarkers(): boolean {
   return existsSync(join(getOrcaManagedCodexHomePath(), '.orca-session-copies'))
 }
 
-export async function listCodexSessionFiles(): Promise<string[]> {
+export async function listCodexSessionFiles(
+  budget = new UsageHistoryScanBudget()
+): Promise<string[]> {
   const files: string[] = []
   for (const dirPath of getCodexSessionDirectories()) {
     try {
-      appendDiscoveredFiles(files, await walkJsonlFiles(dirPath))
-    } catch {
+      for (const filePath of await walkUsageHistoryJsonlFiles(dirPath, budget)) {
+        files.push(filePath)
+      }
+    } catch (error) {
+      if (error instanceof UsageHistoryScanCapacityError) {
+        throw error
+      }
       // Missing or unreadable history in one home should not hide the other.
     }
   }
@@ -386,6 +371,28 @@ function resolveCodexUsageDelta(
   }
 
   return null
+}
+
+function buildCodexUsageEventKey(
+  timestamp: string,
+  totalUsage: CodexUsageRawUsage | null,
+  lastUsage: CodexUsageRawUsage | null
+): string {
+  // Why: fork/resume copies token_count records byte-for-byte into a new
+  // rollout file, but session_meta.id is often rewritten to the new session.
+  // Key only on the raw record fields (timestamp + usage tuples) so the copy
+  // matches the original regardless of surrounding parse context / session id.
+  const tupleOf = (usage: CodexUsageRawUsage | null): string =>
+    usage
+      ? [
+          usage.inputTokens,
+          usage.cachedInputTokens,
+          usage.outputTokens,
+          usage.reasoningOutputTokens,
+          usage.totalTokens
+        ].join(',')
+      : ''
+  return [timestamp, tupleOf(totalUsage), tupleOf(lastUsage)].join('|')
 }
 
 function extractString(value: unknown): string | null {
@@ -868,6 +875,62 @@ function mergeDailyAggregates(
   }
 }
 
+function claimCodexUsageProjection(
+  budget: UsageHistoryScanBudget,
+  sessions: readonly CodexUsageSession[],
+  dailyAggregates: readonly CodexUsageDailyAggregate[]
+): void {
+  for (const session of sessions) {
+    budget.claimProjection(
+      getUsageHistoryRetainedBytes([
+        session.sessionId,
+        session.firstTimestamp,
+        session.lastTimestamp,
+        session.primaryModel,
+        session.primaryProjectLabel,
+        session.primaryWorktreeId,
+        session.primaryRepoId
+      ])
+    )
+    for (const location of session.locationBreakdown) {
+      budget.claimProjection(
+        getUsageHistoryRetainedBytes([
+          location.locationKey,
+          location.projectLabel,
+          location.repoId,
+          location.worktreeId
+        ])
+      )
+    }
+    for (const model of session.modelBreakdown) {
+      budget.claimProjection(getUsageHistoryRetainedBytes([model.modelKey, model.modelLabel]))
+    }
+    for (const locationModel of session.locationModelBreakdown) {
+      budget.claimProjection(
+        getUsageHistoryRetainedBytes([
+          locationModel.locationKey,
+          locationModel.modelKey,
+          locationModel.modelLabel,
+          locationModel.repoId,
+          locationModel.worktreeId
+        ])
+      )
+    }
+  }
+  for (const daily of dailyAggregates) {
+    budget.claimProjection(
+      getUsageHistoryRetainedBytes([
+        daily.day,
+        daily.model,
+        daily.projectKey,
+        daily.projectLabel,
+        daily.repoId,
+        daily.worktreeId
+      ])
+    )
+  }
+}
+
 export function parseCodexUsageRecord(
   line: string,
   context: CodexUsageParseContext
@@ -956,6 +1019,7 @@ export function parseCodexUsageRecord(
   return {
     sessionId: context.sessionId,
     timestamp: parsed.timestamp,
+    eventKey: buildCodexUsageEventKey(parsed.timestamp, totalUsage, lastUsage),
     cwd: context.currentCwd ?? context.sessionCwd,
     model: resolvedModel,
     hasInferredPricing,
@@ -970,16 +1034,14 @@ export function parseCodexUsageRecord(
 export async function parseCodexUsageFile(
   filePath: string,
   worktrees: (CodexUsageWorktreeRef & { canonicalPath: string })[],
-  options: { skipInitialBytes?: number } = {}
+  options: {
+    skipInitialBytes?: number
+    claimEventKey?: (eventKey: string) => boolean
+    budget?: UsageHistoryScanBudget
+  } = {}
 ): Promise<CodexUsagePersistedFile> {
+  const budget = options.budget ?? new UsageHistoryScanBudget()
   const processedFile = await getProcessedFileInfo(filePath)
-  const lines = createInterface({
-    input: createReadStream(filePath, {
-      encoding: 'utf-8',
-      start: options.skipInitialBytes ?? 0
-    }),
-    crlfDelay: Infinity
-  })
   const events: CodexUsageAttributedEvent[] = []
   const context: CodexUsageParseContext = {
     sessionId: basename(filePath, '.jsonl'),
@@ -992,20 +1054,48 @@ export async function parseCodexUsageFile(
     totalOnlyBaselinePending: (options.skipInitialBytes ?? 0) > 0
   }
 
-  for await (const line of lines) {
+  const ownedEventKeys = new Set<string>()
+  let hasDeferredClaims = false
+  for await (const line of readUsageHistoryJsonlLines(filePath, {
+    start: options.skipInitialBytes ?? 0
+  })) {
     const parsed = parseCodexUsageRecord(line, context)
     if (!parsed) {
       continue
     }
+    // Why: fork/resume rollouts start with a copied prefix of the parent file.
+    // Events another file already owns are dropped here, but the record still
+    // advanced context.previousTotals above, so later deltas stay correct.
+    if (options.claimEventKey && !options.claimEventKey(parsed.eventKey)) {
+      hasDeferredClaims = true
+      continue
+    }
+    budget.claimRecord(
+      getUsageHistoryRetainedBytes([
+        parsed.sessionId,
+        parsed.timestamp,
+        parsed.eventKey,
+        parsed.cwd,
+        parsed.model
+      ])
+    )
+    if (!ownedEventKeys.has(parsed.eventKey)) {
+      budget.claimOwnershipKey(parsed.eventKey)
+    }
+    ownedEventKeys.add(parsed.eventKey)
     const attributed = await attributeCodexUsageEvent(parsed, worktrees)
     if (attributed) {
       events.push(attributed)
     }
   }
 
+  const aggregates = aggregateCodexUsage(events)
+  claimCodexUsageProjection(budget, aggregates.sessions, aggregates.dailyAggregates)
   return {
     ...processedFile,
-    ...aggregateCodexUsage(events)
+    ...aggregates,
+    ownedEventKeys: [...ownedEventKeys],
+    hasDeferredClaims
   }
 }
 
@@ -1017,33 +1107,92 @@ export async function scanCodexUsageFiles(
   sessions: CodexUsageSession[]
   dailyAggregates: CodexUsageDailyAggregate[]
 }> {
-  const files = await listCodexSessionFiles()
+  if (previousProcessedFiles.length > MAX_USAGE_HISTORY_FILES) {
+    throw new UsageHistoryScanCapacityError('files', MAX_USAGE_HISTORY_FILES)
+  }
+  const budget = new UsageHistoryScanBudget()
+  const files = await listCodexSessionFiles(budget)
+  for (const previous of previousProcessedFiles) {
+    budget.claimPath(previous.path)
+  }
   const previousByPath = new Map(previousProcessedFiles.map((file) => [file.path, file]))
-  const processedFiles: CodexUsagePersistedFile[] = []
   const worktreesWithCanonicalPaths = await buildWorktreesWithCanonicalPaths(worktrees)
   const legacySourceSkipBytesByPath = getLegacySourceSkipBytesByPath(files)
-  const sessionsById = new Map<string, CodexUsageSession>()
-  const dailyByKey = new Map<string, CodexUsageDailyAggregate>()
 
+  const currentPaths = new Set(files)
+  // Why: when a rollout that owned event keys is deleted, remaining forks still
+  // contain those records but their caches record them as unowned. Only files
+  // that previously deferred claims can reclaim, so invalidate those — not the
+  // entire rollout corpus.
+  const lostOwnerPath = previousProcessedFiles.some(
+    (file) =>
+      !currentPaths.has(file.path) &&
+      Array.isArray(file.ownedEventKeys) &&
+      file.ownedEventKeys.length > 0
+  )
+
+  const reusedByPath = new Map<string, CodexUsagePersistedFile>()
+  const pathsToParse: string[] = []
   for (const [index, filePath] of files.entries()) {
     const legacySourceSkipBytes = legacySourceSkipBytesByPath.get(filePath) ?? 0
     const fileInfo = await getProcessedFileInfo(filePath)
     const previous = previousByPath.get(filePath)
+    // When an owner disappears, only deferred-claim files need reparse.
+    const mustReclaimDeferred = lostOwnerPath && previous?.hasDeferredClaims !== false
     const canReuse =
+      !mustReclaimDeferred &&
       legacySourceSkipBytes === 0 &&
       previous &&
       previous.mtimeMs === fileInfo.mtimeMs &&
-      previous.size === fileInfo.size
+      previous.size === fileInfo.size &&
+      Array.isArray(previous.ownedEventKeys) &&
+      typeof previous.hasDeferredClaims === 'boolean'
+    if (canReuse) {
+      reusedByPath.set(filePath, previous)
+    } else {
+      pathsToParse.push(filePath)
+    }
+    if ((index + 1) % YIELD_EVERY_FILES === 0) {
+      await yieldToEventLoop()
+    }
+  }
 
-    const processed = canReuse
-      ? previous
-      : await parseCodexUsageFile(filePath, worktreesWithCanonicalPaths, {
-          skipInitialBytes: legacySourceSkipBytes
-        })
+  // Why: resuming or forking a Codex session copies the parent rollout's
+  // token_count records into a new file, so per-file parsing re-counts the
+  // whole copied history once per descendant (#8006). Cross-file ownership
+  // counts each record for exactly one file; cached files keep the claims
+  // they persisted, and new files claim in sorted-path order so rescans stay
+  // deterministic.
+  const eventOwnerByKey = new Map<string, string>()
+  for (const [filePath, previous] of reusedByPath) {
+    for (const session of previous.sessions) {
+      budget.claimRecords(session.eventCount)
+    }
+    claimCodexUsageProjection(budget, previous.sessions, previous.dailyAggregates)
+    for (const eventKey of previous.ownedEventKeys) {
+      budget.claimOwnershipKey(eventKey)
+      // First cached claim wins so conflicting projections stay deterministic.
+      if (!eventOwnerByKey.has(eventKey)) {
+        eventOwnerByKey.set(eventKey, filePath)
+      }
+    }
+  }
 
-    processedFiles.push(processed)
-    mergeSessions(sessionsById, processed.sessions)
-    mergeDailyAggregates(dailyByKey, processed.dailyAggregates)
+  const parsedByPath = new Map<string, CodexUsagePersistedFile>()
+  for (const [index, filePath] of pathsToParse.entries()) {
+    const processed = await parseCodexUsageFile(filePath, worktreesWithCanonicalPaths, {
+      skipInitialBytes: legacySourceSkipBytesByPath.get(filePath) ?? 0,
+      budget,
+      claimEventKey: (eventKey) => {
+        const owner = eventOwnerByKey.get(eventKey)
+        if (owner !== undefined && owner !== filePath) {
+          return false
+        }
+        eventOwnerByKey.set(eventKey, filePath)
+        return true
+      }
+    })
+    parsedByPath.set(filePath, processed)
 
     // Why: Codex session history can grow large, and scans run on the Electron
     // main process. Yield regularly so opening Settings does not stall while
@@ -1053,14 +1202,30 @@ export async function scanCodexUsageFiles(
     }
   }
 
+  const processedFiles: CodexUsagePersistedFile[] = []
+  const sessionsById = new Map<string, CodexUsageSession>()
+  const dailyByKey = new Map<string, CodexUsageDailyAggregate>()
+  for (const filePath of files) {
+    const processed = reusedByPath.get(filePath) ?? parsedByPath.get(filePath)
+    if (!processed) {
+      continue
+    }
+    processedFiles.push(processed)
+    mergeSessions(sessionsById, processed.sessions)
+    mergeDailyAggregates(dailyByKey, processed.dailyAggregates)
+  }
+
+  const sessions = finalizeSessions(sessionsById)
+  const dailyAggregates = [...dailyByKey.values()].sort((left, right) =>
+    left.day === right.day
+      ? left.projectLabel.localeCompare(right.projectLabel)
+      : left.day.localeCompare(right.day)
+  )
+  claimCodexUsageProjection(budget, sessions, dailyAggregates)
   return {
     processedFiles,
-    sessions: finalizeSessions(sessionsById),
-    dailyAggregates: [...dailyByKey.values()].sort((left, right) =>
-      left.day === right.day
-        ? left.projectLabel.localeCompare(right.projectLabel)
-        : left.day.localeCompare(right.day)
-    )
+    sessions,
+    dailyAggregates
   }
 }
 

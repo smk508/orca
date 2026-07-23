@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Notifications from 'expo-notifications'
-import { subscribeToDesktopNotifications } from './mobile-notifications'
+import { Platform } from 'react-native'
+import {
+  getNotificationPermissionState,
+  setScheduledNotificationsMaxForTests,
+  subscribeToDesktopNotifications
+} from './mobile-notifications'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import type { RpcClient } from '../transport/rpc-client'
 import { loadPushNotificationsEnabled } from '../storage/preferences'
 
@@ -14,12 +20,48 @@ vi.mock('expo-notifications', () => ({
 }))
 
 vi.mock('react-native', () => ({
-  Platform: { OS: 'ios' }
+  Platform: { OS: 'ios', Version: 18 }
+}))
+
+// Why: mobile-notifications now persists the catch-up watermark to
+// AsyncStorage. The package isn't resolvable in the node test env (other
+// mobile tests mock it the same way), so we provide a no-op mock.
+vi.mock('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: vi.fn(async () => null),
+    setItem: vi.fn(async () => undefined)
+  }
 }))
 
 vi.mock('../storage/preferences', () => ({
   loadPushNotificationsEnabled: vi.fn()
 }))
+
+beforeEach(() => {
+  Object.assign(Platform, { OS: 'ios', Version: 18 })
+})
+
+describe('getNotificationPermissionState', () => {
+  it.each([
+    { os: 'android', version: 32, expected: false },
+    { os: 'android', version: 33, expected: true },
+    { os: 'ios', version: 18, expected: true }
+  ])(
+    'reports whether a granted $os $version authorization reflects user choice',
+    async ({ os, version, expected }) => {
+      Object.assign(Platform, { OS: os, Version: version })
+      vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+        status: 'granted',
+        canAskAgain: true
+      } as never)
+
+      await expect(getNotificationPermissionState()).resolves.toMatchObject({
+        granted: true,
+        authorizationReflectsUserChoice: expected
+      })
+    }
+  )
+})
 
 describe('subscribeToDesktopNotifications', () => {
   beforeEach(() => {
@@ -267,5 +309,437 @@ describe('subscribeToDesktopNotifications', () => {
     await flushAsync()
 
     expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalled()
+  })
+
+  // Why: notificationId is unique per completion, so the map grew unbounded when
+  // the desktop never sent a dismiss (the remote-mobile case). It is now capped.
+  it('dismisses the oldest scheduled entry when reusing its bounded slot', async () => {
+    setScheduledNotificationsMaxForTests(1)
+    try {
+      vi.mocked(Notifications.scheduleNotificationAsync).mockReset()
+      vi.mocked(Notifications.dismissNotificationAsync).mockReset()
+      vi.mocked(loadPushNotificationsEnabled).mockResolvedValue(true)
+      vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+        status: 'granted',
+        canAskAgain: true
+      } as never)
+      vi.mocked(Notifications.scheduleNotificationAsync)
+        .mockResolvedValueOnce('scheduled-old')
+        .mockResolvedValueOnce('scheduled-new')
+      vi.mocked(Notifications.dismissNotificationAsync).mockResolvedValue(undefined)
+      let onEvent: ((data: unknown) => void) | null = null
+      const client = {
+        subscribe: vi.fn((_method, _params, callback: (data: unknown) => void) => {
+          onEvent = callback
+          return vi.fn()
+        }),
+        getState: vi.fn(() => 'connected'),
+        sendRequest: vi.fn()
+      } as unknown as RpcClient
+
+      subscribeToDesktopNotifications(client, 'host-1')
+      onEvent?.({ type: 'notification', title: 't', body: 'b', notificationId: 'agent:old' })
+      await flushAsync()
+      onEvent?.({ type: 'notification', title: 't', body: 'b', notificationId: 'agent:new' })
+      await flushAsync()
+
+      expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('scheduled-old')
+
+      // The older entry was already dismissed during eviction, so a later desktop dismiss is a no-op...
+      onEvent?.({ type: 'dismiss', notificationId: 'agent:old' })
+      await flushAsync()
+      expect(Notifications.dismissNotificationAsync).toHaveBeenCalledTimes(1)
+
+      // ...while the most-recent entry is retained and still dismissable.
+      onEvent?.({ type: 'dismiss', notificationId: 'agent:new' })
+      await flushAsync()
+      expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('scheduled-new')
+    } finally {
+      setScheduledNotificationsMaxForTests()
+    }
+  })
+
+  it('keeps overload gaps replayable and advances after reconnect catches up', async () => {
+    setScheduledNotificationsMaxForTests(1)
+    const firstSchedule = makeDeferred<string>()
+    try {
+      vi.mocked(Notifications.scheduleNotificationAsync).mockReset()
+      vi.mocked(Notifications.dismissNotificationAsync).mockReset()
+      vi.mocked(loadPushNotificationsEnabled).mockResolvedValue(true)
+      vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+        status: 'granted',
+        canAskAgain: true
+      } as never)
+      vi.mocked(Notifications.scheduleNotificationAsync)
+        .mockReturnValueOnce(firstSchedule.promise)
+        .mockResolvedValueOnce('scheduled-after-drain')
+        .mockResolvedValueOnce('scheduled-replayed')
+      vi.mocked(Notifications.dismissNotificationAsync).mockResolvedValue(undefined)
+      let onEvent: ((data: unknown) => void) | null = null
+      const client = {
+        subscribe: vi.fn((_method, _params, callback: (data: unknown) => void) => {
+          onEvent = callback
+          return vi.fn()
+        }),
+        getState: vi.fn(() => 'connected'),
+        sendRequest: vi.fn(async (method: string) => {
+          if (method === 'notifications.getMissedSince') {
+            return {
+              ok: true,
+              result: {
+                notifications: [
+                  {
+                    type: 'notification',
+                    title: 'two',
+                    body: 'two',
+                    notificationId: 'two',
+                    notificationSeq: 2
+                  },
+                  {
+                    type: 'notification',
+                    title: 'three',
+                    body: 'three',
+                    notificationId: 'three',
+                    notificationSeq: 3
+                  }
+                ]
+              }
+            } as never
+          }
+          return { ok: true, result: undefined } as never
+        })
+      } as unknown as RpcClient
+
+      subscribeToDesktopNotifications(client, 'host-hung')
+      onEvent?.({ type: 'ready', subscriptionId: 'sub-1' })
+      onEvent?.({
+        type: 'notification',
+        title: 'one',
+        body: 'one',
+        notificationId: 'one',
+        notificationSeq: 1
+      })
+      await flushAsync()
+      onEvent?.({
+        type: 'notification',
+        title: 'two',
+        body: 'two',
+        notificationId: 'two',
+        notificationSeq: 2
+      })
+      await flushAsync()
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledOnce()
+      expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1)
+
+      firstSchedule.resolve('scheduled-first')
+      await flushAsync()
+      onEvent?.({
+        type: 'notification',
+        title: 'three',
+        body: 'three',
+        notificationId: 'three',
+        notificationSeq: 3
+      })
+      await flushAsync()
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(2)
+      expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1)
+
+      onEvent?.({ type: 'ready', subscriptionId: 'sub-2' })
+      await flushAsync()
+      await flushAsync()
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(3)
+      expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
+        'orca:mobileNotificationsLastSeq:host-hung',
+        '3'
+      )
+    } finally {
+      firstSchedule.resolve('scheduled-first')
+      setScheduledNotificationsMaxForTests()
+    }
+  })
+})
+
+// Why: #8129 catch-up. On a reconnect the live stream re-emits `ready`; the
+// client must fetch missed notifications from its watermark and push exactly
+// the ones it had not yet delivered — never re-pushing an already-delivered id.
+describe('subscribeToDesktopNotifications — reconnect catch-up', () => {
+  const AsyncStorageMock = vi.mocked(AsyncStorage)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    AsyncStorageMock.getItem.mockResolvedValue(null)
+    vi.mocked(Notifications.dismissNotificationAsync).mockResolvedValue(undefined)
+  })
+
+  function flushAsync(): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, 10)
+    })
+  }
+
+  function makeClient() {
+    let onData: ((data: unknown) => void) | null = null
+    const sentRequests: { method: string; params: unknown }[] = []
+    const client = {
+      subscribe: vi.fn((_method: string, _params: unknown, cb: (data: unknown) => void) => {
+        onData = cb
+        return vi.fn()
+      }),
+      getState: vi.fn(() => 'connected'),
+      sendRequest: vi.fn(
+        async (method: string, _params: unknown = {}) =>
+          ({
+            ok: true,
+            result: method === 'notifications.getMissedSince' ? { notifications: [] } : undefined
+          }) as never
+      )
+    }
+    // Why: onData is captured live via a getter (not destructured) because the
+    // subscribe mock assigns it asynchronously as a side effect of
+    // subscribeToDesktopNotifications calling client.subscribe.
+    return {
+      client: client as unknown as RpcClient,
+      get onData() {
+        return onData
+      },
+      sentRequests
+    }
+  }
+
+  it('does not fetch missed notifications on the first (cold-open) ready', async () => {
+    vi.mocked(loadPushNotificationsEnabled).mockResolvedValue(true)
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+      status: 'granted',
+      canAskAgain: true
+    } as never)
+    vi.mocked(Notifications.scheduleNotificationAsync).mockResolvedValue('scheduled-1')
+
+    const sub = makeClient()
+    subscribeToDesktopNotifications(sub.client, 'host-1')
+    // First ready = cold open.
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+
+    expect(sub.client.sendRequest).not.toHaveBeenCalledWith(
+      'notifications.getMissedSince',
+      expect.anything()
+    )
+  })
+
+  it('fetches only notifications after the delivered watermark (idempotent catch-up)', async () => {
+    vi.mocked(loadPushNotificationsEnabled).mockResolvedValue(true)
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+      status: 'granted',
+      canAskAgain: true
+    } as never)
+    vi.mocked(Notifications.scheduleNotificationAsync).mockResolvedValue('scheduled-1')
+
+    const sub = makeClient()
+    // The desktop honours the watermark: only seq 10 (agent:missed) is returned
+    // because seq 11 (agent:dup) was already delivered on the live stream and
+    // advanced lastDeliveredSeq to 11. So the replay never re-includes it.
+    sub.client.sendRequest = vi.fn(async (method: string) => {
+      if (method === 'notifications.getMissedSince') {
+        return {
+          ok: true,
+          result: {
+            notifications: [
+              {
+                type: 'notification',
+                title: 'missed',
+                body: 'b',
+                notificationId: 'agent:missed',
+                notificationSeq: 10
+              }
+            ]
+          }
+        } as never
+      }
+      return { ok: true, result: undefined } as never
+    })
+
+    subscribeToDesktopNotifications(sub.client, 'host-1')
+    // First ready = cold open (no fetch).
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    // Live stream already delivered agent:dup (seq 11) before reap.
+    sub.onData?.({
+      type: 'notification',
+      title: 'dup',
+      body: 'b',
+      notificationId: 'agent:dup',
+      notificationSeq: 11
+    })
+    await flushAsync()
+    // Reconnect ready → fetchMissed sends the watermark (11).
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    await flushAsync()
+
+    // The watermark passed to getMissedSince is the delivered seq.
+    const missedCall = vi
+      .mocked(sub.client.sendRequest)
+      .mock.calls.find((c: unknown[]) => c[0] === 'notifications.getMissedSince')
+    expect(missedCall?.[1]).toEqual({ lastSeenSeq: 11 })
+    // Only agent:missed was pushed; agent:dup appears exactly once (live only).
+    const scheduledIds = vi
+      .mocked(Notifications.scheduleNotificationAsync)
+      .mock.calls.map(
+        (call) =>
+          (call[0] as { content: { data: { notificationId: string } } }).content.data.notificationId
+      )
+    expect(scheduledIds).toEqual(['agent:dup', 'agent:missed'])
+    expect(scheduledIds.filter((id) => id === 'agent:dup')).toHaveLength(1)
+  })
+
+  it('drops an already-seen id if a replay re-includes it (defense-in-depth)', async () => {
+    vi.mocked(loadPushNotificationsEnabled).mockResolvedValue(true)
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+      status: 'granted',
+      canAskAgain: true
+    } as never)
+    vi.mocked(Notifications.scheduleNotificationAsync).mockResolvedValue('s')
+
+    const sub = makeClient()
+    // Simulate the bounded-buffer edge: the desktop returns seq 11 again
+    // (already delivered live) alongside a new seq 12.
+    sub.client.sendRequest = vi.fn(async (method: string) => {
+      if (method === 'notifications.getMissedSince') {
+        return {
+          ok: true,
+          result: {
+            notifications: [
+              {
+                type: 'notification',
+                title: 'dup',
+                body: 'b',
+                notificationId: 'agent:dup',
+                notificationSeq: 11
+              },
+              {
+                type: 'notification',
+                title: 'new',
+                body: 'b',
+                notificationId: 'agent:new',
+                notificationSeq: 12
+              }
+            ]
+          }
+        } as never
+      }
+      return { ok: true, result: undefined } as never
+    })
+
+    subscribeToDesktopNotifications(sub.client, 'host-1')
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    // Live stream delivered agent:dup (seq 11) before reap.
+    sub.onData?.({
+      type: 'notification',
+      title: 'dup',
+      body: 'b',
+      notificationId: 'agent:dup',
+      notificationSeq: 11
+    })
+    await flushAsync()
+    // Reconnect replay re-includes seq 11 (must be dropped) + new seq 12.
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    await flushAsync()
+
+    const scheduledIds = vi
+      .mocked(Notifications.scheduleNotificationAsync)
+      .mock.calls.map(
+        (call) =>
+          (call[0] as { content: { data: { notificationId: string } } }).content.data.notificationId
+      )
+    expect(scheduledIds).toEqual(['agent:dup', 'agent:new'])
+    expect(scheduledIds.filter((id) => id === 'agent:dup')).toHaveLength(1)
+  })
+
+  it('persists the highest delivered seq so a later reconnect resumes from it', async () => {
+    vi.mocked(loadPushNotificationsEnabled).mockResolvedValue(true)
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+      status: 'granted',
+      canAskAgain: true
+    } as never)
+    vi.mocked(Notifications.scheduleNotificationAsync).mockResolvedValue('s')
+
+    const sub = makeClient()
+    subscribeToDesktopNotifications(sub.client, 'host-1')
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    // Live stream delivers seq 5.
+    sub.onData?.({
+      type: 'notification',
+      title: 't',
+      body: 'b',
+      notificationId: 'agent:live',
+      notificationSeq: 5
+    })
+    await flushAsync()
+
+    expect(AsyncStorageMock.setItem).toHaveBeenCalledWith(
+      'orca:mobileNotificationsLastSeq:host-1',
+      '5'
+    )
+  })
+
+  // Why: a replay-ONLY delivery (nothing arrived live first) must still advance
+  // and persist the watermark. This is the exact case the seq/notificationSeq
+  // field mismatch broke — the desktop replay path returns `notificationSeq`
+  // (matching the live fan-out), so the client watermark moves and the next
+  // reconnect resumes from it instead of re-fetching from 0.
+  it('advances + persists the watermark from a replay-only delivery (#8129 field-mismatch regression)', async () => {
+    vi.mocked(loadPushNotificationsEnabled).mockResolvedValue(true)
+    vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({
+      status: 'granted',
+      canAskAgain: true
+    } as never)
+    vi.mocked(Notifications.scheduleNotificationAsync).mockResolvedValue('s')
+
+    const sub = makeClient()
+    // Desktop replay returns events keyed by notificationSeq (the fixed shape).
+    sub.client.sendRequest = vi.fn(async (method: string) => {
+      if (method === 'notifications.getMissedSince') {
+        return {
+          ok: true,
+          result: {
+            notifications: [
+              {
+                type: 'notification',
+                title: 'missed',
+                body: 'b',
+                notificationId: 'agent:missed',
+                notificationSeq: 8
+              }
+            ]
+          }
+        } as never
+      }
+      return { ok: true, result: undefined } as never
+    })
+
+    subscribeToDesktopNotifications(sub.client, 'host-1')
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    // First reconnect → replay delivers seq 8 (no prior live delivery).
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    await flushAsync()
+
+    // Watermark advanced to the replayed seq and was persisted.
+    expect(AsyncStorageMock.setItem).toHaveBeenCalledWith(
+      'orca:mobileNotificationsLastSeq:host-1',
+      '8'
+    )
+
+    // Second reconnect resumes from the advanced watermark, not 0.
+    sub.onData?.({ type: 'ready', subscriptionId: 'sub-1' })
+    await flushAsync()
+    const missedCalls = vi
+      .mocked(sub.client.sendRequest)
+      .mock.calls.filter((c: unknown[]) => c[0] === 'notifications.getMissedSince')
+    expect(missedCalls.at(-1)?.[1]).toEqual({ lastSeenSeq: 8 })
   })
 })

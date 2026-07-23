@@ -22,9 +22,11 @@ vi.mock('./gemini-cli-oauth-extractor', () => ({
 }))
 
 vi.mock('node:fs/promises', () => ({
-  readFile: readFileMock,
   writeFile: vi.fn().mockResolvedValue(undefined),
   rename: vi.fn().mockResolvedValue(undefined)
+}))
+vi.mock('../integration-credential-file', () => ({
+  readIntegrationCredentialFileText: readFileMock
 }))
 vi.mock('electron', () => ({ net: { fetch: netFetchMock } }))
 
@@ -167,7 +169,7 @@ describe('fetchGeminiRateLimits', () => {
         return Promise.resolve(
           makeResponse([
             {
-              remainingFraction: NaN,
+              remainingFraction: Number.NaN,
               resetTime: '2026-04-24T13:00:00.000Z',
               modelId: 'gemini-1.5-pro'
             },

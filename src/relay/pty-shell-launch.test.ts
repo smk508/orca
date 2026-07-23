@@ -1,7 +1,7 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
-import { spawnSync } from 'child_process'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { getRelayShellLaunchConfig } from './pty-shell-launch'
 
@@ -138,6 +138,24 @@ describe('getRelayShellLaunchConfig', () => {
   })
 
   it.skipIf(process.platform === 'win32')(
+    'replaces a sparse oversized wrapper without reading its payload',
+    () => {
+      const zshRoot = join(homeDir, '.orca-relay', 'shell-ready', 'zsh')
+      const wrapperPath = join(zshRoot, '.zshenv')
+      mkdirSync(zshRoot, { recursive: true })
+      writeFileSync(wrapperPath, '')
+      truncateSync(wrapperPath, 1024 * 1024 * 1024)
+
+      getRelayShellLaunchConfig('/bin/zsh', {
+        HOME: homeDir,
+        ORCA_OPENCODE_CONFIG_DIR: '/tmp/orca-opencode-overlay'
+      })
+
+      expect(readFileSync(wrapperPath, 'utf8')).toContain('export ORCA_USER_ZDOTDIR=')
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
     'wraps zsh when MiMo home must survive shell startup',
     () => {
       const config = getRelayShellLaunchConfig('/bin/zsh', {
@@ -232,6 +250,23 @@ describe('getRelayShellLaunchConfig', () => {
     const output = runInteractiveBashRcfile(config.args[1] as string, homeDir)
 
     expect(output).toContain('PROMPT_ARRAY')
+    expectBashOsc133Lifecycle(output)
+  })
+
+  // Why: RHEL-family /etc/bashrc prepends "history -a; " to PROMPT_COMMAND
+  // outside its BASHRCSOURCED guard (repeated across re-sources), so the value
+  // Orca inherits ends in a ";"+whitespace separator. Prepend/append must not
+  // splice an empty command (";;") that breaks the prompt with a syntax error.
+  itWithBash('normalizes an inherited PROMPT_COMMAND ending in a separator', () => {
+    writeFileSync(
+      join(homeDir, '.bash_profile'),
+      'PROMPT_COMMAND=\'AFTER_SEP_PROMPT=1; printf "PROMPT_SEP\\n"; \'\n'
+    )
+    const config = getRelayShellLaunchConfig('/bin/bash', { HOME: homeDir })
+    const output = runInteractiveBashRcfile(config.args[1] as string, homeDir)
+
+    expect(output).not.toContain('syntax error')
+    expect(output).toContain('PROMPT_SEP')
     expectBashOsc133Lifecycle(output)
   })
 })

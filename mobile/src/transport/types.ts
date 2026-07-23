@@ -1,4 +1,33 @@
 import { z } from 'zod'
+import {
+  PAIRING_CODE_MAX_CHARACTERS,
+  PAIRING_DEVICE_TOKEN_MAX_CHARACTERS,
+  PAIRING_ENDPOINT_MAX_CHARACTERS,
+  PAIRING_INPUT_MAX_CHARACTERS,
+  PAIRING_PUBLIC_KEY_MAX_CHARACTERS,
+  PairingOfferSchema,
+  type PairingOffer
+} from '../../../src/shared/mobile-relay-pairing-offer'
+import {
+  MobileAccessEndpointSchema,
+  type MobileAccessEndpoint,
+  type MobileRelayHostOverlay
+} from './mobile-relay-host-overlay'
+import { MobileRelayEndpointSchema } from '../../../src/shared/mobile-relay-credential-contract'
+
+export {
+  PAIRING_CODE_MAX_CHARACTERS,
+  PAIRING_DEVICE_TOKEN_MAX_CHARACTERS,
+  PAIRING_ENDPOINT_MAX_CHARACTERS,
+  PAIRING_INPUT_MAX_CHARACTERS,
+  PAIRING_PUBLIC_KEY_MAX_CHARACTERS,
+  PairingOfferSchema
+}
+export type { PairingOffer }
+
+export const MOBILE_HOST_ID_MAX_CHARACTERS = 4_096
+export const MOBILE_HOST_NAME_MAX_CHARACTERS = 4_096
+export const MobileHostIdSchema = z.string().min(1).max(MOBILE_HOST_ID_MAX_CHARACTERS)
 
 export type RpcRequest = {
   id: string
@@ -23,17 +52,6 @@ export type RpcFailure = {
 }
 
 export type RpcResponse = RpcSuccess | RpcFailure
-
-const PAIRING_OFFER_VERSION = 2
-
-export const PairingOfferSchema = z.object({
-  v: z.literal(PAIRING_OFFER_VERSION),
-  endpoint: z.string().min(1),
-  deviceToken: z.string().min(1),
-  publicKeyB64: z.string().min(1)
-})
-
-export type PairingOffer = z.infer<typeof PairingOfferSchema>
 
 export type ConnectionLogLevel = 'info' | 'success' | 'warn' | 'error'
 
@@ -64,25 +82,34 @@ export type HostProfile = {
   deviceToken: string
   publicKeyB64: string
   lastConnected: number
+  endpoints?: MobileAccessEndpoint[]
+  relayHostId?: MobileRelayHostOverlay['relayHostId']
+  relay?: MobileRelayHostOverlay['relay']
 }
 
 export const HostProfileSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  endpoint: z.string().min(1),
-  deviceToken: z.string().min(1),
-  publicKeyB64: z.string().min(1),
-  lastConnected: z.number().finite()
+  id: MobileHostIdSchema,
+  name: z.string().min(1).max(MOBILE_HOST_NAME_MAX_CHARACTERS),
+  endpoint: z.string().min(1).max(PAIRING_ENDPOINT_MAX_CHARACTERS),
+  deviceToken: z.string().min(1).max(PAIRING_DEVICE_TOKEN_MAX_CHARACTERS),
+  publicKeyB64: z.string().min(1).max(PAIRING_PUBLIC_KEY_MAX_CHARACTERS),
+  lastConnected: z.number().finite(),
+  endpoints: z.array(MobileAccessEndpointSchema).min(1).max(16).optional(),
+  relayHostId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16}$/)
+    .optional(),
+  relay: MobileRelayEndpointSchema.optional()
 })
 
 // Why: persisted host record after the v0.0.3 keychain split. The
 // deviceToken is held in iOS Keychain via expo-secure-store and joined
 // in at load time; it must NOT appear in AsyncStorage anymore.
 export const StoredHostProfileSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  endpoint: z.string().min(1),
-  publicKeyB64: z.string().min(1),
+  id: MobileHostIdSchema,
+  name: z.string().min(1).max(MOBILE_HOST_NAME_MAX_CHARACTERS),
+  endpoint: z.string().min(1).max(PAIRING_ENDPOINT_MAX_CHARACTERS),
+  publicKeyB64: z.string().min(1).max(PAIRING_PUBLIC_KEY_MAX_CHARACTERS),
   lastConnected: z.number().finite()
 })
 

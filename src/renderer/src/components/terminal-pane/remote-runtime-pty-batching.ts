@@ -8,6 +8,7 @@ import {
 
 export type RemoteRuntimePtyBatcher = {
   push: (data: string) => boolean
+  hasPendingValidation: () => boolean
   drain: () => Promise<void>
   takePending: () => string
   flush: () => void
@@ -23,7 +24,11 @@ export type RemoteRuntimeViewportBatcher = {
 export type RemoteRuntimePtyTextBatcherOptions = {
   maxPendingBytes?: number
   maxBytes?: number
+  maxValidationQueuedCodeUnits?: number
+  maxValidationQueuedEntries?: number
 }
+
+export const REMOTE_RUNTIME_PTY_VALIDATION_QUEUE_MAX_ENTRIES = 4_096
 
 export function createRemoteRuntimePtyTextBatcher(
   delayMs: number,
@@ -35,11 +40,21 @@ export function createRemoteRuntimePtyTextBatcher(
     TERMINAL_INPUT_CHUNK_MAX_BYTES
   )
   const maxBytes = getPositiveByteLimit(options.maxBytes, TERMINAL_INPUT_MAX_BYTES)
+  const maxValidationQueuedCodeUnits = getPositiveByteLimit(
+    options.maxValidationQueuedCodeUnits,
+    maxBytes
+  )
+  const maxValidationQueuedEntries = getPositiveByteLimit(
+    options.maxValidationQueuedEntries,
+    REMOTE_RUNTIME_PTY_VALIDATION_QUEUE_MAX_ENTRIES
+  )
   let pending = ''
   let pendingBytes = 0
   let timer: ReturnType<typeof setTimeout> | null = null
   let validationTail: Promise<void> | null = null
   let validationVersion = 0
+  let validationQueuedCodeUnits = 0
+  let validationQueuedEntries = 0
 
   const clearTimer = (): void => {
     if (timer) {
@@ -50,8 +65,12 @@ export function createRemoteRuntimePtyTextBatcher(
 
   const clear = (): void => {
     clearTimer()
+    pending = ''
+    pendingBytes = 0
     validationVersion += 1
     validationTail = null
+    validationQueuedCodeUnits = 0
+    validationQueuedEntries = 0
   }
 
   const flush = (): void => {
@@ -93,8 +112,16 @@ export function createRemoteRuntimePtyTextBatcher(
     }
   }
 
-  const enqueueValidatedInput = (data: string, tooLarge: false | Promise<boolean>): void => {
+  const enqueueValidatedInput = (data: string, tooLarge: false | Promise<boolean>): boolean => {
+    if (
+      validationQueuedEntries >= maxValidationQueuedEntries ||
+      validationQueuedCodeUnits + data.length > maxValidationQueuedCodeUnits
+    ) {
+      return false
+    }
     const queuedVersion = validationVersion
+    validationQueuedEntries += 1
+    validationQueuedCodeUnits += data.length
     const previousTail = validationTail ?? Promise.resolve()
     const guardedTail = previousTail.then(async () => {
       if (validationVersion !== queuedVersion) {
@@ -110,11 +137,16 @@ export function createRemoteRuntimePtyTextBatcher(
     const nextTail = guardedTail
       .catch(() => {})
       .finally(() => {
+        if (validationVersion === queuedVersion) {
+          validationQueuedEntries -= 1
+          validationQueuedCodeUnits -= data.length
+        }
         if (validationTail === nextTail) {
           validationTail = null
         }
       })
     validationTail = nextTail
+    return true
   }
 
   const drain = async (): Promise<void> => {
@@ -140,9 +172,12 @@ export function createRemoteRuntimePtyTextBatcher(
         return true
       }
 
-      enqueueValidatedInput(data, tooLarge)
-      return true
+      return enqueueValidatedInput(data, tooLarge)
     },
+    // Why: earlier input can be mid async byte-length validation and not yet in
+    // `pending`. `takePending()` cannot see it, so callers that must preserve
+    // byte order (sendInputImmediate) check this before bypassing the queue.
+    hasPendingValidation: (): boolean => validationTail !== null,
     drain,
     takePending,
     flush,
@@ -166,6 +201,9 @@ export function createRemoteRuntimeViewportBatcher(
       clearTimeout(timer)
       timer = null
     }
+    // Why: also drop the queued viewport so a later flush()/reuse can't emit a
+    // stale resize after the batcher was cleared on teardown/resubscribe.
+    pending = null
   }
 
   const flush = (): void => {

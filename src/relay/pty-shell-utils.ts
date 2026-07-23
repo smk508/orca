@@ -1,8 +1,9 @@
-import { execFile as execFileCb } from 'child_process'
-import { existsSync, readFileSync } from 'fs'
-import { homedir } from 'os'
-import { win32 as pathWin32 } from 'path'
-import { promisify } from 'util'
+import { execFile as execFileCb } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { win32 as pathWin32 } from 'node:path'
+import { promisify } from 'node:util'
+import { readNodeFileSyncWithinLimit } from '../shared/node-bounded-file-reader'
 import {
   isAgentForegroundWrapperProcess,
   isExpectedAgentProcess,
@@ -10,6 +11,11 @@ import {
   recognizeAgentProcessFromCommandLine
 } from '../shared/agent-process-recognition'
 import { getFirstCommandToken } from '../shared/command-token-scanner'
+import { getProcessTableSnapshot, type ProcessTableRow } from '../shared/process-table-snapshot'
+import {
+  resolveOuterWrapperForegroundProcess,
+  shouldInspectOuterWrapperForegroundProcess
+} from '../shared/foreground-wrapper-agent'
 import { isShellProcess } from '../shared/shell-process-detection'
 import {
   resolveWindowsAgentForegroundProcess,
@@ -17,13 +23,7 @@ import {
 } from '../main/providers/windows-agent-foreground-process'
 
 const execFile = promisify(execFileCb)
-
-type ProcessRow = {
-  pid: number
-  ppid: number
-  stat: string
-  command: string
-}
+const MAX_ETC_SHELLS_BYTES = 64 * 1024
 
 export function resolveWindowsDefaultShell(
   env: NodeJS.ProcessEnv = process.env,
@@ -98,7 +98,7 @@ export async function resolveProcessCwd(pid: number, fallbackCwd: string): Promi
   // check+read pair races a concurrent exit anyway, and the catch already
   // falls through to lsof.
   try {
-    const { readlinkSync } = await import('fs')
+    const { readlinkSync } = await import('node:fs')
     return readlinkSync(`/proc/${pid}/cwd`)
   } catch {
     // Fall through
@@ -153,35 +153,31 @@ export async function processHasChildren(pid: number): Promise<boolean> {
   }
 }
 
-function parsePsRows(stdout: string): ProcessRow[] {
-  const rows: ProcessRow[] = []
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/)
-    if (!match) {
-      continue
-    }
-    rows.push({
-      pid: Number(match[1]),
-      ppid: Number(match[2]),
-      stat: match[3],
-      command: match[4]
-    })
+// Why: signal 0 probes existence without delivering a signal. Only ESRCH ("no
+// such process") proves the pid is gone; EPERM means it exists but is
+// unsignalable, so treat every non-ESRCH outcome as alive. Kept conservative so
+// a liveness check can only ever declare a *provably* dead process dead.
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH'
   }
-  return rows
 }
 
 function collectDescendants(
-  rows: ProcessRow[],
+  rows: ProcessTableRow[],
   rootPid: number
-): (ProcessRow & { depth: number })[] {
-  const childrenByParent = new Map<number, ProcessRow[]>()
+): (ProcessTableRow & { depth: number })[] {
+  const childrenByParent = new Map<number, ProcessTableRow[]>()
   for (const row of rows) {
     const children = childrenByParent.get(row.ppid) ?? []
     children.push(row)
     childrenByParent.set(row.ppid, children)
   }
 
-  const descendants: (ProcessRow & { depth: number })[] = []
+  const descendants: (ProcessTableRow & { depth: number })[] = []
   const stack = (childrenByParent.get(rootPid) ?? []).map((row) => ({ row, depth: 1 }))
   while (stack.length > 0) {
     const { row, depth } = stack.pop()!
@@ -193,7 +189,7 @@ function collectDescendants(
   return descendants
 }
 
-function candidateScore(row: ProcessRow & { depth: number }): number {
+function candidateScore(row: ProcessTableRow & { depth: number }): number {
   return (row.stat.includes('+') ? 10_000 : 0) + row.depth
 }
 
@@ -201,7 +197,10 @@ function processCommandToken(command: string): string {
   return getFirstCommandToken(command)
 }
 
-function candidateMatchesFallbackWrapper(candidate: ProcessRow, fallbackProcess: string): boolean {
+function candidateMatchesFallbackWrapper(
+  candidate: ProcessTableRow,
+  fallbackProcess: string
+): boolean {
   return isExpectedAgentProcess(processCommandToken(candidate.command), fallbackProcess)
 }
 
@@ -210,11 +209,7 @@ async function getRecognizedForegroundDescendant(
   fallbackProcess?: string | null
 ): Promise<string | null> {
   try {
-    const { stdout } = await execFile('ps', ['-axo', 'pid=,ppid=,stat=,command='], {
-      encoding: 'utf-8',
-      timeout: 3000
-    })
-    const rows = parsePsRows(stdout)
+    const rows = await getProcessTableSnapshot()
     const root = rows.find((row) => row.pid === pid)
     const candidates = collectDescendants(rows, pid).sort(
       (a, b) => candidateScore(b) - candidateScore(a)
@@ -243,7 +238,9 @@ async function getRecognizedForegroundDescendant(
     for (const candidate of inspectionCandidates) {
       const recognized = recognizeAgentProcessFromCommandLine(candidate.command)
       if (recognized) {
-        return recognized.processName
+        // Why: return the outer wrapper (omp) rather than the deeper wrapped child
+        // (pi) of a shell→omp→pi tree — see resolveOuterWrapperForegroundProcess.
+        return resolveOuterWrapperForegroundProcess(recognized, candidate, candidates)
       }
     }
   } catch {
@@ -262,6 +259,20 @@ export async function getForegroundProcessName(
   if (fallbackProcess) {
     const fallbackRecognition = recognizeAgentProcess(fallbackProcess)
     if (fallbackRecognition) {
+      // Why: node-pty can report OMP's wrapped Pi; enrich only that ambiguous
+      // fallback so authoritative OMP reads keep the zero-subprocess fast path.
+      if (shouldInspectOuterWrapperForegroundProcess(fallbackRecognition)) {
+        if (process.platform === 'win32') {
+          return (
+            (await resolveWindowsAgentForegroundProcess(pid, fallbackProcess, {})) ??
+            fallbackRecognition.processName
+          )
+        }
+        return (
+          (await getRecognizedForegroundDescendant(pid, fallbackProcess)) ??
+          fallbackRecognition.processName
+        )
+      }
       return fallbackRecognition.processName
     }
     if (process.platform === 'win32') {
@@ -302,7 +313,10 @@ export function listShellProfiles(): { name: string; path: string }[] {
   const seen = new Set<string>()
 
   try {
-    const content = readFileSync('/etc/shells', 'utf-8')
+    const content = readNodeFileSyncWithinLimit(
+      '/etc/shells',
+      MAX_ETC_SHELLS_BYTES
+    ).buffer.toString('utf8')
     for (const line of content.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed || trimmed.startsWith('#')) {

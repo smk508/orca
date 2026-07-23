@@ -6,13 +6,13 @@ import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { lazyWithRetry as lazy } from '@/lib/lazy-with-retry'
 import { FileText, Globe, Minus, TerminalSquare } from 'lucide-react'
 import { toast } from 'sonner'
-import BrowserPane from '@/components/browser-pane/BrowserPane'
 import EmulatorPane from '@/components/emulator-pane/EmulatorPane'
 import { ShortcutKeyCombo } from '@/components/ShortcutKeyCombo'
 import { useContextualTour } from '@/components/contextual-tours/use-contextual-tour'
 import TabBar from '@/components/tab-bar/TabBar'
 import { resolveGroupTabFromVisibleId } from '@/components/tab-group/tab-group-visible-id'
 import TerminalPane from '@/components/terminal-pane/TerminalPane'
+import { isTerminalImeInputContextRefreshing } from '@/components/terminal-pane/terminal-ime-input-context-refresh'
 import { Button } from '@/components/ui/button'
 import { useMountedRef } from '@/hooks/useMountedRef'
 import { useShortcutKeyDetails, type ShortcutKeyComboDetails } from '@/hooks/useShortcutLabel'
@@ -29,6 +29,7 @@ import { appendUniqueOpenFileIds } from '@/components/terminal/unsaved-close-que
 import { getConnectionId } from '@/lib/connection-context'
 import { createUntitledMarkdownFileWithTemplateSelection } from '@/lib/create-untitled-markdown'
 import { detectLanguage } from '@/lib/language-detect'
+import { buildDuplicatedBrowserTabOptions } from '@/lib/duplicate-browser-tab-options'
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { isOrcaCliAvailableOnPath } from '@/lib/agent-skill-cli-prerequisite'
 import {
@@ -48,13 +49,6 @@ import {
 import { useAppStore } from '@/store'
 import type { OpenFile } from '@/store/slices/editor'
 import { destroyWorkspaceWebviews } from '@/store/slices/browser-webview-cleanup'
-import {
-  activateWebRuntimeSessionTab,
-  closeWebRuntimeSessionTab,
-  createWebRuntimeSessionBrowserTab,
-  createWebRuntimeSessionTerminal,
-  isWebRuntimeSessionActive
-} from '@/runtime/web-runtime-session'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
 import {
   keybindingMatchesAction,
@@ -68,13 +62,9 @@ import {
   ModifierDoubleTapDetector,
   toModifierDoubleTapEvent
 } from '../../../../shared/modifier-double-tap-detector'
-import type {
-  BrowserTab as BrowserTabState,
-  Tab,
-  TabGroup,
-  TerminalTab
-} from '../../../../shared/types'
+import type { BrowserTab as BrowserTabState, Tab, TerminalTab } from '../../../../shared/types'
 import { resolveUnifiedTabLabel } from '../../../../shared/tab-title-resolution'
+import { FloatingBrowserSlot } from './FloatingBrowserSlot'
 import { FloatingTerminalOrchestrationDialog } from './FloatingTerminalOrchestrationDialog'
 import { FloatingTerminalResizeHandles } from './FloatingTerminalResizeHandles'
 import { FloatingTerminalWindowControls } from './FloatingTerminalWindowControls'
@@ -96,10 +86,7 @@ import {
 } from './floating-terminal-panel-bounds'
 import { translate } from '@/i18n/i18n'
 import { consumeFloatingTerminalOpenMaximizedIntent } from '@/lib/floating-terminal'
-const EMPTY_TERMINAL_TABS: TerminalTab[] = []
-const EMPTY_BROWSER_TABS: BrowserTabState[] = []
-const EMPTY_GROUPS: TabGroup[] = []
-const EMPTY_UNIFIED_TABS: Tab[] = []
+import { selectFloatingTerminalPanelInputs } from './floating-terminal-panel-inputs'
 const LOCAL_RUNTIME_SETTINGS = { activeRuntimeEnvironmentId: null } as const
 
 const EditorPanel = lazy(() => import('@/components/editor/EditorPanel'))
@@ -176,12 +163,8 @@ export function FloatingTerminalPanel({
   onOpenChange,
   tourInteractionSnapshot
 }: FloatingTerminalPanelProps): React.JSX.Element | null {
-  const tabsByWorktree = useAppStore((s) => s.tabsByWorktree)
-  const browserTabsByWorktree = useAppStore((s) => s.browserTabsByWorktree)
-  const groupsByWorktree = useAppStore((s) => s.groupsByWorktree)
-  const unifiedTabsByWorktree = useAppStore((s) => s.unifiedTabsByWorktree)
-  const openFiles = useAppStore((s) => s.openFiles)
-  const expandedPaneByTabId = useAppStore((s) => s.expandedPaneByTabId)
+  const { tabs, browserTabs, groups, unifiedTabs, floatingFiles, expandedPaneByTabId } =
+    useAppStore(selectFloatingTerminalPanelInputs)
   const createTab = useAppStore((s) => s.createTab)
   const createBrowserTab = useAppStore((s) => s.createBrowserTab)
   const closeTab = useAppStore((s) => s.closeTab)
@@ -240,6 +223,10 @@ export function FloatingTerminalPanel({
   }
   const shortcutFocusFrameRef = useRef<number | null>(null)
   const shortcutFocusTimeoutRef = useRef<number | null>(null)
+  const reclaimTerminalInputOnWindowFocusRef = useRef<{
+    helper: HTMLElement
+    leafId: string | null
+  } | null>(null)
   const mountedRef = useMountedRef()
   const dragRef = useRef<{
     pointerId: number
@@ -249,14 +236,6 @@ export function FloatingTerminalPanel({
     moved: boolean
   } | null>(null)
 
-  const tabs = tabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_TERMINAL_TABS
-  const browserTabs = browserTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_BROWSER_TABS
-  const groups = groupsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_GROUPS
-  const unifiedTabs = unifiedTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID] ?? EMPTY_UNIFIED_TABS
-  const floatingFiles = useMemo(
-    () => openFiles.filter((file) => file.worktreeId === FLOATING_TERMINAL_WORKTREE_ID),
-    [openFiles]
-  )
   const activeGroup = useMemo(
     () =>
       groups.find((group) => group.activeTabId != null) ??
@@ -419,6 +398,8 @@ export function FloatingTerminalPanel({
     wasFeaturePreviouslyInteracted: tourInteractionSnapshot?.wasPreviouslyInteracted
   })
 
+  // Why: this panel only queues its own editor tabs, so unrelated workspace
+  // file updates must not invalidate the hidden panel's close callbacks.
   const {
     saveDialogFileId,
     saveDialogFile,
@@ -426,7 +407,7 @@ export function FloatingTerminalPanel({
     handleSaveDialogSave,
     handleSaveDialogDiscard,
     handleSaveDialogCancel
-  } = useTerminalSaveDialog({ openFiles, closeFile, markFileDirty })
+  } = useTerminalSaveDialog({ openFiles: floatingFiles, closeFile, markFileDirty })
 
   const getNextQueuedEditorClose = useCallback((): string | null => {
     while (pendingEditorCloseQueueRef.current.length > 0) {
@@ -602,7 +583,11 @@ export function FloatingTerminalPanel({
     if (!open || !activeTerminalId) {
       return
     }
-    focusTerminalTabSurface(activeTerminalId)
+    focusTerminalTabSurface(activeTerminalId, null, {
+      onImeRefocusSkipped: (active) =>
+        setFloatingTerminalInputFocusedInMain(isFloatingWorkspaceTerminalInputTarget(active)),
+      refreshImeContext: true
+    })
   }, [activeTerminalId, open])
 
   useEffect(() => {
@@ -658,27 +643,10 @@ export function FloatingTerminalPanel({
         return
       }
       activateTab(item.id)
-      const runtimeEnvironmentId = useAppStore
-        .getState()
-        .settings?.activeRuntimeEnvironmentId?.trim()
       if (item.contentType === 'terminal') {
-        if (isWebRuntimeSessionActive(runtimeEnvironmentId)) {
-          void activateWebRuntimeSessionTab({
-            worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-            tabId: item.entityId,
-            environmentId: runtimeEnvironmentId
-          })
-        }
         setActiveTab(item.entityId)
         focusTerminalTabSurface(item.entityId)
       } else if (item.contentType === 'browser') {
-        if (isWebRuntimeSessionActive(runtimeEnvironmentId)) {
-          void activateWebRuntimeSessionTab({
-            worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-            tabId: item.id,
-            environmentId: runtimeEnvironmentId
-          })
-        }
         const workspace = useAppStore
           .getState()
           .browserTabsByWorktree[FLOATING_TERMINAL_WORKTREE_ID]?.find(
@@ -694,50 +662,28 @@ export function FloatingTerminalPanel({
 
   const createFloatingTerminalTab = useCallback(
     (shellOverride?: string) => {
-      void (async () => {
-        if (
-          await createWebRuntimeSessionTerminal({
-            worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-            targetGroupId: activeGroup?.id,
-            command: shellOverride,
-            activate: true,
-            selectWorktree: false
-          })
-        ) {
-          return
-        }
-        const tab = createTab(FLOATING_TERMINAL_WORKTREE_ID, activeGroup?.id, shellOverride, {
-          activate: false
-        })
-        activateTab(tab.id)
-        focusTerminalTabSurface(tab.id)
-      })()
+      // Why: the floating workspace is a local scratchpad; a focused remote
+      // runtime must not own tabs users keep there for manual SSH/tmux work.
+      const tab = createTab(FLOATING_TERMINAL_WORKTREE_ID, activeGroup?.id, shellOverride, {
+        activate: false
+      })
+      activateTab(tab.id)
+      focusTerminalTabSurface(tab.id)
     },
     [activateTab, activeGroup, createTab]
   )
 
   const createFloatingBrowserTab = useCallback(() => {
-    void (async () => {
-      const url = browserDefaultUrl ?? 'about:blank'
-      if (
-        await createWebRuntimeSessionBrowserTab({
-          worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-          url,
-          targetGroupId: activeGroup?.id,
-          selectWorktree: false
-        })
-      ) {
-        return
-      }
-      createBrowserTab(FLOATING_TERMINAL_WORKTREE_ID, url, {
-        title: translate(
-          'auto.components.floating.terminal.FloatingTerminalPanel.8b14ba6c17',
-          'New Browser Tab'
-        ),
-        focusAddressBar: true,
-        targetGroupId: activeGroup?.id
-      })
-    })()
+    const url = browserDefaultUrl ?? 'about:blank'
+    createBrowserTab(FLOATING_TERMINAL_WORKTREE_ID, url, {
+      title: translate(
+        'auto.components.floating.terminal.FloatingTerminalPanel.8b14ba6c17',
+        'New Browser Tab'
+      ),
+      focusAddressBar: true,
+      targetGroupId: activeGroup?.id,
+      browserRuntimeEnvironmentId: null
+    })
   }, [activeGroup, browserDefaultUrl, createBrowserTab])
 
   const createFloatingMarkdownTab = useCallback(() => {
@@ -809,23 +755,9 @@ export function FloatingTerminalPanel({
         return
       }
       const dirtyEditorFileIds: string[] = []
-      const runtimeEnvironmentId = state.settings?.activeRuntimeEnvironmentId?.trim()
       for (const item of items) {
-        if (
-          (item.contentType === 'terminal' || item.contentType === 'browser') &&
-          isWebRuntimeSessionActive(runtimeEnvironmentId)
-        ) {
-          // Why: paired web clients mirror host-owned tabs; ask the runtime to
-          // close the host tab instead of deleting the local mirror directly.
-          void closeWebRuntimeSessionTab({
-            worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-            tabId: item.contentType === 'browser' ? item.id : item.entityId,
-            environmentId: runtimeEnvironmentId
-          })
-          continue
-        }
         if (item.contentType === 'terminal') {
-          closeTab(item.entityId)
+          closeTab(item.entityId, { reason: 'cleanup' })
         } else if (item.contentType === 'browser') {
           destroyWorkspaceWebviews(state.browserPagesByWorkspace, item.entityId)
           closeBrowserTab(item.entityId)
@@ -1390,22 +1322,69 @@ export function FloatingTerminalPanel({
     const handleWindowBlur = (): void => {
       const panel = panelRef.current
       const active = document.activeElement
+      reclaimTerminalInputOnWindowFocusRef.current = null
       if (!panel || !(active instanceof HTMLElement) || !panel.contains(active)) {
         return
       }
       // Why: browser webviews focus out-of-process and do not emit renderer
       // pointerdown events, so release floating ownership on renderer blur too.
       setFloatingTerminalInputFocusedInMain(false)
+      if (isFloatingWorkspaceTerminalInputTarget(active)) {
+        // Why: the terminal focus lifecycle preserves this exact helper across
+        // app blur so macOS can rebuild its native input context on return.
+        reclaimTerminalInputOnWindowFocusRef.current = {
+          helper: active,
+          leafId: active.closest('[data-leaf-id]')?.getAttribute('data-leaf-id') ?? null
+        }
+        return
+      }
       active.blur()
+    }
+
+    const handleWindowFocus = (): void => {
+      const reclaim = reclaimTerminalInputOnWindowFocusRef.current
+      if (!reclaim) {
+        return
+      }
+      reclaimTerminalInputOnWindowFocusRef.current = null
+      const panel = panelRef.current
+      const active = document.activeElement
+      if (
+        panel &&
+        active instanceof HTMLElement &&
+        panel.contains(active) &&
+        isFloatingWorkspaceTerminalInputTarget(active)
+      ) {
+        setFloatingTerminalInputFocusedInMain(true)
+        return
+      }
+      if ((active === null || active === document.body) && activeTerminalId) {
+        if (reclaim.helper.isConnected && panel?.contains(reclaim.helper)) {
+          // Why: TerminalPane owns exact-helper reclaim and IME refresh. Avoid
+          // racing it with a second floating-layer blur/refocus cycle.
+          return
+        }
+        // Why: only a helper that genuinely remounted while backgrounded needs
+        // tab/leaf recovery; the shared TerminalPane owner cannot reclaim it.
+        focusTerminalTabSurface(activeTerminalId, reclaim.leafId, {
+          onlyIfFocusUnclaimed: true,
+          onImeRefocusSkipped: (active) =>
+            setFloatingTerminalInputFocusedInMain(isFloatingWorkspaceTerminalInputTarget(active)),
+          refreshImeContext: true
+        })
+      }
     }
 
     document.addEventListener('pointerdown', handleOutsidePointerDown, true)
     window.addEventListener('blur', handleWindowBlur)
+    window.addEventListener('focus', handleWindowFocus)
     return () => {
+      reclaimTerminalInputOnWindowFocusRef.current = null
       document.removeEventListener('pointerdown', handleOutsidePointerDown, true)
       window.removeEventListener('blur', handleWindowBlur)
+      window.removeEventListener('focus', handleWindowFocus)
     }
-  }, [open])
+  }, [activeTerminalId, open])
   const handleDragStart = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (maximized) {
       return
@@ -1474,8 +1453,9 @@ export function FloatingTerminalPanel({
   }, [])
 
   return (
-    // Why: root notification cards use z-40; keep the floating workspace below
-    // them so alerts are never hidden behind an open terminal panel.
+    // Why: sit above the z-40 notification cards so the floating workspace is
+    // never buried behind them, but stay under the z-50 modal layer so its own
+    // orchestration/save dialogs (and every app modal) still open above it.
     // Drop shadow on the outer shell, border on an inner shell — mixing both on
     // one rounded node made corners look stubby. Floating tabs skip their top
     // border so the titlebar curve stays clean.
@@ -1484,7 +1464,7 @@ export function FloatingTerminalPanel({
       data-floating-terminal-panel
       aria-hidden={!open}
       tabIndex={-1}
-      className={`fixed z-30 flex min-h-[280px] min-w-[420px] rounded-lg bg-transparent text-card-foreground shadow-[0_4px_12px_rgba(0,0,0,0.16),0_24px_64px_rgba(0,0,0,0.32)] outline-none dark:shadow-[0_8px_20px_rgba(0,0,0,0.35),0_28px_72px_rgba(0,0,0,0.58)] ${open ? 'opacity-100' : 'invisible pointer-events-none opacity-0'}`}
+      className={`fixed z-[45] flex min-h-[280px] min-w-[420px] rounded-lg bg-transparent text-card-foreground shadow-[0_4px_12px_rgba(0,0,0,0.16),0_24px_64px_rgba(0,0,0,0.32)] outline-none dark:shadow-[0_8px_20px_rgba(0,0,0,0.35),0_28px_72px_rgba(0,0,0,0.58)] ${open ? 'opacity-100' : 'invisible pointer-events-none opacity-0'}`}
       style={{
         visibility: open ? 'visible' : 'hidden',
         left: bounds.left,
@@ -1500,7 +1480,13 @@ export function FloatingTerminalPanel({
         commitUserBounds({ ...stagedBoundsRef.current, width: rect.width, height: rect.height })
       }}
       onFocusCapture={(event) => setFloatingTerminalInputFocused(event.target)}
-      onBlurCapture={(event) => setFloatingTerminalInputFocused(event.relatedTarget)}
+      onBlurCapture={(event) => {
+        // Why: keep terminal-first shortcut ownership latched during the
+        // synchronous macOS IME refresh blur; refocus or its skip callback settles it.
+        if (!isTerminalImeInputContextRefreshing(event.target)) {
+          setFloatingTerminalInputFocused(event.relatedTarget)
+        }
+      }}
       onKeyDownCapture={handleShortcutSurfaceKeyDown}
     >
       <div className="relative flex h-full w-full min-h-0 flex-col overflow-hidden rounded-lg border border-black/14 bg-card dark:border-white/14">
@@ -1545,28 +1531,15 @@ export function FloatingTerminalPanel({
               onActivateBrowserTab={activateFloatingItem}
               onCloseBrowserTab={closeFloatingItem}
               onDuplicateBrowserTab={(browserTabId) => {
-                void (async () => {
-                  const source = browserTabs.find((tab) => tab.id === browserTabId)
-                  if (!source) {
-                    return
-                  }
-                  if (
-                    await createWebRuntimeSessionBrowserTab({
-                      worktreeId: FLOATING_TERMINAL_WORKTREE_ID,
-                      url: source.url,
-                      profileId: source.sessionProfileId,
-                      targetGroupId: activeGroup?.id,
-                      selectWorktree: false
-                    })
-                  ) {
-                    return
-                  }
-                  createBrowserTab(FLOATING_TERMINAL_WORKTREE_ID, source.url, {
-                    title: source.title,
-                    sessionProfileId: source.sessionProfileId,
-                    targetGroupId: activeGroup?.id
-                  })
-                })()
+                const source = browserTabs.find((tab) => tab.id === browserTabId)
+                if (!source) {
+                  return
+                }
+                createBrowserTab(FLOATING_TERMINAL_WORKTREE_ID, source.url, {
+                  ...buildDuplicatedBrowserTabOptions(source),
+                  targetGroupId: activeGroup?.id,
+                  browserRuntimeEnvironmentId: null
+                })
               }}
               onCloseAllFiles={closeAllFiles}
               onMakePreviewFilePermanent={makePreviewFilePermanent}
@@ -1609,7 +1582,7 @@ export function FloatingTerminalPanel({
                       // atlas to corrupt) while hidden, and the resume on
                       // reopen rebuilds the renderer from scratch.
                       isVisible={isActive && open}
-                      onPtyExit={() => closeTab(tab.id)}
+                      onPtyExit={() => closeTab(tab.id, { reason: 'pty-exit' })}
                       onCloseTab={() => closeFloatingItem(tab.id)}
                     />
                   </div>
@@ -1624,7 +1597,7 @@ export function FloatingTerminalPanel({
                 className={isActive ? 'absolute inset-0 flex' : 'absolute inset-0 hidden'}
                 aria-hidden={!isActive}
               >
-                <BrowserPane browserTab={tab} isActive={open && isActive} />
+                <FloatingBrowserSlot browserTab={tab} isActive={open && isActive} />
               </div>
             )
           })}

@@ -9,11 +9,26 @@ import type {
   LinearWorkspaceError,
   LinearWorkspaceSelection
 } from '../../shared/types'
-import { LinearClient } from '@linear/sdk'
+import type { LinearClient } from '@linear/sdk'
+import { loadLinearSdk } from './linear-sdk'
+import { clampLinearSearchLimit } from '../../shared/linear-agent-access'
 import {
   LINEAR_ISSUE_API_PAGE_SIZE_MAX,
   clampLinearIssueListLimit
 } from '../../shared/linear-issue-read-limits'
+import {
+  isEmptyLinearIssueAttributeFilter,
+  type LinearIssueAttributeFilter
+} from '../../shared/linear-issue-attribute-filter'
+import {
+  boundedIntegrationErrorLog,
+  boundedIntegrationErrorMessage
+} from '../integration-error-message'
+import { createIntegrationFanoutBudget, runBoundedIntegrationFanout } from '../integration-fanout'
+import {
+  INTEGRATION_PAGINATION_MAX_ITEMS,
+  IntegrationPaginationBudget
+} from '../integration-pagination-budget'
 import {
   acquire,
   release,
@@ -22,12 +37,19 @@ import {
   clearToken,
   type LinearClientForWorkspace
 } from './client'
+import { buildLinearListIssueFilter } from './issue-list-filter'
 import { mapLinearIssue } from './mappers'
+
+export type LinearIssueListOptions = {
+  teamId?: string
+  attributeFilter?: LinearIssueAttributeFilter | null
+}
 
 type LinearIssueNode = {
   id: string
   identifier: string
   title: string
+  branchName?: string | null
   description?: string | null
   url: string
   dueDate?: string | null
@@ -133,6 +155,7 @@ const LINEAR_ISSUE_NODE_FIELDS = `
   id
   identifier
   title
+  branchName
   description
   url
   dueDate
@@ -283,6 +306,29 @@ const ATTACHMENT_BY_UUID_QUERY = `
   }
 `
 
+// Why: fetch comments with their author in a single request. Accessing
+// `.user` on the SDK's Comment model lazily issues one user(id) query per
+// comment, so the previous loop was an N+1 (issue + comments + N user
+// fetches, all sequential while holding a shared Linear concurrency slot).
+// first: 50 matches the SDK default page size the previous code relied on.
+const ISSUE_COMMENTS_QUERY = `
+  query OrcaLinearIssueComments($id: String!) {
+    issue(id: $id) {
+      comments(first: 50) {
+        nodes {
+          id
+          body
+          createdAt
+          user {
+            displayName
+            avatarUrl
+          }
+        }
+      }
+    }
+  }
+`
+
 type LinearIssueByUuidResponse = {
   issue?:
     | (Omit<LinearIssueWriteRecord, 'labels'> & {
@@ -307,6 +353,21 @@ type LinearAttachmentByUuidResponse = {
     title?: string | null
     url?: string | null
     issue?: { id?: string | null; identifier?: string | null; url?: string | null } | null
+  } | null
+}
+
+type LinearIssueCommentsResponse = {
+  issue?: {
+    comments?: {
+      nodes?:
+        | {
+            id: string
+            body?: string | null
+            createdAt?: string | null
+            user?: { displayName?: string | null; avatarUrl?: string | null } | null
+          }[]
+        | null
+    } | null
   } | null
 }
 
@@ -346,11 +407,12 @@ function mapRawIssueForWorkspace(
   entry: LinearClientForWorkspace,
   issue: LinearIssueNode
 ): LinearIssue {
-  const labelNodes = issue.labels?.nodes ?? []
+  const labelNodes = (issue.labels?.nodes ?? []).slice(0, LINEAR_ISSUE_API_PAGE_SIZE_MAX)
   return {
     id: issue.id,
     identifier: issue.identifier,
     title: issue.title,
+    branchName: issue.branchName ?? undefined,
     description: issue.description ?? undefined,
     url: issue.url,
     state: {
@@ -366,7 +428,9 @@ function mapRawIssueForWorkspace(
     labels: labelNodes.map((label) => label.name),
     // Why: labelIds drives full-replace updates. Keep Linear's complete id
     // list even when display label nodes are paginated.
-    labelIds: issue.labelIds ?? labelNodes.map((label) => label.id),
+    labelIds:
+      issue.labelIds?.slice(0, INTEGRATION_PAGINATION_MAX_ITEMS) ??
+      labelNodes.map((label) => label.id),
     assignee: issue.assignee
       ? {
           id: issue.assignee.id,
@@ -389,6 +453,7 @@ async function readIssueConnectionPages(
   loadConnection: LinearIssueConnectionLoader
 ): Promise<{ items: LinearIssue[]; hasMore: boolean }> {
   const items: LinearIssue[] = []
+  const budget = new IntegrationPaginationBudget()
   let after: string | undefined
   let hasMore = false
 
@@ -397,12 +462,22 @@ async function readIssueConnectionPages(
     // cursors instead of asking for the whole expanded limit in one request.
     const first = Math.min(LINEAR_ISSUE_API_PAGE_SIZE_MAX, limit - items.length)
     const connection = await loadConnection(after ? { first, after } : { first })
-    const nodes = connection?.nodes ?? []
-    items.push(...nodes.map((issue) => mapRawIssueForWorkspace(entry, issue)))
-    hasMore = Boolean(connection?.pageInfo?.hasNextPage)
+    const pageNodes = connection?.nodes ?? []
+    const nodes = pageNodes.slice(0, first)
+    const pageItems = nodes.map((issue) => mapRawIssueForWorkspace(entry, issue))
+    hasMore = pageNodes.length > nodes.length || Boolean(connection?.pageInfo?.hasNextPage)
+    if (!budget.admitPage(pageItems)) {
+      console.warn('[linear] Issue list exceeded its retained result budget; truncating.')
+      return { items, hasMore: true }
+    }
+    items.push(...pageItems)
 
     const nextCursor = connection?.pageInfo?.endCursor ?? undefined
-    if (!hasMore || !nextCursor || nextCursor === after || nodes.length === 0) {
+    if (!hasMore || !nextCursor || nextCursor === after || pageNodes.length === 0) {
+      break
+    }
+    if (!budget.canRequestPage) {
+      console.warn('[linear] Issue list reached its retained result budget; truncating.')
       break
     }
     after = nextCursor
@@ -419,11 +494,17 @@ function getOldestIssueTime(issues: LinearIssue[]): number {
 function getListIssueConnectionLoader(
   entry: LinearClientForWorkspace,
   filter: LinearListFilter,
-  teamId?: string
+  options?: LinearIssueListOptions
 ): LinearIssueConnectionLoader {
   const orderBy = 'updatedAt'
   const variables = { orderBy }
-  const filterInput = listIssueFilter(filter, teamId)
+  // Why: apply attribute + team filters in GraphQL variables before the first-N
+  // cursor walk so pagination hasMore matches the filtered set.
+  const filterInput = buildLinearListIssueFilter({
+    filter,
+    teamId: options?.teamId,
+    attributeFilter: options?.attributeFilter
+  })
 
   if (filter === 'assigned') {
     return async (page) => {
@@ -481,7 +562,7 @@ function shouldThrowAuthError(selection: LinearWorkspaceSelection | null | undef
 }
 
 function linearWriteMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return boundedIntegrationErrorMessage(error)
 }
 
 function isDuplicateIdError(error: unknown): boolean {
@@ -506,7 +587,7 @@ function errorCauseCode(error: unknown): string {
   return typeof code === 'string' ? code.toLowerCase() : ''
 }
 
-function classifyWriteFailure(error: unknown): LinearWriteFailure {
+export function classifyLinearWriteFailure(error: unknown): LinearWriteFailure {
   if (error instanceof LinearWriteFailure) {
     return error
   }
@@ -545,7 +626,9 @@ async function runLinearWrite<T>(
 ): Promise<T> {
   await acquire()
   try {
-    const client = signal ? new LinearClient({ apiKey: entry.apiKey, signal }) : entry.client
+    const client = signal
+      ? new (loadLinearSdk().LinearClient)({ apiKey: entry.apiKey, signal })
+      : entry.client
     return await write(client)
   } catch (error) {
     if (error instanceof LinearWriteFailure) {
@@ -555,7 +638,7 @@ async function runLinearWrite<T>(
       clearToken(entry.workspace.id)
       throw error
     }
-    throw classifyWriteFailure(error)
+    throw classifyLinearWriteFailure(error)
   } finally {
     release()
   }
@@ -583,7 +666,7 @@ async function runLinearLookup<T>(
 }
 
 function isLinearLookupMiss(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = boundedIntegrationErrorMessage(error)
   // Why: Linear throws for direct entity lookups that miss; write-id probes
   // need the same null shape as GraphQL nullable data, not a failed write.
   return message.includes('Entity not found:') && message.includes('Could not find referenced')
@@ -643,7 +726,10 @@ function mapRawIssueWriteRecord(
 ): LinearIssueWriteRecord {
   return {
     ...issue,
-    labels: issue.labels?.nodes ?? []
+    ...(issue.labelIds
+      ? { labelIds: issue.labelIds.slice(0, INTEGRATION_PAGINATION_MAX_ITEMS) }
+      : {}),
+    labels: (issue.labels?.nodes ?? []).slice(0, LINEAR_ISSUE_API_PAGE_SIZE_MAX)
   }
 }
 
@@ -671,7 +757,7 @@ export async function getIssue(
           throw error
         }
       } else {
-        console.warn('[linear] getIssue failed:', error)
+        console.warn('[linear] getIssue failed:', boundedIntegrationErrorLog(error))
       }
     } finally {
       release()
@@ -754,20 +840,22 @@ export async function searchIssues(
   limit = 20,
   workspaceId?: LinearWorkspaceSelection | null
 ): Promise<LinearIssue[]> {
+  const effectiveLimit = clampLinearSearchLimit(limit)
   const entries = getClients(workspaceId)
   if (entries.length === 0) {
     return []
   }
 
-  const results = await Promise.all(
-    entries.map(async (entry) => {
+  const fanout = await runBoundedIntegrationFanout(
+    entries,
+    async (entry) => {
       await acquire()
       try {
         const result = await entry.client.client.rawRequest<
           LinearIssueConnectionResponse,
           LinearRawVariables
-        >(SEARCH_ISSUES_QUERY, { term: query, first: limit })
-        const nodes = result.data?.searchIssues?.nodes ?? []
+        >(SEARCH_ISSUES_QUERY, { term: query, first: effectiveLimit })
+        const nodes = (result.data?.searchIssues?.nodes ?? []).slice(0, effectiveLimit)
         return nodes.map((issue) => mapRawIssueForWorkspace(entry, issue))
       } catch (error) {
         if (isAuthError(error)) {
@@ -776,49 +864,31 @@ export async function searchIssues(
             throw error
           }
         } else {
-          console.warn('[linear] searchIssues failed:', error)
+          console.warn('[linear] searchIssues failed:', boundedIntegrationErrorLog(error))
         }
         return []
       } finally {
         release()
       }
-    })
+    },
+    (issues) => issues
   )
   // Why: searchIssues returns Linear's relevance ranking. Re-sorting by
   // updatedAt would discard relevance order for single-workspace results,
   // diverging from Linear's web UI and pre-PR behavior.
-  if (entries.length === 1) {
-    return results.flat().slice(0, limit)
+  if (fanout.truncated) {
+    console.warn(
+      '[linear] Cross-workspace search exceeded its aggregate result budget; truncating.'
+    )
   }
-  return sortAndLimitIssues(results.flat(), limit)
+  const results = fanout.results.flat()
+  if (entries.length === 1) {
+    return results.slice(0, effectiveLimit)
+  }
+  return sortAndLimitIssues(results, effectiveLimit)
 }
 
 export type LinearListFilter = 'assigned' | 'created' | 'all' | 'completed' | 'open'
-
-const ACTIVE_STATE_FILTER = { state: { type: { nin: ['completed', 'canceled'] } } }
-const COMPLETED_STATE_FILTER = { state: { type: { in: ['completed', 'canceled'] } } }
-
-function listFilterForState(filter: LinearListFilter): Record<string, unknown> | undefined {
-  if (filter === 'assigned' || filter === 'created' || filter === 'open') {
-    return ACTIVE_STATE_FILTER
-  }
-  if (filter === 'completed') {
-    return COMPLETED_STATE_FILTER
-  }
-  return undefined
-}
-
-function listIssueFilter(
-  filter: LinearListFilter,
-  teamId?: string
-): Record<string, unknown> | undefined {
-  const stateFilter = listFilterForState(filter)
-  const teamFilter = teamId ? { team: { id: { eq: teamId } } } : undefined
-  if (stateFilter && teamFilter) {
-    return { ...stateFilter, ...teamFilter }
-  }
-  return stateFilter ?? teamFilter
-}
 
 type LinearIssuePageResult = {
   items: LinearIssue[]
@@ -840,7 +910,7 @@ function linearWorkspaceError(
   entry: LinearClientForWorkspace,
   error: unknown
 ): LinearWorkspaceError {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = boundedIntegrationErrorMessage(error)
   const lower = message.toLocaleLowerCase()
   const type: LinearWorkspaceError['type'] = isAuthError(error)
     ? 'auth'
@@ -866,14 +936,14 @@ async function readListIssuesForWorkspace(
   filter: LinearListFilter,
   limit: number,
   workspaceId: LinearWorkspaceSelection | null | undefined,
-  teamId?: string
+  options?: LinearIssueListOptions
 ): Promise<LinearCollectionResult<LinearIssue>> {
   await acquire()
   try {
     return await readIssueConnectionPages(
       entry,
       limit,
-      getListIssueConnectionLoader(entry, filter, teamId)
+      getListIssueConnectionLoader(entry, filter, options)
     )
   } catch (error) {
     if (isAuthError(error)) {
@@ -882,7 +952,7 @@ async function readListIssuesForWorkspace(
         throw error
       }
     } else {
-      console.warn('[linear] listIssues failed:', error)
+      console.warn('[linear] listIssues failed:', boundedIntegrationErrorLog(error))
     }
     return { items: [], hasMore: false, errors: [linearWorkspaceError(entry, error)] }
   } finally {
@@ -896,10 +966,11 @@ async function readIssueConnectionPage(
   page: LinearIssuePageRequest
 ): Promise<LinearIssuePageResult> {
   const connection = await loadConnection(page)
-  const nodes = connection?.nodes ?? []
+  const pageNodes = connection?.nodes ?? []
+  const nodes = pageNodes.slice(0, page.first)
   return {
     items: nodes.map((issue) => mapRawIssueForWorkspace(entry, issue)),
-    hasMore: Boolean(connection?.pageInfo?.hasNextPage),
+    hasMore: pageNodes.length > nodes.length || Boolean(connection?.pageInfo?.hasNextPage),
     endCursor: connection?.pageInfo?.endCursor ?? undefined
   }
 }
@@ -907,8 +978,9 @@ async function readIssueConnectionPage(
 async function readListIssuesPageForState(
   state: LinearIssueWorkspacePageState,
   first: number,
-  workspaceId: LinearWorkspaceSelection | null | undefined
-): Promise<void> {
+  workspaceId: LinearWorkspaceSelection | null | undefined,
+  budget?: IntegrationPaginationBudget
+): Promise<boolean> {
   const previousCursor = state.after
   await acquire()
   try {
@@ -917,25 +989,38 @@ async function readListIssuesPageForState(
       state.loadConnection,
       previousCursor ? { first, after: previousCursor } : { first }
     )
+    if (budget && !budget.admitPage(page.items)) {
+      state.hasMore = true
+      state.canPage = false
+      return false
+    }
     state.items.push(...page.items)
     state.hasMore = page.hasMore
     state.after = page.endCursor
     state.canPage = Boolean(
       page.hasMore && page.endCursor && page.endCursor !== previousCursor && page.items.length > 0
     )
+    return true
   } catch (error) {
     state.items = []
     state.hasMore = false
     state.canPage = false
-    state.error = linearWorkspaceError(state.entry, error)
+    const workspaceError = linearWorkspaceError(state.entry, error)
+    state.error = workspaceError
     if (isAuthError(error)) {
       clearToken(state.entry.workspace.id)
       if (shouldThrowAuthError(workspaceId)) {
         throw error
       }
     } else {
-      console.warn('[linear] listIssues failed:', error)
+      console.warn('[linear] listIssues failed:', boundedIntegrationErrorLog(error))
     }
+    if (budget && !budget.admitPage([workspaceError])) {
+      state.error = undefined
+      state.hasMore = true
+      return false
+    }
+    return true
   } finally {
     release()
   }
@@ -978,25 +1063,48 @@ async function readListIssuesAcrossWorkspaces(
   filter: LinearListFilter,
   limit: number,
   workspaceId: LinearWorkspaceSelection | null | undefined,
-  teamId?: string
+  options?: LinearIssueListOptions
 ): Promise<LinearCollectionResult<LinearIssue>> {
   const states: LinearIssueWorkspacePageState[] = entries.map((entry) => ({
     entry,
-    loadConnection: getListIssueConnectionLoader(entry, filter, teamId),
+    loadConnection: getListIssueConnectionLoader(entry, filter, options),
     items: [],
     hasMore: false,
     canPage: false
   }))
   const first = Math.min(LINEAR_ISSUE_API_PAGE_SIZE_MAX, limit)
+  const aggregateBudget = createIntegrationFanoutBudget()
 
   // Why: "all workspaces" is a global sorted list. Pull one bounded page per
   // workspace first, then spend additional API calls only where unseen issues
   // can still change the global updatedAt cutoff.
-  await Promise.all(states.map((state) => readListIssuesPageForState(state, first, workspaceId)))
+  const initialFanout = await runBoundedIntegrationFanout(
+    states,
+    async (state) => {
+      await readListIssuesPageForState(state, first, workspaceId)
+      return state
+    },
+    (state) => [...state.items, ...(state.error ? [state.error] : [])],
+    { budget: aggregateBudget }
+  )
+  const acceptedStates = new Set(initialFanout.results)
+  for (const state of states) {
+    if (!acceptedStates.has(state)) {
+      state.items = []
+      state.error = undefined
+      state.hasMore = true
+      state.canPage = false
+    }
+  }
+  let aggregateTruncated = initialFanout.truncated
 
   for (;;) {
     const nextState = findWorkspaceToPageForLimit(states, limit)
     if (!nextState) {
+      break
+    }
+    if (!aggregateBudget.canRequestPage) {
+      aggregateTruncated = true
       break
     }
     const itemCount = states.reduce((count, state) => count + state.items.length, 0)
@@ -1007,7 +1115,10 @@ async function readListIssuesAcrossWorkspaces(
             LINEAR_ISSUE_API_PAGE_SIZE_MAX,
             Math.max(1, countSelectedIssuesOlderThanWorkspaceBoundary(states, nextState, limit))
           )
-    await readListIssuesPageForState(nextState, pageSize, workspaceId)
+    if (!(await readListIssuesPageForState(nextState, pageSize, workspaceId, aggregateBudget))) {
+      aggregateTruncated = true
+      break
+    }
   }
 
   const limited = sortLimitAndDescribeIssues(
@@ -1016,7 +1127,7 @@ async function readListIssuesAcrossWorkspaces(
   )
   return {
     items: limited.items,
-    hasMore: states.some((state) => state.hasMore) || limited.clipped,
+    hasMore: aggregateTruncated || states.some((state) => state.hasMore) || limited.clipped,
     errors: states.flatMap((state) => (state.error ? [state.error] : []))
   }
 }
@@ -1025,19 +1136,32 @@ export async function listIssues(
   filter: LinearListFilter = 'assigned',
   limit = 20,
   workspaceId?: LinearWorkspaceSelection | null,
-  teamId?: string
+  options?: LinearIssueListOptions
 ): Promise<LinearCollectionResult<LinearIssue>> {
   const effectiveLimit = clampLinearIssueListLimit(limit)
+  const attributeFilter = options?.attributeFilter
+  // Why: workspace-specific state/member/label ids cannot fan out safely across
+  // "all" workspaces; reject before creating clients so non-UI callers cannot
+  // get a misleading partial subset.
+  if (
+    attributeFilter &&
+    !isEmptyLinearIssueAttributeFilter(attributeFilter) &&
+    workspaceId === 'all'
+  ) {
+    throw new Error(
+      'Linear attribute filters require a concrete workspace; "all" workspaces is not supported.'
+    )
+  }
   const entries = getClients(workspaceId)
   if (entries.length === 0) {
     return { items: [] }
   }
 
   if (entries.length === 1) {
-    return readListIssuesForWorkspace(entries[0], filter, effectiveLimit, workspaceId, teamId)
+    return readListIssuesForWorkspace(entries[0], filter, effectiveLimit, workspaceId, options)
   }
 
-  return readListIssuesAcrossWorkspaces(entries, filter, effectiveLimit, workspaceId, teamId)
+  return readListIssuesAcrossWorkspaces(entries, filter, effectiveLimit, workspaceId, options)
 }
 
 export async function createIssue(
@@ -1100,7 +1224,7 @@ export async function createIssue(
       clearToken(entry.workspace.id)
       throw error
     }
-    const message = error instanceof Error ? error.message : String(error)
+    const message = boundedIntegrationErrorMessage(error)
     return { ok: false, error: message }
   } finally {
     release()
@@ -1222,6 +1346,9 @@ export async function updateIssue(
     if (updates.projectId !== undefined) {
       payload.projectId = updates.projectId
     }
+    if (updates.parentId !== undefined) {
+      payload.parentId = updates.parentId
+    }
 
     const result = await entry.client.updateIssue(id, payload)
     if (!result.success) {
@@ -1233,7 +1360,7 @@ export async function updateIssue(
       clearToken(entry.workspace.id)
       throw error
     }
-    const message = error instanceof Error ? error.message : String(error)
+    const message = boundedIntegrationErrorMessage(error)
     return { ok: false, error: message }
   } finally {
     release()
@@ -1242,10 +1369,7 @@ export async function updateIssue(
 
 export async function updateIssueForAgent(
   id: string,
-  updates: Pick<
-    LinearIssueUpdate,
-    'stateId' | 'assigneeId' | 'priority' | 'estimate' | 'dueDate' | 'labelIds'
-  >,
+  updates: LinearIssueUpdate,
   workspaceId: string,
   options: { signal?: AbortSignal } = {}
 ): Promise<LinearIssueWriteRecord> {
@@ -1258,6 +1382,12 @@ export async function updateIssueForAgent(
     const payload: Record<string, unknown> = {}
     if (updates.stateId !== undefined) {
       payload.stateId = updates.stateId
+    }
+    if (updates.title !== undefined) {
+      payload.title = updates.title
+    }
+    if (updates.description !== undefined) {
+      payload.description = updates.description
     }
     if (updates.assigneeId !== undefined) {
       payload.assigneeId = updates.assigneeId
@@ -1273,6 +1403,12 @@ export async function updateIssueForAgent(
     }
     if (updates.labelIds !== undefined) {
       payload.labelIds = updates.labelIds
+    }
+    if (updates.projectId !== undefined) {
+      payload.projectId = updates.projectId
+    }
+    if (updates.parentId !== undefined) {
+      payload.parentId = updates.parentId
     }
     const result = await client.updateIssue(id, payload)
     if (!result.success) {
@@ -1321,7 +1457,7 @@ export async function addIssueComment(
       clearToken(entry.workspace.id)
       throw error
     }
-    const message = error instanceof Error ? error.message : String(error)
+    const message = boundedIntegrationErrorMessage(error)
     return { ok: false, error: message }
   } finally {
     release()
@@ -1446,27 +1582,30 @@ export async function getIssueComments(
 
   await acquire()
   try {
-    const issue = await entry.client.issue(issueId)
-    const comments = await issue.comments()
-    const results: LinearComment[] = []
-    for (const c of comments.nodes) {
-      const user = await c.user
-      results.push({
-        id: c.id,
-        body: c.body,
-        createdAt: c.createdAt.toISOString(),
-        user: user
-          ? { displayName: user.displayName, avatarUrl: user.avatarUrl ?? undefined }
-          : undefined
-      })
-    }
-    return results
+    const result = await entry.client.client.rawRequest<
+      LinearIssueCommentsResponse,
+      LinearRawVariables
+    >(ISSUE_COMMENTS_QUERY, { id: issueId })
+    const nodes = result.data?.issue?.comments?.nodes ?? []
+    return nodes.slice(0, LINEAR_ISSUE_API_PAGE_SIZE_MAX).map((node) => ({
+      id: node.id,
+      body: node.body ?? '',
+      // Why: rawRequest returns createdAt as an ISO string already; do not
+      // re-serialize (the SDK model path used .toISOString() on a parsed Date).
+      createdAt: node.createdAt ?? '',
+      user: node.user
+        ? {
+            displayName: node.user.displayName ?? '',
+            avatarUrl: node.user.avatarUrl ?? undefined
+          }
+        : undefined
+    }))
   } catch (error) {
     if (isAuthError(error)) {
       clearToken(entry.workspace.id)
       throw error
     }
-    console.warn('[linear] getIssueComments failed:', error)
+    console.warn('[linear] getIssueComments failed:', boundedIntegrationErrorLog(error))
     return []
   } finally {
     release()

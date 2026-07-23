@@ -1,3 +1,5 @@
+import { parseMobileJsonTextWithinLimits } from './mobile-json-text-admission'
+
 const TERMINAL_STREAM_KIND = 0x74
 const TERMINAL_STREAM_VERSION = 1
 const HEADER_BYTES = 16
@@ -8,7 +10,8 @@ export enum TerminalStreamOpcode {
   SnapshotChunk = 3,
   SnapshotEnd = 4,
   Resized = 5,
-  Error = 6
+  Error = 6,
+  Metadata = 12
 }
 
 export type TerminalStreamFrame = {
@@ -51,13 +54,13 @@ export function decodeTerminalStreamFrame(bytes: Uint8Array): TerminalStreamFram
     opcode,
     streamId: view.getUint32(4, true),
     seq: high * 0x100000000 + low,
-    payload: bytes.slice(HEADER_BYTES)
+    payload: bytes.subarray(HEADER_BYTES)
   }
 }
 
 export function decodeTerminalStreamJson<T>(payload: Uint8Array): T | null {
   try {
-    return JSON.parse(new TextDecoder().decode(payload)) as T
+    return parseMobileJsonTextWithinLimits<T>(new TextDecoder().decode(payload))
   } catch {
     return null
   }
@@ -74,6 +77,7 @@ function isTerminalStreamOpcode(value: number): value is TerminalStreamOpcode {
     value === TerminalStreamOpcode.SnapshotChunk ||
     value === TerminalStreamOpcode.SnapshotEnd ||
     value === TerminalStreamOpcode.Resized ||
-    value === TerminalStreamOpcode.Error
+    value === TerminalStreamOpcode.Error ||
+    value === TerminalStreamOpcode.Metadata
   )
 }

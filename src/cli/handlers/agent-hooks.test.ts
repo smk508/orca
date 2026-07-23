@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDefaultPersistedState } from '../../shared/constants'
 import type { PersistedState } from '../../shared/types'
+import { ORCA_PERSISTED_STATE_MAX_BYTES } from '../../shared/persisted-state-file-bounds'
 
 const {
   applyAgentStatusHooksEnabledMock,
@@ -45,9 +46,12 @@ vi.mock('../runtime-client', () => {
     }
   }
 
+  class RuntimeRpcFailureError extends Error {}
+
   return {
     RuntimeClient,
     RuntimeClientError,
+    RuntimeRpcFailureError,
     getDefaultUserDataPath: getDefaultUserDataPathMock
   }
 })
@@ -92,18 +96,28 @@ describe('agent hooks CLI handler', () => {
     rmSync(userDataPath, { recursive: true, force: true })
   })
 
-  it('keeps the fresh-profile new card style default when creating offline settings', async () => {
+  it('keeps new card style off when creating offline settings for a fresh profile', async () => {
     await runAgentHooksOff(userDataPath)
 
     const persisted = readDataFile(userDataPath)
 
-    expect(persisted.settings.experimentalNewWorktreeCardStyle).toBe(true)
+    expect(persisted.settings.experimentalNewWorktreeCardStyle).toBe(false)
     expect(persisted.settings.agentStatusHooksEnabled).toBe(false)
   })
 
-  it('defaults missing new card style on while offline-updated onboarding is open', async () => {
+  it('keeps missing new card style off when updating offline settings', async () => {
     const existing = getDefaultPersistedState(userDataPath)
     delete existing.settings.experimentalNewWorktreeCardStyle
+    writeDataFile(userDataPath, existing)
+
+    await runAgentHooksOff(userDataPath)
+
+    expect(readDataFile(userDataPath).settings.experimentalNewWorktreeCardStyle).toBe(false)
+  })
+
+  it('preserves an existing explicit new card style opt-in when updating offline settings', async () => {
+    const existing = getDefaultPersistedState(userDataPath)
+    existing.settings.experimentalNewWorktreeCardStyle = true
     writeDataFile(userDataPath, existing)
 
     await runAgentHooksOff(userDataPath)
@@ -111,13 +125,15 @@ describe('agent hooks CLI handler', () => {
     expect(readDataFile(userDataPath).settings.experimentalNewWorktreeCardStyle).toBe(true)
   })
 
-  it('preserves an existing explicit new card style opt-out when updating offline settings', async () => {
-    const existing = getDefaultPersistedState(userDataPath)
-    existing.settings.experimentalNewWorktreeCardStyle = false
-    writeDataFile(userDataPath, existing)
+  it('rejects an oversized sparse offline state file without replacing it', async () => {
+    const dataPath = join(userDataPath, 'orca-data.json')
+    writeFileSync(dataPath, '')
+    truncateSync(dataPath, ORCA_PERSISTED_STATE_MAX_BYTES + 1)
 
     await runAgentHooksOff(userDataPath)
 
-    expect(readDataFile(userDataPath).settings.experimentalNewWorktreeCardStyle).toBe(false)
+    expect(process.exitCode).toBe(1)
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('File too large'))
+    expect(readFileSync(dataPath).byteLength).toBe(ORCA_PERSISTED_STATE_MAX_BYTES + 1)
   })
 })

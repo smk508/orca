@@ -12,6 +12,7 @@ import {
   isDigitIndexActionId,
   isDoubleTapBinding,
   keybindingFromInput,
+  LEGACY_TAB_SWITCH_BINDINGS,
   keybindingFromInputForAction,
   keybindingMatchesAction,
   keybindingMatchesInput,
@@ -78,6 +79,22 @@ describe('keybindings', () => {
     })
   })
 
+  it('allows Shift-only chords only for native input-source switching', () => {
+    const shiftSpace = {
+      key: ' ',
+      code: 'Space',
+      control: false,
+      meta: false,
+      alt: false,
+      shift: true
+    }
+
+    expect(keybindingFromInput(shiftSpace, 'darwin')).toMatchObject({ ok: false })
+    expect(
+      keybindingFromInputForAction('terminal.switchInputSource', shiftSpace, 'darwin')
+    ).toEqual({ ok: true, value: 'Shift+Space' })
+  })
+
   it('captures key events into canonical editable shortcuts', () => {
     expect(
       keybindingFromInput(
@@ -140,6 +157,24 @@ describe('keybindings', () => {
     })
   })
 
+  it('binds F7 / Shift+F7 for diff-change navigation and matches their events', () => {
+    // Opt-in actions accept bare / Shift-only function keys...
+    expect(normalizeKeybindingListForAction('editor.nextChange', 'F7')).toEqual(['F7'])
+    expect(normalizeKeybindingListForAction('editor.previousChange', 'Shift+F7')).toEqual([
+      'Shift+F7'
+    ])
+    // ...but they stay unsafe for actions that do not opt in.
+    expect(normalizeKeybinding('F7')).toMatchObject({ ok: false })
+    expect(normalizeKeybinding('Shift+F7')).toMatchObject({ ok: false })
+
+    const f7 = { key: 'F7', code: 'F7', control: false, meta: false, alt: false, shift: false }
+    const shiftF7 = { ...f7, shift: true }
+    expect(keybindingMatchesAction('editor.nextChange', f7, 'darwin')).toBe(true)
+    expect(keybindingMatchesAction('editor.nextChange', shiftF7, 'darwin')).toBe(false)
+    expect(keybindingMatchesAction('editor.previousChange', shiftF7, 'darwin')).toBe(true)
+    expect(keybindingMatchesAction('editor.previousChange', f7, 'darwin')).toBe(false)
+  })
+
   it('formats keybindings with platform labels', () => {
     expect(formatKeybindingList(['Mod+Shift+J'], 'darwin')).toBe('⌘⇧J')
     expect(formatKeybindingList(['Mod+Shift+J'], 'linux')).toBe('Ctrl+Shift+J')
@@ -179,6 +214,52 @@ describe('keybindings', () => {
     expect(formatKeybindingList(['Mod+Shift+O'], 'darwin')).toBe('⌘⇧O')
   })
 
+  it('defines a default shortcut for adding an editor review note', () => {
+    expect(getEffectiveKeybindingsForAction('editor.addReviewNote', 'darwin')).toEqual([
+      'Mod+Shift+A'
+    ])
+    expect(getEffectiveKeybindingsForAction('editor.addReviewNote', 'linux')).toEqual([
+      'Mod+Shift+A'
+    ])
+    expect(getEffectiveKeybindingsForAction('editor.addReviewNote', 'win32')).toEqual([
+      'Mod+Shift+A'
+    ])
+    expect(formatKeybindingList(['Mod+Shift+A'], 'darwin')).toBe('⌘⇧A')
+    expect(formatKeybindingList(['Mod+Shift+A'], 'linux')).toBe('Ctrl+Shift+A')
+
+    const macChord = {
+      key: 'a',
+      code: 'KeyA',
+      meta: true,
+      control: false,
+      alt: false,
+      shift: true
+    }
+    const ctrlChord = { ...macChord, meta: false, control: true }
+    expect(keybindingMatchesAction('editor.addReviewNote', macChord, 'darwin')).toBe(true)
+    expect(keybindingMatchesAction('editor.addReviewNote', ctrlChord, 'linux')).toBe(true)
+    expect(keybindingMatchesAction('editor.addReviewNote', ctrlChord, 'win32')).toBe(true)
+
+    const oldCtrlAltChord = {
+      key: 'n',
+      code: 'KeyN',
+      meta: false,
+      control: true,
+      alt: true,
+      shift: false
+    }
+    expect(keybindingMatchesAction('editor.addReviewNote', oldCtrlAltChord, 'linux')).toBe(false)
+    expect(keybindingMatchesAction('editor.addReviewNote', oldCtrlAltChord, 'win32')).toBe(false)
+  })
+
+  it('defines platform-native replace-in-editor shortcuts', () => {
+    expect(getEffectiveKeybindingsForAction('editor.replace', 'darwin')).toEqual(['Mod+Alt+F'])
+    expect(getEffectiveKeybindingsForAction('editor.replace', 'linux')).toEqual(['Mod+H'])
+    expect(getEffectiveKeybindingsForAction('editor.replace', 'win32')).toEqual(['Mod+H'])
+    expect(formatKeybindingList(['Mod+Alt+F'], 'darwin')).toBe('⌘⌥F')
+    expect(formatKeybindingList(['Mod+H'], 'linux')).toBe('Ctrl+H')
+  })
+
   it('uses overrides as the complete effective binding list for an action', () => {
     const overrides = {
       'worktree.quickOpen': ['Ctrl+Alt+O', 'not-a-shortcut']
@@ -216,6 +297,108 @@ describe('keybindings', () => {
     })
   })
 
+  it('keeps zoom reset on Mod+0 and focuses worktree list on a distinct chord', () => {
+    // Why: both actions previously defaulted to Mod+0, so main-process zoom
+    // reset always won and Focus worktree list was unreachable (#8584).
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      expect(getEffectiveKeybindingsForAction('zoom.reset', platform)).toEqual(['Mod+0'])
+      expect(getEffectiveKeybindingsForAction('sidebar.focusWorktreeList', platform)).toEqual([
+        'Mod+Shift+0'
+      ])
+    }
+
+    const zoomResetInput = {
+      key: '0',
+      code: 'Digit0',
+      meta: true,
+      control: false,
+      alt: false,
+      shift: false
+    }
+    const focusListInput = { ...zoomResetInput, shift: true }
+
+    expect(keybindingMatchesAction('zoom.reset', zoomResetInput, 'darwin')).toBe(true)
+    expect(keybindingMatchesAction('sidebar.focusWorktreeList', zoomResetInput, 'darwin')).toBe(
+      false
+    )
+    expect(keybindingMatchesAction('sidebar.focusWorktreeList', focusListInput, 'darwin')).toBe(
+      true
+    )
+    expect(keybindingMatchesAction('zoom.reset', focusListInput, 'darwin')).toBe(false)
+
+    expect(
+      findKeybindingConflicts('darwin', { 'sidebar.focusWorktreeList': ['Mod+0'] })
+    ).toContainEqual({
+      binding: 'Mod+0',
+      actionIds: expect.arrayContaining(['zoom.reset', 'sidebar.focusWorktreeList'])
+    })
+  })
+
+  it('reports quick-command menu conflicts with global shortcuts and digit ranges', () => {
+    expect(
+      findKeybindingConflicts('darwin', {
+        'tab.openQuickCommandsMenu': ['Mod+P']
+      })
+    ).toContainEqual({
+      binding: 'Mod+P',
+      actionIds: expect.arrayContaining(['worktree.quickOpen', 'tab.openQuickCommandsMenu'])
+    })
+
+    expect(
+      findKeybindingConflicts('darwin', {
+        'tab.openQuickCommandsMenu': ['Cmd+P']
+      })
+    ).toContainEqual({
+      binding: 'Mod+P',
+      actionIds: expect.arrayContaining(['worktree.quickOpen', 'tab.openQuickCommandsMenu'])
+    })
+
+    expect(
+      findKeybindingConflicts('linux', {
+        'tab.openQuickCommandsMenu': ['Ctrl+P']
+      })
+    ).toContainEqual({
+      binding: 'Mod+P',
+      actionIds: expect.arrayContaining(['worktree.quickOpen', 'tab.openQuickCommandsMenu'])
+    })
+
+    expect(
+      findKeybindingConflicts('darwin', {
+        'tab.openQuickCommandsMenu': ['Mod+3']
+      })
+    ).toContainEqual({
+      binding: 'Mod+3',
+      actionIds: expect.arrayContaining(['workspace.selectByIndex', 'tab.openQuickCommandsMenu'])
+    })
+
+    expect(
+      findKeybindingConflicts('darwin', {
+        'tab.openQuickCommandsMenu': ['Cmd+3']
+      })
+    ).toContainEqual({
+      binding: 'Cmd+3',
+      actionIds: expect.arrayContaining(['workspace.selectByIndex', 'tab.openQuickCommandsMenu'])
+    })
+
+    expect(
+      findKeybindingConflicts('linux', {
+        'tab.openQuickCommandsMenu': ['Ctrl+3']
+      })
+    ).toContainEqual({
+      binding: 'Ctrl+3',
+      actionIds: expect.arrayContaining(['workspace.selectByIndex', 'tab.openQuickCommandsMenu'])
+    })
+
+    expect(
+      findKeybindingConflicts('linux', {
+        'tab.openQuickCommandsMenu': ['Alt+4']
+      })
+    ).toContainEqual({
+      binding: 'Alt+4',
+      actionIds: expect.arrayContaining(['tab.selectByIndex', 'tab.openQuickCommandsMenu'])
+    })
+  })
+
   it('defines macOS-only rename shortcuts that stay conflict-free', () => {
     expect(getEffectiveKeybindingsForAction('tab.rename', 'darwin')).toEqual(['Mod+R'])
     expect(getEffectiveKeybindingsForAction('tab.rename', 'linux')).toEqual([])
@@ -223,6 +406,7 @@ describe('keybindings', () => {
     expect(getEffectiveKeybindingsForAction('workspace.rename', 'darwin')).toEqual(['Mod+Alt+R'])
     expect(getEffectiveKeybindingsForAction('workspace.rename', 'linux')).toEqual([])
     expect(formatKeybindingList(['Mod+Alt+R'], 'darwin')).toBe('⌘⌥R')
+    expect(getKeybindingDefinition('tab.rename')?.searchKeywords).not.toContain('set title')
     expect(
       keybindingMatchesAction(
         'tab.rename',
@@ -286,6 +470,55 @@ describe('keybindings', () => {
         actionIds: ['workspace.rename', 'tab.rename']
       }
     ])
+  })
+
+  it('flags the global send-review-notes command against editor chords it can shadow', () => {
+    // Why: it fires from the global capture handler even while the editor is
+    // focused, so Settings must warn when a user binds it over Add Review Note.
+    expect(
+      findKeybindingConflicts('darwin', { 'sourceControl.sendReviewNotes': ['Mod+Shift+A'] })
+    ).toContainEqual(
+      expect.objectContaining({
+        binding: 'Mod+Shift+A',
+        actionIds: expect.arrayContaining(['editor.addReviewNote', 'sourceControl.sendReviewNotes'])
+      })
+    )
+  })
+
+  it('defaults tab-switch chords to the swapped convention for fresh installs', () => {
+    // New users get the widespread mapping: Shift+bracket cycles all tabs,
+    // Alt+bracket cycles within the active type.
+    expect(getEffectiveKeybindingsForAction('tab.nextAllTypes', 'darwin')).toEqual([
+      'Mod+Shift+BracketRight'
+    ])
+    expect(getEffectiveKeybindingsForAction('tab.previousAllTypes', 'darwin')).toEqual([
+      'Mod+Shift+BracketLeft'
+    ])
+    expect(getEffectiveKeybindingsForAction('tab.nextSameType', 'darwin')).toEqual([
+      'Mod+Alt+BracketRight'
+    ])
+    expect(getEffectiveKeybindingsForAction('tab.previousSameType', 'darwin')).toEqual([
+      'Mod+Alt+BracketLeft'
+    ])
+  })
+
+  it('pins the pre-swap chords via LEGACY_TAB_SWITCH_BINDINGS for upgrading installs', () => {
+    // These are what the seed migration writes so pre-existing users keep the
+    // shortcuts they learned; overriding an action with its legacy value must
+    // reproduce the old effective binding.
+    expect(LEGACY_TAB_SWITCH_BINDINGS).toEqual({
+      'tab.nextSameType': ['Mod+Shift+BracketRight'],
+      'tab.previousSameType': ['Mod+Shift+BracketLeft'],
+      'tab.nextAllTypes': ['Mod+Alt+BracketRight'],
+      'tab.previousAllTypes': ['Mod+Alt+BracketLeft']
+    })
+    for (const [actionId, bindings] of Object.entries(LEGACY_TAB_SWITCH_BINDINGS)) {
+      expect(
+        getEffectiveKeybindingsForAction(actionId as KeybindingActionId, 'darwin', {
+          [actionId]: bindings
+        })
+      ).toEqual(bindings)
+    }
   })
 
   it('defines browser history shortcuts for Logitech side-button remaps', () => {
@@ -412,6 +645,35 @@ describe('keybindings', () => {
     ).toBe(true)
   })
 
+  it('names terminal title shortcuts after pane menu actions', () => {
+    const setTitle = getKeybindingDefinition('terminal.setTitle')
+    const clearTitle = getKeybindingDefinition('terminal.clearPaneTitle')
+
+    expect(setTitle?.title).toBe('Set Title…')
+    expect(setTitle?.group).toBe('Terminal Panes')
+    expect(setTitle?.scope).toBe('terminal')
+    expect(setTitle?.searchKeywords).toContain('set title')
+    expect(getEffectiveKeybindingsForAction('terminal.setTitle', 'darwin')).toEqual([])
+    expect(getEffectiveKeybindingsForAction('terminal.setTitle', 'linux')).toEqual([])
+    expect(getEffectiveKeybindingsForAction('terminal.setTitle', 'win32')).toEqual([])
+
+    expect(clearTitle?.title).toBe('Clear Pane Title')
+    expect(clearTitle?.group).toBe('Terminal Panes')
+    expect(clearTitle?.scope).toBe('terminal')
+    expect(clearTitle?.searchKeywords).toContain('remove title')
+    expect(getEffectiveKeybindingsForAction('terminal.clearPaneTitle', 'darwin')).toEqual([])
+    expect(getEffectiveKeybindingsForAction('terminal.clearPaneTitle', 'linux')).toEqual([])
+    expect(getEffectiveKeybindingsForAction('terminal.clearPaneTitle', 'win32')).toEqual([])
+    expect(
+      keybindingMatchesAction(
+        'terminal.clearPaneTitle',
+        { key: 't', code: 'KeyT', control: false, meta: true, alt: true, shift: false },
+        'darwin',
+        { 'terminal.clearPaneTitle': ['Mod+Alt+T'] }
+      )
+    ).toBe(true)
+  })
+
   it('keeps workspace delete unassigned until users customize it', () => {
     const binding = {
       key: 'Backspace',
@@ -453,6 +715,38 @@ describe('keybindings', () => {
     expect(definition?.title).toBe('Open Workspace Board')
     expect(definition?.searchKeywords).toEqual(
       expect.arrayContaining(['workspace', 'board', 'kanban'])
+    )
+  })
+
+  it('keeps the quick commands menu toggle unassigned until users customize it', () => {
+    const platforms: readonly KeybindingPlatform[] = ['darwin', 'linux', 'win32']
+
+    for (const platform of platforms) {
+      expect(getEffectiveKeybindingsForAction('tab.openQuickCommandsMenu', platform)).toEqual([])
+    }
+
+    const binding = {
+      key: 'q',
+      code: 'KeyQ',
+      control: true,
+      meta: false,
+      alt: false,
+      shift: true
+    }
+
+    expect(keybindingMatchesAction('tab.openQuickCommandsMenu', binding, 'linux')).toBe(false)
+    expect(
+      keybindingMatchesAction('tab.openQuickCommandsMenu', binding, 'linux', {
+        'tab.openQuickCommandsMenu': ['Mod+Shift+Q']
+      })
+    ).toBe(true)
+
+    const definition = getKeybindingDefinition('tab.openQuickCommandsMenu')
+    expect(definition?.title).toBe('Toggle Quick Commands menu')
+    expect(definition?.group).toBe('Quick Commands')
+    expect(definition?.scope).toBe('tabs')
+    expect(definition?.searchKeywords).toEqual(
+      expect.arrayContaining(['shortcut', 'quick', 'command', 'menu', 'tab'])
     )
   })
 
@@ -559,6 +853,41 @@ describe('keybindings', () => {
       keybindingMatchesAction(
         'tab.newAgent',
         { key: 't', code: 'KeyT', meta: true, control: false, alt: true, shift: false },
+        'darwin'
+      )
+    ).toBe(true)
+  })
+
+  // Why: #8533 — both previously defaulted to Mod+Shift+E on darwin; emulator won.
+  it('keeps explorer on Mod+Shift+E and gives the mobile emulator a non-colliding macOS default', () => {
+    expect(getEffectiveKeybindingsForAction('sidebar.explorer.toggle', 'darwin')).toEqual([
+      'Mod+Shift+E'
+    ])
+    expect(getEffectiveKeybindingsForAction('tab.newSimulator', 'darwin')).toEqual([
+      'Mod+Alt+Shift+E'
+    ])
+    expect(getEffectiveKeybindingsForAction('tab.newSimulator', 'linux')).toEqual([])
+    expect(getEffectiveKeybindingsForAction('tab.newSimulator', 'win32')).toEqual([])
+    expect(formatKeybindingList(['Mod+Alt+Shift+E'], 'darwin')).toBe('⌘⌥⇧E')
+
+    expect(
+      keybindingMatchesAction(
+        'sidebar.explorer.toggle',
+        { key: 'e', code: 'KeyE', meta: true, control: false, alt: false, shift: true },
+        'darwin'
+      )
+    ).toBe(true)
+    expect(
+      keybindingMatchesAction(
+        'tab.newSimulator',
+        { key: 'e', code: 'KeyE', meta: true, control: false, alt: false, shift: true },
+        'darwin'
+      )
+    ).toBe(false)
+    expect(
+      keybindingMatchesAction(
+        'tab.newSimulator',
+        { key: 'e', code: 'KeyE', meta: true, control: false, alt: true, shift: true },
         'darwin'
       )
     ).toBe(true)
@@ -850,11 +1179,7 @@ describe('keybindings', () => {
 
     // Ctrl+Shift+C on the same layout (terminal copy) must match too.
     expect(
-      keybindingMatchesAction(
-        'terminal.copySelection',
-        { ...cyrillicCtrlC, shift: true },
-        'win32'
-      )
+      keybindingMatchesAction('terminal.copySelection', { ...cyrillicCtrlC, shift: true }, 'win32')
     ).toBe(true)
 
     // Greek layout: physical P produces 'π' (U+03C0); Ctrl+P must still match.
@@ -969,29 +1294,30 @@ describe('keybindings', () => {
     expect(keybindingMatchesAction('terminal.focusNextPane', jisLeftBracket, 'darwin')).toBe(false)
     expect(keybindingMatchesAction('terminal.focusNextPane', jisRightBracket, 'darwin')).toBe(true)
 
+    // Alt+bracket is the fresh-install same-type default after the convention swap.
     expect(
-      keybindingMatchesAction('tab.previousAllTypes', { ...jisLeftBracket, alt: true }, 'darwin')
+      keybindingMatchesAction('tab.previousSameType', { ...jisLeftBracket, alt: true }, 'darwin')
     ).toBe(true)
     expect(
-      keybindingMatchesAction('tab.nextAllTypes', { ...jisRightBracket, alt: true }, 'darwin')
+      keybindingMatchesAction('tab.nextSameType', { ...jisRightBracket, alt: true }, 'darwin')
     ).toBe(true)
     expect(
       keybindingMatchesAction(
-        'tab.previousAllTypes',
+        'tab.previousSameType',
         { ...jisLeftBracket, control: true, meta: false, alt: true },
         'linux'
       )
     ).toBe(true)
     expect(
       keybindingMatchesAction(
-        'tab.nextAllTypes',
+        'tab.nextSameType',
         { ...jisLeftBracket, control: true, meta: false, alt: true },
         'linux'
       )
     ).toBe(false)
     expect(
       keybindingMatchesAction(
-        'tab.nextAllTypes',
+        'tab.nextSameType',
         { ...jisRightBracket, control: true, meta: false, alt: true },
         'linux'
       )
@@ -1021,7 +1347,7 @@ describe('keybindings', () => {
 
     expect(
       keybindingMatchesAction(
-        'tab.previousAllTypes',
+        'tab.previousSameType',
         {
           key: '[',
           code: 'Digit8',
@@ -1035,7 +1361,7 @@ describe('keybindings', () => {
     ).toBe(false)
     expect(
       keybindingMatchesAction(
-        'tab.previousAllTypes',
+        'tab.previousSameType',
         {
           key: 'Dead',
           code: 'BracketLeft',
@@ -1138,7 +1464,9 @@ describe('keybindings', () => {
     expect(formatKeybindingList(['DoubleTap+Shift'], 'linux')).toBe('Shift Shift')
   })
 
-  it('matches macOS Option-composed bracket shortcuts for all-type tab switching', () => {
+  it('matches macOS Option-composed bracket shortcuts for same-type tab switching', () => {
+    // Cmd+Alt+bracket is the fresh-install same-type default after the swap, so
+    // Option-composed dead keys (\u2325[ -> "\u201c") must still resolve to that action.
     const macOptionLeftBracket = {
       key: '\u201c',
       code: 'BracketLeft',
@@ -1156,12 +1484,12 @@ describe('keybindings', () => {
       shift: false
     }
 
-    expect(keybindingMatchesAction('tab.previousAllTypes', macOptionLeftBracket, 'darwin')).toBe(
+    expect(keybindingMatchesAction('tab.previousSameType', macOptionLeftBracket, 'darwin')).toBe(
       true
     )
-    expect(keybindingMatchesAction('tab.nextAllTypes', macOptionLeftBracket, 'darwin')).toBe(false)
-    expect(keybindingMatchesAction('tab.nextAllTypes', macOptionRightBracket, 'darwin')).toBe(true)
-    expect(keybindingMatchesAction('tab.previousAllTypes', macOptionRightBracket, 'darwin')).toBe(
+    expect(keybindingMatchesAction('tab.nextSameType', macOptionLeftBracket, 'darwin')).toBe(false)
+    expect(keybindingMatchesAction('tab.nextSameType', macOptionRightBracket, 'darwin')).toBe(true)
+    expect(keybindingMatchesAction('tab.previousSameType', macOptionRightBracket, 'darwin')).toBe(
       false
     )
   })

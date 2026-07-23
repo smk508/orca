@@ -1,3 +1,12 @@
+import type { DeviceScope } from '../../../shared/runtime-types'
+import {
+  PAIRING_CODE_MAX_CHARACTERS,
+  PAIRING_DEVICE_TOKEN_MAX_CHARACTERS,
+  PAIRING_ENDPOINT_MAX_CHARACTERS,
+  PAIRING_INPUT_MAX_CHARACTERS,
+  PAIRING_PUBLIC_KEY_MAX_CHARACTERS
+} from '../../../shared/mobile-relay-pairing-offer'
+
 const PAIRING_OFFER_VERSION = 2
 
 export type WebPairingOffer = {
@@ -5,9 +14,18 @@ export type WebPairingOffer = {
   endpoint: string
   deviceToken: string
   publicKeyB64: string
+  scope?: DeviceScope
 }
 
+export type WebPairingStartupDecision =
+  | { kind: 'auto-save-runtime-offer'; offer: WebPairingOffer }
+  | { kind: 'show-connect'; initialPairingInput: string | null }
+  | { kind: 'use-stored-environment' }
+
 export function parseWebPairingInput(input: string): WebPairingOffer | null {
+  if (input.length > PAIRING_INPUT_MAX_CHARACTERS) {
+    return null
+  }
   const trimmed = input.trim()
   if (!trimmed) {
     return null
@@ -25,6 +43,9 @@ export function parseWebPairingInput(input: string): WebPairingOffer | null {
 }
 
 export function readPairingInputFromLocation(location: Location): string | null {
+  if (location.search.length + location.hash.length > PAIRING_INPUT_MAX_CHARACTERS) {
+    return null
+  }
   const search = new URLSearchParams(location.search)
   for (const key of ['pairing', 'pair', 'code', 'token']) {
     const value = search.get(key)
@@ -50,6 +71,22 @@ export function readPairingInputFromLocation(location: Location): string | null 
   return hash
 }
 
+export function decideWebPairingStartup(args: {
+  initialPairingInput: string | null
+  hasStoredEnvironment: boolean
+}): WebPairingStartupDecision {
+  const offer = args.initialPairingInput ? parseWebPairingInput(args.initialPairingInput) : null
+  if (offer?.scope === 'runtime') {
+    return { kind: 'auto-save-runtime-offer', offer }
+  }
+  if (offer) {
+    return { kind: 'show-connect', initialPairingInput: args.initialPairingInput }
+  }
+  return args.hasStoredEnvironment
+    ? { kind: 'use-stored-environment' }
+    : { kind: 'show-connect', initialPairingInput: null }
+}
+
 export function clearPairingInputFromAddressBar(): void {
   if (!window.location.hash && !window.location.search) {
     return
@@ -61,25 +98,41 @@ export function clearPairingInputFromAddressBar(): void {
 }
 
 function decodePairingPayload(base64url: string): WebPairingOffer | null {
+  if (
+    base64url.length === 0 ||
+    base64url.length > PAIRING_CODE_MAX_CHARACTERS ||
+    !/^[A-Za-z0-9+/_-]+={0,2}$/.test(base64url)
+  ) {
+    return null
+  }
   const json = new TextDecoder().decode(base64UrlToBytes(base64url))
   const parsed = JSON.parse(json) as Partial<WebPairingOffer>
   if (
     parsed.v !== PAIRING_OFFER_VERSION ||
     typeof parsed.endpoint !== 'string' ||
     parsed.endpoint.length === 0 ||
+    parsed.endpoint.length > PAIRING_ENDPOINT_MAX_CHARACTERS ||
     typeof parsed.deviceToken !== 'string' ||
     parsed.deviceToken.length === 0 ||
+    parsed.deviceToken.length > PAIRING_DEVICE_TOKEN_MAX_CHARACTERS ||
     typeof parsed.publicKeyB64 !== 'string' ||
-    parsed.publicKeyB64.length === 0
+    parsed.publicKeyB64.length === 0 ||
+    parsed.publicKeyB64.length > PAIRING_PUBLIC_KEY_MAX_CHARACTERS
   ) {
     return null
   }
+  const scope = parseWebPairingScope(parsed.scope)
   return {
     v: PAIRING_OFFER_VERSION,
     endpoint: normalizeWebSocketEndpoint(parsed.endpoint),
     deviceToken: parsed.deviceToken,
-    publicKeyB64: parsed.publicKeyB64
+    publicKeyB64: parsed.publicKeyB64,
+    ...(scope ? { scope } : {})
   }
+}
+
+function parseWebPairingScope(value: unknown): DeviceScope | null {
+  return value === 'mobile' || value === 'runtime' ? value : null
 }
 
 function extractPairingCodeFromUrl(url: string): string | null {

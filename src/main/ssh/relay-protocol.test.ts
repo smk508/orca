@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   HEADER_LENGTH,
+  MAX_BUFFERED_FRAME_CHUNKS,
   MessageType,
   encodeFrame,
   encodeJsonRpcFrame,
@@ -8,9 +9,36 @@ import {
   FrameDecoder,
   parseJsonRpcMessage,
   parseUnameToRelayPlatform,
+  isGitResponseStreamMarker,
   type JsonRpcRequest,
   type DecodedFrame
 } from './relay-protocol'
+import { RELAY_JSON_MAX_STRUCTURAL_TOKENS } from '../../shared/relay-json-admission'
+
+describe('git response stream marker', () => {
+  it('accepts only complete non-negative integer metadata', () => {
+    expect(
+      isGitResponseStreamMarker({
+        __orcaGitResponseStream: { streamId: 1, totalBytes: 1024, chunkCount: 2 }
+      })
+    ).toBe(true)
+    expect(isGitResponseStreamMarker({ __orcaGitResponseStream: {} })).toBe(false)
+    expect(
+      isGitResponseStreamMarker({
+        __orcaGitResponseStream: { streamId: -1, totalBytes: 1024, chunkCount: 2 }
+      })
+    ).toBe(false)
+    expect(
+      isGitResponseStreamMarker({
+        __orcaGitResponseStream: {
+          streamId: 1,
+          totalBytes: Number.MAX_SAFE_INTEGER + 1,
+          chunkCount: 2
+        }
+      })
+    ).toBe(false)
+  })
+})
 
 describe('frame encoding', () => {
   it('encodes a frame with 13-byte header', () => {
@@ -62,11 +90,37 @@ describe('frame encoding', () => {
       method: 'x',
       params: { data: 'a'.repeat(17 * 1024 * 1024) }
     }
-    expect(() => encodeJsonRpcFrame(bigPayload, 1, 0)).toThrow('Message too large')
+    const fromSpy = vi.spyOn(Buffer, 'from')
+    try {
+      expect(() => encodeJsonRpcFrame(bigPayload, 1, 0)).toThrow('Message too large')
+      expect(fromSpy).not.toHaveBeenCalled()
+    } finally {
+      fromSpy.mockRestore()
+    }
   })
 })
 
 describe('FrameDecoder', () => {
+  it('bounds retained chunk wrappers for a byte-fragmented frame', () => {
+    const frames: DecodedFrame[] = []
+    const decoder = new FrameDecoder((frame) => frames.push(frame))
+    const payloadLength = MAX_BUFFERED_FRAME_CHUNKS + 512
+    const header = Buffer.alloc(HEADER_LENGTH)
+    header[0] = MessageType.Regular
+    header.writeUInt32BE(payloadLength, 9)
+    decoder.feed(header)
+
+    const byte = Buffer.from('x')
+    const state = decoder as unknown as { chunks: Buffer[] }
+    for (let index = 0; index < payloadLength; index += 1) {
+      decoder.feed(byte)
+      expect(state.chunks.length).toBeLessThanOrEqual(MAX_BUFFERED_FRAME_CHUNKS)
+    }
+
+    expect(frames).toHaveLength(1)
+    expect(frames[0].payload.equals(Buffer.alloc(payloadLength, 0x78))).toBe(true)
+  })
+
   it('decodes a complete frame', () => {
     const frames: DecodedFrame[] = []
     const decoder = new FrameDecoder((f) => frames.push(f))
@@ -146,6 +200,33 @@ describe('FrameDecoder', () => {
     expect(errors[0].message).toContain('discarded')
   })
 
+  it('rejects an oversized header immediately without retaining its payload', () => {
+    const errors: Error[] = []
+    const decoder = new FrameDecoder(
+      () => {},
+      (err) => errors.push(err)
+    )
+    const header = Buffer.alloc(HEADER_LENGTH)
+    header[0] = MessageType.Regular
+    header.writeUInt32BE(0xffffffff, 9)
+
+    decoder.feed(header)
+    const state = decoder as unknown as {
+      bufferedLength: number
+      oversizedPayloadBytesRemaining: number
+    }
+    expect(errors).toHaveLength(1)
+    expect(state.bufferedLength).toBe(0)
+    expect(state.oversizedPayloadBytesRemaining).toBe(0xffffffff)
+
+    const payloadChunk = Buffer.alloc(64 * 1024)
+    for (let index = 0; index < 128; index += 1) {
+      decoder.feed(payloadChunk)
+      expect(state.bufferedLength).toBe(0)
+    }
+    expect(errors).toHaveLength(1)
+  })
+
   it('reset clears internal buffer', () => {
     const frames: DecodedFrame[] = []
     const decoder = new FrameDecoder((f) => frames.push(f))
@@ -159,6 +240,79 @@ describe('FrameDecoder', () => {
     decoder.feed(encodeFrame(MessageType.Regular, 2, 0, Buffer.from('new')))
     expect(frames).toHaveLength(1)
     expect(frames[0].id).toBe(2)
+  })
+
+  it('decodes frames fed one byte at a time (worst-case boundary straddling)', () => {
+    const frames: DecodedFrame[] = []
+    const decoder = new FrameDecoder((f) => frames.push(f))
+
+    const frame1 = encodeFrame(MessageType.Regular, 1, 0, Buffer.from('first payload'))
+    const frame2 = encodeFrame(MessageType.Regular, 2, 1, Buffer.from('second'))
+    const combined = Buffer.concat([frame1, frame2])
+
+    for (let i = 0; i < combined.length; i += 1) {
+      decoder.feed(combined.subarray(i, i + 1))
+    }
+
+    expect(frames).toHaveLength(2)
+    expect(frames[0].payload.toString()).toBe('first payload')
+    expect(frames[1].id).toBe(2)
+    expect(frames[1].payload.toString()).toBe('second')
+  })
+
+  it('skips an oversized frame fed in odd-sized chunks and resynchronizes', () => {
+    const errors: Error[] = []
+    const frames: DecodedFrame[] = []
+    const decoder = new FrameDecoder(
+      (f) => frames.push(f),
+      (err) => errors.push(err)
+    )
+
+    const oversizedLength = 17 * 1024 * 1024
+    const header = Buffer.alloc(HEADER_LENGTH)
+    header[0] = MessageType.Regular
+    header.writeUInt32BE(1, 1)
+    header.writeUInt32BE(0, 5)
+    header.writeUInt32BE(oversizedLength, 9)
+    const oversized = Buffer.concat([header, Buffer.alloc(oversizedLength)])
+    const valid = encodeFrame(MessageType.Regular, 2, 0, Buffer.from('after'))
+    const combined = Buffer.concat([oversized, valid])
+
+    const chunkSize = 1024 * 1024 - 7
+    for (let i = 0; i < combined.length; i += chunkSize) {
+      decoder.feed(combined.subarray(i, i + chunkSize))
+    }
+
+    expect(errors).toHaveLength(1)
+    expect(frames).toHaveLength(1)
+    expect(frames[0].payload.toString()).toBe('after')
+  })
+
+  it('retains ordinary transport chunks without copying them while a frame is incomplete', () => {
+    const frames: DecodedFrame[] = []
+    const decoder = new FrameDecoder((f) => frames.push(f))
+    const payloadLength = 1024 * 1024
+    const header = Buffer.alloc(HEADER_LENGTH)
+    header[0] = MessageType.Regular
+    header.writeUInt32BE(1, 1)
+    header.writeUInt32BE(payloadLength, 9)
+    decoder.feed(header)
+    const ordinaryChunks = Array.from({ length: 16 }, () => Buffer.alloc(32 * 1024, 0x61))
+
+    for (const chunk of ordinaryChunks) {
+      decoder.feed(chunk)
+    }
+
+    const state = decoder as unknown as { chunks: Buffer[] }
+    expect(state.chunks).toHaveLength(ordinaryChunks.length + 1)
+    for (const [index, chunk] of ordinaryChunks.entries()) {
+      expect(state.chunks[index + 1]).toBe(chunk)
+    }
+
+    decoder.feed(Buffer.alloc(payloadLength / 2, 0x61))
+
+    expect(frames).toHaveLength(1)
+    expect(frames[0].payload.length).toBe(payloadLength)
   })
 })
 
@@ -184,6 +338,21 @@ describe('parseJsonRpcMessage', () => {
   it('throws on malformed JSON', () => {
     const payload = Buffer.from('not json')
     expect(() => parseJsonRpcMessage(payload)).toThrow()
+  })
+
+  it('rejects structurally amplified JSON before parsing', () => {
+    const payload = Buffer.from(
+      `{"jsonrpc":"2.0","id":1,"method":"x","params":{"values":[${'0,'.repeat(
+        RELAY_JSON_MAX_STRUCTURAL_TOKENS
+      )}0]}}`
+    )
+    const parseSpy = vi.spyOn(JSON, 'parse')
+    try {
+      expect(() => parseJsonRpcMessage(payload)).toThrow(/JSON structure exceeds/)
+      expect(parseSpy).not.toHaveBeenCalled()
+    } finally {
+      parseSpy.mockRestore()
+    }
   })
 })
 

@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EventEmitter } from 'events'
+import { EventEmitter } from 'node:events'
 import { delimiter } from 'node:path'
-import type { ChildProcessWithoutNullStreams } from 'child_process'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import {
   _resetHydrateShellPathCache,
   hydrateShellPath,
+  MAX_SHELL_PATH_STDOUT_BYTES,
   mergePathSegments,
   type HydrationResult
 } from './hydrate-shell-path'
@@ -156,6 +157,45 @@ describe('hydrateShellPath', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('kills a login shell whose stdout exceeds the PATH capture limit', async () => {
+    const proc = createMockShellProcess()
+    spawnMock.mockReturnValue(proc)
+
+    const resultPromise = hydrateShellPath({ shellOverride: '/bin/zsh', force: true })
+    proc.stdout.emit('data', Buffer.alloc(1024 * 1024 + 1, 0x78))
+
+    await expect(resultPromise).resolves.toEqual({
+      segments: [],
+      ok: false,
+      failureReason: 'empty_path'
+    })
+    expect(proc.kill).toHaveBeenCalledWith('SIGKILL')
+    expect(proc.stdout.listenerCount('data')).toBe(0)
+    expect(proc.listenerCount('error')).toBe(0)
+    expect(proc.listenerCount('close')).toBe(0)
+  })
+
+  it('captures PATH after tens of thousands of tiny stdout chunks', async () => {
+    const proc = createMockShellProcess()
+    spawnMock.mockReturnValue(proc)
+    const delimiterText = '__ORCA_SHELL_PATH__'
+    const output = Buffer.from(
+      `${'x'.repeat(MAX_SHELL_PATH_STDOUT_BYTES - 128)}${delimiterText}/bin${delimiterText}`
+    )
+
+    const resultPromise = hydrateShellPath({ shellOverride: '/bin/zsh', force: true })
+    for (let offset = 0; offset < output.byteLength; offset += 16) {
+      proc.stdout.emit('data', output.subarray(offset, offset + 16))
+    }
+    proc.emit('close')
+
+    await expect(resultPromise).resolves.toEqual({
+      segments: ['/bin'],
+      ok: true,
+      failureReason: 'none'
+    })
   })
 })
 

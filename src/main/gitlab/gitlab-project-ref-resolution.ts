@@ -3,6 +3,15 @@ import type { IssueSourcePreference } from '../../shared/types'
 import { getSshGitProvider } from '../providers/ssh-git-dispatch'
 import { clearProjectRefInFlight, runProjectRefProbeOnce } from './project-ref-inflight'
 import {
+  buildRepositoryRefCacheKey,
+  RepositoryRefCache
+} from '../source-control/repository-ref-cache'
+import {
+  parseGlabAuthStatusHosts,
+  rememberGlabKnownHost,
+  type LocalGitExecOptions
+} from './gitlab-known-host-probe'
+import {
   DEFAULT_GITLAB_HOSTS,
   normalizeGitLabHost,
   parseGitLabProjectRef,
@@ -12,15 +21,24 @@ import {
 
 export { DEFAULT_GITLAB_HOSTS, parseGitLabProjectRef }
 export type { ProjectRef }
+export {
+  GLAB_KNOWN_HOST_MAX_BYTES,
+  GLAB_KNOWN_HOSTS_CONTEXT_KEYS_MAX_BYTES,
+  GLAB_KNOWN_HOSTS_CONTEXT_KEY_MAX_BYTES,
+  GLAB_KNOWN_HOSTS_CONTEXT_MAX_ENTRIES,
+  GLAB_KNOWN_HOSTS_MAX_BYTES,
+  GLAB_KNOWN_HOSTS_MAX_ENTRIES,
+  GLAB_KNOWN_HOSTS_MAX_IN_FLIGHT,
+  GLAB_KNOWN_HOSTS_OUTPUT_MAX_BYTES,
+  _getKnownHostsCacheState,
+  _resetKnownHostsCache,
+  getGlabKnownHosts,
+  parseGlabAuthStatusHosts,
+  rememberGlabKnownHost
+} from './gitlab-known-host-probe'
+export type { LocalGitExecOptions } from './gitlab-known-host-probe'
 
-export type LocalGitExecOptions = {
-  wslDistro?: string
-}
-
-const PROJECT_REF_CACHE_MAX_ENTRIES = 512
-const projectRefCache = new Map<string, ProjectRef | null>()
-
-let knownHostsCache: readonly string[] | null = null
+const projectRefCache = new RepositoryRefCache<ProjectRef>()
 
 /** @internal - exposed for tests only */
 export function _resetProjectRefCache(): void {
@@ -33,22 +51,6 @@ export function _getProjectRefCacheSize(): number {
   return projectRefCache.size
 }
 
-/** @internal - exposed for tests only */
-export function _resetKnownHostsCache(): void {
-  knownHostsCache = null
-}
-
-function rememberProjectRefCacheEntry(cacheKey: string, value: ProjectRef | null): void {
-  projectRefCache.set(cacheKey, value)
-  while (projectRefCache.size > PROJECT_REF_CACHE_MAX_ENTRIES) {
-    const oldestKey = projectRefCache.keys().next().value
-    if (oldestKey === undefined) {
-      return
-    }
-    projectRefCache.delete(oldestKey)
-  }
-}
-
 export async function getProjectRefForRemote(
   repoPath: string,
   remoteName: string,
@@ -57,12 +59,13 @@ export async function getProjectRefForRemote(
   localGitOptions: LocalGitExecOptions = {}
 ): Promise<ProjectRef | null> {
   const runtimeKey = connectionId ?? `local:${localGitOptions.wslDistro ?? 'host'}`
-  const cacheKey = `${runtimeKey}\0${repoPath}\0${remoteName}\0${knownHosts.join(',')}`
-  if (projectRefCache.has(cacheKey)) {
-    return projectRefCache.get(cacheKey)!
+  const cacheKey = buildRepositoryRefCacheKey([runtimeKey, repoPath, remoteName, ...knownHosts])
+  const cached = projectRefCache.get(cacheKey)
+  if (cached.found) {
+    return cached.value
   }
 
-  return runProjectRefProbeOnce(cacheKey, () =>
+  const probe = () =>
     resolveProjectRefForRemote(
       repoPath,
       remoteName,
@@ -71,7 +74,7 @@ export async function getProjectRefForRemote(
       cacheKey,
       localGitOptions
     )
-  )
+  return cacheKey === null ? probe() : runProjectRefProbeOnce(cacheKey, probe)
 }
 
 async function resolveProjectRefForRemote(
@@ -79,7 +82,7 @@ async function resolveProjectRefForRemote(
   remoteName: string,
   knownHosts: readonly string[],
   connectionId: string | null | undefined,
-  cacheKey: string,
+  cacheKey: string | null,
   localGitOptions: LocalGitExecOptions
 ): Promise<ProjectRef | null> {
   try {
@@ -95,7 +98,7 @@ async function resolveProjectRefForRemote(
         })
     const result = parseGitLabProjectRef(stdout, knownHosts)
     if (result) {
-      rememberProjectRefCacheEntry(cacheKey, result)
+      projectRefCache.remember(cacheKey, result, [result.host, result.path])
       return result
     }
     const remoteCandidate = parseRemoteProjectRefCandidate(stdout)
@@ -108,8 +111,11 @@ async function resolveProjectRefForRemote(
         localGitOptions
       ))
     ) {
-      rememberGlabKnownHost(remoteCandidate.host)
-      rememberProjectRefCacheEntry(cacheKey, remoteCandidate)
+      rememberGlabKnownHost(remoteCandidate.host, connectionId, localGitOptions)
+      projectRefCache.remember(cacheKey, remoteCandidate, [
+        remoteCandidate.host,
+        remoteCandidate.path
+      ])
       return remoteCandidate
     }
   } catch {
@@ -117,7 +123,7 @@ async function resolveProjectRefForRemote(
       return null
     }
   }
-  rememberProjectRefCacheEntry(cacheKey, null)
+  projectRefCache.remember(cacheKey, null, [])
   return null
 }
 
@@ -220,14 +226,6 @@ export function glabHostnameArgs(
   return connectionId && projectRef?.host ? ['--hostname', projectRef.host] : []
 }
 
-function rememberGlabKnownHost(host: string): void {
-  const normalizedHost = normalizeGitLabHost(host)
-  if (!knownHostsCache || knownHostsCache.map(normalizeGitLabHost).includes(normalizedHost)) {
-    return
-  }
-  knownHostsCache = [...knownHostsCache, normalizedHost]
-}
-
 async function isGlabConfiguredForRemoteHost(
   repoPath: string,
   projectRef: Pick<ProjectRef, 'host'>,
@@ -249,34 +247,4 @@ async function isGlabConfiguredForRemoteHost(
     const hosts = parseGlabAuthStatusHosts(output).map(normalizeGitLabHost)
     return hosts.includes(normalizeGitLabHost(projectRef.host))
   }
-}
-
-export async function getGlabKnownHosts(): Promise<readonly string[]> {
-  if (knownHostsCache) {
-    return knownHostsCache
-  }
-  try {
-    const { stdout, stderr } = await glabExecFileAsync(['auth', 'status'])
-    const hosts = parseGlabAuthStatusHosts(`${stdout}\n${stderr}`)
-    knownHostsCache = Array.from(new Set([...DEFAULT_GITLAB_HOSTS, ...hosts]))
-    return knownHostsCache
-  } catch {
-    knownHostsCache = [...DEFAULT_GITLAB_HOSTS]
-    return knownHostsCache
-  }
-}
-
-export function parseGlabAuthStatusHosts(output: string): string[] {
-  const hosts = new Set<string>()
-  for (const m of output.matchAll(/logged in to ([a-zA-Z0-9.-]+)/gi)) {
-    hosts.add(m[1].toLowerCase())
-  }
-  for (const line of output.split('\n')) {
-    const bareLine = line.trim()
-    const hostLine = bareLine.endsWith(':') ? bareLine.slice(0, -1) : bareLine
-    if (line === bareLine && /^[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(hostLine)) {
-      hosts.add(hostLine.toLowerCase())
-    }
-  }
-  return Array.from(hosts)
 }

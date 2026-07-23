@@ -5,12 +5,15 @@
  * `wsl --shutdown`, which can make WSL look wedged. Keep the polling process
  * inside the distro so shutdown kills it instead of Orca restarting WSL.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
-import { StringDecoder } from 'string_decoder'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { WebContents } from 'electron'
 import type { Event as WatcherEvent } from '@parcel/watcher'
+import { GrowingByteBuffer } from '../../shared/growing-byte-buffer'
 import { queueWatcherEvents } from './filesystem-watcher-event-batch'
 import { parseWslUncPath } from '../../shared/wsl-paths'
+import { createWslWatcherProcessExit, createWslWatcherStartup } from './wsl-watcher-process-exit'
+import { reserveWatcherChild, WatcherChildCapacityError } from './parcel-watcher-child-registry'
+import { diffWslSnapshots, parseWslSnapshotFrame, type WslSnapshot } from './wsl-watcher-snapshot'
 
 export type WatcherSubscription = {
   unsubscribe(): Promise<void>
@@ -27,6 +30,7 @@ export type WatchedRoot = {
   subscription: WatcherSubscription
   listeners: Map<number, WebContents>
   batch: DebouncedBatch
+  rootPath?: string
 }
 
 export type WslWatcherDeps = {
@@ -35,24 +39,10 @@ export type WslWatcherDeps = {
   watchedRoots: Map<string, WatchedRoot>
 }
 
-const POLL_INTERVAL_MS = 2000
-const POLL_INTERVAL_SECONDS = Math.max(1, Math.ceil(POLL_INTERVAL_MS / 1000))
+const POLL_INTERVAL_SECONDS = 2
 const STARTUP_TIMEOUT_MS = 10_000
-const SNAPSHOT_START = '\x1e'
-const SNAPSHOT_END = '\x1f'
-const MAX_STREAM_BUFFER_CHARS = 10 * 1024 * 1024
-
-type WslSnapshotEntry = {
-  path: string
-  type: string
-  mtime: string
-}
-
-type WslSnapshot = Map<string, WslSnapshotEntry>
-
-function toWslUncPath(linuxPath: string, distro: string): string {
-  return `\\\\wsl.localhost\\${distro}${linuxPath.replace(/\//g, '\\')}`
-}
+const [SNAPSHOT_START, SNAPSHOT_END] = ['\x1e', '\x1f']
+export const MAX_WSL_SNAPSHOT_FRAME_BYTES = 10 * 1024 * 1024
 
 function quoteSafeFindName(name: string): string {
   if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
@@ -85,59 +75,6 @@ function buildSnapshotScript(ignoreDirs: readonly string[]): string {
   ].join('\n')
 }
 
-function parseSnapshotFrame(frame: string, distro: string): WslSnapshot {
-  const snapshot: WslSnapshot = new Map()
-  for (const rawEntry of frame.split('\0')) {
-    if (!rawEntry) {
-      continue
-    }
-    const firstTab = rawEntry.indexOf('\t')
-    const secondTab = firstTab === -1 ? -1 : rawEntry.indexOf('\t', firstTab + 1)
-    if (firstTab <= 0 || secondTab <= firstTab + 1) {
-      continue
-    }
-    const linuxPath = rawEntry.slice(secondTab + 1)
-    if (!linuxPath.startsWith('/')) {
-      continue
-    }
-    const entry: WslSnapshotEntry = {
-      type: rawEntry.slice(0, firstTab),
-      mtime: rawEntry.slice(firstTab + 1, secondTab),
-      path: toWslUncPath(linuxPath, distro)
-    }
-    snapshot.set(entry.path, entry)
-  }
-  return snapshot
-}
-
-function diffSnapshots(prev: WslSnapshot, next: WslSnapshot): WatcherEvent[] {
-  const events: WatcherEvent[] = []
-
-  for (const [entryPath, nextEntry] of next) {
-    const prevEntry = prev.get(entryPath)
-    if (!prevEntry) {
-      events.push({ type: 'create', path: entryPath } as WatcherEvent)
-      continue
-    }
-    if (prevEntry.type !== nextEntry.type) {
-      events.push({ type: 'delete', path: entryPath } as WatcherEvent)
-      events.push({ type: 'create', path: entryPath } as WatcherEvent)
-      continue
-    }
-    if (prevEntry.mtime !== nextEntry.mtime) {
-      events.push({ type: 'update', path: entryPath } as WatcherEvent)
-    }
-  }
-
-  for (const entryPath of prev.keys()) {
-    if (!next.has(entryPath)) {
-      events.push({ type: 'delete', path: entryPath } as WatcherEvent)
-    }
-  }
-
-  return events
-}
-
 function markOverflowWithoutUncStat(root: WatchedRoot): void {
   if (root.batch.timer) {
     clearTimeout(root.batch.timer)
@@ -150,8 +87,14 @@ function markOverflowWithoutUncStat(root: WatchedRoot): void {
 export async function createWslWatcher(
   rootKey: string,
   worktreePath: string,
-  deps: WslWatcherDeps
+  deps: WslWatcherDeps,
+  signal?: AbortSignal
 ): Promise<WatchedRoot> {
+  // Why: honor local-install cancellation before spawning a WSL snapshot process.
+  if (signal?.aborted) {
+    throw new DOMException('WSL watcher subscription aborted', 'AbortError')
+  }
+
   const wsl = parseWslUncPath(worktreePath)
   if (!wsl) {
     throw new Error(`Not a WSL path: ${worktreePath}`)
@@ -162,35 +105,26 @@ export async function createWslWatcher(
   const root: WatchedRoot = {
     subscription: null!,
     listeners: new Map(),
-    batch: { events: [], overflowed: false, timer: null, firstEventAt: 0 }
+    batch: { events: [], overflowed: false, timer: null, firstEventAt: 0 },
+    rootPath: worktreePath
   }
 
   let disposed = false
   let prevSnapshot: WslSnapshot | null = null
   let stopped = false
-  let streamBuffer = ''
-  const stdoutDecoder = new StringDecoder('utf8')
-  const stderrDecoder = new StringDecoder('utf8')
-  let stderrTail = ''
+  const streamBuffer = new GrowingByteBuffer()
+  const stderrTail = new GrowingByteBuffer()
 
-  let resolveInitial!: () => void
-  let rejectInitial!: (error: Error) => void
-  let initialSettled = false
-  const initialSnapshotReady = new Promise<void>((resolve, reject) => {
-    resolveInitial = resolve
-    rejectInitial = reject
-  })
+  const startup = createWslWatcherStartup()
 
-  function settleInitial(error?: Error): void {
-    if (initialSettled) {
+  function reportSnapshotOverflow(message: string): void {
+    if (!startup.settled) {
+      startup.settle(new Error(message))
       return
     }
-    initialSettled = true
-    if (error) {
-      rejectInitial(error)
-    } else {
-      resolveInitial()
-    }
+    prevSnapshot = new Map()
+    markOverflowWithoutUncStat(root)
+    deps.scheduleBatchFlush(rootKey, root)
   }
 
   function signalWatcherStopped(): void {
@@ -207,13 +141,17 @@ export async function createWslWatcher(
   }
 
   function ingestFrame(frame: string): void {
-    const nextSnapshot = parseSnapshotFrame(frame, distro)
-    if (!prevSnapshot) {
-      prevSnapshot = nextSnapshot
-      settleInitial()
+    const nextSnapshot = parseWslSnapshotFrame(frame, distro)
+    if (!nextSnapshot) {
+      reportSnapshotOverflow('WSL watcher snapshot exceeded its retained entry limit')
       return
     }
-    const events = diffSnapshots(prevSnapshot, nextSnapshot)
+    if (!prevSnapshot) {
+      prevSnapshot = nextSnapshot
+      startup.settle()
+      return
+    }
+    const events = diffWslSnapshots(prevSnapshot, nextSnapshot)
     prevSnapshot = nextSnapshot
 
     if (events.length > 0) {
@@ -224,49 +162,69 @@ export async function createWslWatcher(
 
   function drainFrames(): void {
     while (true) {
-      const start = streamBuffer.indexOf(SNAPSHOT_START)
+      const start = streamBuffer.indexOfByte(SNAPSHOT_START.charCodeAt(0))
       if (start === -1) {
-        streamBuffer = streamBuffer.slice(-1)
+        streamBuffer.retainSuffix(1)
         return
       }
       if (start > 0) {
-        streamBuffer = streamBuffer.slice(start)
+        streamBuffer.discardPrefix(start)
       }
-      const end = streamBuffer.indexOf(SNAPSHOT_END, 1)
+      const end = streamBuffer.indexOfByte(SNAPSHOT_END.charCodeAt(0), 1)
       if (end === -1) {
-        if (streamBuffer.length > MAX_STREAM_BUFFER_CHARS) {
-          streamBuffer = ''
-          markOverflowWithoutUncStat(root)
-          deps.scheduleBatchFlush(rootKey, root)
+        if (streamBuffer.byteLength > MAX_WSL_SNAPSHOT_FRAME_BYTES) {
+          streamBuffer.clear()
+          reportSnapshotOverflow('WSL watcher snapshot exceeded its frame byte limit')
         }
         return
       }
-      const frame = streamBuffer.slice(1, end)
-      streamBuffer = streamBuffer.slice(end + 1)
+      if (end - 1 > MAX_WSL_SNAPSHOT_FRAME_BYTES) {
+        streamBuffer.discardPrefix(end + 1)
+        reportSnapshotOverflow('WSL watcher snapshot exceeded its frame byte limit')
+        continue
+      }
+      const frameWithStart = streamBuffer.takePrefixString(end)
+      streamBuffer.discardPrefix(1)
+      const frame = frameWithStart.slice(1)
       ingestFrame(frame)
     }
   }
 
   let child: ChildProcessWithoutNullStreams
+  const releaseChildReservation = reserveWatcherChild()
+  if (!releaseChildReservation) {
+    throw new WatcherChildCapacityError()
+  }
   try {
     child = spawn('wsl.exe', ['-d', distro, '--', 'sh', '-s', '--', linuxPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
     })
   } catch (error) {
+    releaseChildReservation()
     throw error instanceof Error ? error : new Error(String(error))
   }
 
+  // Why: the physical-exit owner releases the shared process reservation on
+  // exactly the same close/error proof that settles destructive cleanup.
+  const processExit = createWslWatcherProcessExit(child, worktreePath, releaseChildReservation)
+
+  const onAbort = (): void => {
+    startup.settle(new DOMException('WSL watcher subscription aborted', 'AbortError'))
+    processExit.requestStopBestEffort()
+  }
+  signal?.addEventListener('abort', onAbort, { once: true })
+
   const startupTimer = setTimeout(() => {
-    settleInitial(new Error(`Timed out starting WSL watcher for ${worktreePath}`))
-    child.kill()
+    startup.settle(new Error(`Timed out starting WSL watcher for ${worktreePath}`))
+    processExit.requestStopBestEffort()
   }, STARTUP_TIMEOUT_MS)
 
   child.stdin.on('error', (error) => {
     // Why: WSL can exit before reading the script; handle EPIPE here so the
     // startup failure rejects the watcher instead of crashing on a stream error.
-    if (!initialSettled) {
-      settleInitial(error)
+    if (!startup.settled) {
+      startup.settle(error)
     }
   })
 
@@ -274,17 +232,23 @@ export async function createWslWatcher(
     if (disposed) {
       return
     }
-    streamBuffer += stdoutDecoder.write(chunk)
+    streamBuffer.append(chunk)
     drainFrames()
   })
 
   child.stderr.on('data', (chunk: Buffer) => {
-    stderrTail = (stderrTail + stderrDecoder.write(chunk)).slice(-4096)
+    if (chunk.byteLength >= 4096) {
+      stderrTail.clear()
+      stderrTail.append(chunk.subarray(chunk.byteLength - 4096))
+      return
+    }
+    stderrTail.append(chunk)
+    stderrTail.retainSuffix(4096)
   })
 
   child.stdout.on('error', (error) => {
-    if (!initialSettled) {
-      settleInitial(error)
+    if (!startup.settled) {
+      startup.settle(error)
       return
     }
     if (!disposed) {
@@ -297,8 +261,13 @@ export async function createWslWatcher(
   })
 
   child.once('error', (error) => {
-    if (!initialSettled) {
-      settleInitial(error)
+    // Why: a child that never acquired a pid has no OS owner to await. Kill
+    // errors for an already-spawned child still require the close event.
+    if (child.pid === undefined) {
+      processExit.markPhysicalExit()
+    }
+    if (!startup.settled) {
+      startup.settle(error)
       return
     }
     if (!disposed) {
@@ -307,9 +276,11 @@ export async function createWslWatcher(
   })
 
   child.once('close', (code, signal) => {
-    if (!initialSettled) {
-      const suffix = stderrTail.trim() ? `: ${stderrTail.trim()}` : ''
-      settleInitial(
+    processExit.markPhysicalExit()
+    if (!startup.settled) {
+      const stderr = stderrTail.toString()
+      const suffix = stderr.trim() ? `: ${stderr.trim()}` : ''
+      startup.settle(
         new Error(`WSL watcher exited before first snapshot (${code ?? signal})${suffix}`)
       )
       return
@@ -319,14 +290,25 @@ export async function createWslWatcher(
     }
   })
 
-  child.stdin.end(buildSnapshotScript(deps.ignoreDirs))
-
-  await initialSnapshotReady.finally(() => clearTimeout(startupTimer))
+  try {
+    child.stdin.end(buildSnapshotScript(deps.ignoreDirs))
+    await startup.ready
+  } catch (error) {
+    // Why: cancellation is part of destructive removal. Do not let the failed
+    // install disappear from ownership until WSL confirms the child exited.
+    startup.settle(error instanceof Error ? error : new Error(String(error)))
+    await startup.ready.catch(() => undefined)
+    await processExit.stopAndWait()
+    throw error
+  } finally {
+    clearTimeout(startupTimer)
+    signal?.removeEventListener('abort', onAbort)
+  }
 
   root.subscription = {
     unsubscribe: async () => {
       disposed = true
-      child.kill()
+      await processExit.stopAndWait()
     }
   }
 

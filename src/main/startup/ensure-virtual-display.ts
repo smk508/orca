@@ -1,6 +1,7 @@
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync, readFileSync, rmSync } from 'fs'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { existsSync, rmSync } from 'node:fs'
 import { app } from 'electron'
+import { readNodeFileSyncWithinLimit } from '../../shared/node-bounded-file-reader'
 
 // Why: headless `orca serve` backs browser panes with offscreen BrowserWindows.
 // On Linux, Electron has no display platform without an X server and segfaults
@@ -12,8 +13,19 @@ const XVFB_STARTUP_TIMEOUT_MS = 5_000
 const XVFB_POLL_INTERVAL_MS = 50
 const VIRTUAL_DISPLAY_NUMBER = 99
 const VIRTUAL_DISPLAY = `:${VIRTUAL_DISPLAY_NUMBER}`
+export const X_DISPLAY_LOCK_MAX_BYTES = 64
 
 let xvfbProcess: ChildProcess | null = null
+
+function configureHeadlessServeChromiumFlags(): void {
+  // Why: cloud sandboxes often expose a tiny /dev/shm; Chromium treats an
+  // exhausted shared-memory mount as ENOSPC and can fatal in utility services
+  // such as font_data. Keep browser panes on disk-backed temp storage instead.
+  app.commandLine.appendSwitch('disable-dev-shm-usage')
+  // Why: externally managed displays are commonly Xvfb too; a GPU-process fork can trap before serve readiness.
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu')
+}
 
 function xvfbSocketPath(displayNumber: number): string {
   return `/tmp/.X11-unix/X${displayNumber}`
@@ -31,13 +43,8 @@ function isDisplayServerAlive(displayNumber: number): boolean {
     // No lock means no server claimed this display; the bare socket is stale.
     return false
   }
-  let pid: number
-  try {
-    pid = Number.parseInt(readFileSync(lockPath, 'utf8').trim(), 10)
-  } catch {
-    return false
-  }
-  if (!Number.isInteger(pid) || pid <= 0) {
+  const pid = readXDisplayLockPid(lockPath)
+  if (pid === null) {
     return false
   }
   try {
@@ -46,6 +53,18 @@ function isDisplayServerAlive(displayNumber: number): boolean {
     return true
   } catch {
     return false
+  }
+}
+
+export function readXDisplayLockPid(lockPath: string): number | null {
+  try {
+    const raw = readNodeFileSyncWithinLimit(lockPath, X_DISPLAY_LOCK_MAX_BYTES)
+      .buffer.toString('utf8')
+      .trim()
+    const pid = Number.parseInt(raw, 10)
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
   }
 }
 
@@ -94,6 +113,8 @@ export function ensureVirtualDisplayForHeadlessServe(options: { isServeMode: boo
   if (!options.isServeMode || process.platform !== 'linux') {
     return process.platform !== 'linux'
   }
+
+  configureHeadlessServeChromiumFlags()
 
   // Why: respect an externally provided display (a real X server, or the image
   // already running its own Xvfb). Don't start a competing one.
@@ -150,10 +171,6 @@ export function ensureVirtualDisplayForHeadlessServe(options: { isServeMode: boo
   }
 
   process.env.DISPLAY = VIRTUAL_DISPLAY
-  // Why: the offscreen browser must use software rendering; a virtual display has
-  // no GPU. Must be set before app.whenReady (this runs at module load).
-  app.disableHardwareAcceleration()
-  app.commandLine.appendSwitch('disable-gpu')
 
   // Why: don't leave a stray Xvfb process behind when serve exits.
   app.once('will-quit', stopVirtualDisplay)

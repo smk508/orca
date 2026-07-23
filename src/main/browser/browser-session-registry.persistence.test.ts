@@ -105,11 +105,26 @@ function installModuleMocks(
       fsState.present.add(key)
     })
   }))
+  vi.doMock('../../shared/node-bounded-file-reader', () => ({
+    readNodeFileSyncWithinLimit: vi.fn((p: string, maxBytes: number) => {
+      const value = fsState.files.get(fsKey(p))
+      if (value === undefined) {
+        throw new Error('ENOENT')
+      }
+      const buffer = Buffer.from(value)
+      if (buffer.byteLength > maxBytes) {
+        throw new Error('File too large')
+      }
+      return { buffer, stats: {} }
+    })
+  }))
 
   vi.doMock('./browser-manager', () => ({
     browserManager: {
       notifyPermissionDenied: browserManagerNotifyPermissionDeniedMock,
-      handleGuestWillDownload: browserManagerHandleGuestWillDownloadMock
+      handleGuestWillDownload: browserManagerHandleGuestWillDownloadMock,
+      installCertificateRequestGuard: vi.fn(),
+      removeCertificateRequestGuard: vi.fn()
     }
   }))
   vi.doMock('./browser-media-access', () => ({
@@ -155,6 +170,121 @@ describe('BrowserSessionRegistry persistence', () => {
     expect(written.pendingCookieDbPath).toBeNull()
     expect(written.pendingCookieImports).toEqual({})
     expect(fsState.present.has('/user-data/Partitions/orca-browser/Cookies')).toBe(true)
+  })
+
+  it('replays pending cookies into an existing Network database', async () => {
+    const stagedPath = '/staged/network-import'
+    const networkPath = '/user-data/Partitions/orca-browser/Network/Cookies'
+    const legacyPath = '/user-data/Partitions/orca-browser/Cookies'
+    const fsState = createFsState()
+    seedMeta(fsState, {
+      defaultSource: null,
+      userAgent: null,
+      pendingCookieDbPath: stagedPath,
+      profiles: []
+    })
+    fsState.files.set(stagedPath, 'imported cookies')
+    fsState.files.set(networkPath, 'old cookies')
+    fsState.present.add(stagedPath)
+    fsState.present.add(networkPath)
+
+    installModuleMocks(fsState)
+    const { browserSessionRegistry } = await import('./browser-session-registry')
+
+    browserSessionRegistry.applyPendingCookieImport()
+
+    expect(fsState.files.get(networkPath)).toBe('imported cookies')
+    expect(fsState.present.has(legacyPath)).toBe(false)
+  })
+
+  it('persists new browser session profiles under the active Orca profile directory', async () => {
+    const fsState = createFsState()
+    const profileMetaPath = '/user-data/profiles/local-work/browser-session-meta.json'
+
+    installModuleMocks(fsState)
+    const { browserSessionRegistry } = await import('./browser-session-registry')
+
+    browserSessionRegistry.configureForOrcaProfile({
+      orcaProfileId: 'local-work',
+      profileDirectory: '/user-data/profiles/local-work'
+    })
+    const profile = browserSessionRegistry.createProfile('isolated', 'Work Browser')
+
+    expect(profile).not.toBeNull()
+    expect(fsState.files.has(profileMetaPath)).toBe(true)
+    expect(fsState.files.has(META_PATH)).toBe(false)
+    expect(JSON.parse(fsState.files.get(profileMetaPath) ?? '{}').profiles[0]).toMatchObject({
+      id: profile!.id,
+      partition: profile!.partition,
+      label: 'Work Browser'
+    })
+  })
+
+  it('ignores oversized browser-session metadata', async () => {
+    const fsState = createFsState()
+    fsState.files.set(META_PATH, ' '.repeat(1024 * 1024 + 1))
+    fsState.present.add(META_PATH)
+
+    installModuleMocks(fsState)
+    const { browserSessionRegistry } = await import('./browser-session-registry')
+    browserSessionRegistry.initializeBrowserSessionsFromPersistedState()
+
+    expect(browserSessionRegistry.listProfiles()).toHaveLength(1)
+    expect(browserSessionRegistry.listProfiles()[0]?.id).toBe('default')
+  })
+
+  it('rejects an oversized profile label without retaining or persisting it', async () => {
+    const fsState = createFsState()
+    installModuleMocks(fsState)
+    const { browserSessionRegistry, MAX_BROWSER_SESSION_LABEL_BYTES } =
+      await import('./browser-session-registry')
+
+    expect(
+      browserSessionRegistry.createProfile(
+        'isolated',
+        'x'.repeat(MAX_BROWSER_SESSION_LABEL_BYTES + 1)
+      )
+    ).toBeNull()
+    expect(browserSessionRegistry.listProfiles()).toHaveLength(1)
+    expect(fsState.files.has(META_PATH)).toBe(false)
+  })
+
+  it('keeps profile creation bounded while preserving the last readable metadata snapshot', async () => {
+    const fsState = createFsState()
+    installModuleMocks(fsState)
+    const { browserSessionRegistry, MAX_BROWSER_SESSION_LABEL_BYTES } =
+      await import('./browser-session-registry')
+    const label = 'x'.repeat(MAX_BROWSER_SESSION_LABEL_BYTES - 8)
+    for (let index = 0; index < 256; index += 1) {
+      browserSessionRegistry.createProfile('isolated', `${index}-${label}`)
+    }
+
+    const durableProfiles = JSON.parse(fsState.files.get(META_PATH) ?? '{}').profiles
+    expect(browserSessionRegistry.listProfiles().length).toBeGreaterThan(durableProfiles.length + 1)
+    expect(Buffer.byteLength(fsState.files.get(META_PATH) ?? '')).toBeLessThanOrEqual(1024 * 1024)
+  })
+
+  it('preserves metadata when a pending import path would exceed the byte limit', async () => {
+    const fsState = createFsState()
+    seedMeta(fsState, {
+      defaultSource: null,
+      userAgent: null,
+      userAgentByPartition: {},
+      pendingCookieDbPath: null,
+      pendingCookieImports: {},
+      profiles: []
+    })
+    const before = fsState.files.get(META_PATH)
+    installModuleMocks(fsState)
+    const { browserSessionRegistry, MAX_BROWSER_SESSION_META_FILE_BYTES } =
+      await import('./browser-session-registry')
+
+    browserSessionRegistry.setPendingCookieImport(
+      'persist:orca-browser',
+      'x'.repeat(MAX_BROWSER_SESSION_META_FILE_BYTES)
+    )
+
+    expect(fsState.files.get(META_PATH)).toBe(before)
   })
 
   it('merges partition-keyed pending entries without clobbering unrelated entries', async () => {

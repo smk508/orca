@@ -21,13 +21,18 @@ import {
 } from '../../../../shared/tui-agent-launch-defaults'
 import { bumpProviderRuntimeSessionGeneration } from '@/lib/provider-runtime-context'
 import { normalizeUiLanguage } from '../../../../shared/ui-language'
+import { normalizeDesktopTerminalScrollbackRows } from '../../../../shared/terminal-scrollback-policy'
 import { translate } from '@/i18n/i18n'
 
 export type SettingsSlice = SettingsSearchState & {
   settings: GlobalSettings | null
   fetchSettings: () => Promise<void>
   updateSettings: (updates: Partial<GlobalSettings>) => Promise<void>
-  switchRuntimeEnvironment: (environmentId: string | null) => Promise<boolean>
+  setActiveRuntimeEnvironmentPreference: (environmentId: string | null) => Promise<boolean>
+}
+
+type LegacyTerminalScrollbackSettingsUpdate = Partial<GlobalSettings> & {
+  terminalScrollbackBytes?: unknown
 }
 
 function normalizeRuntimeEnvironmentId(value: string | null | undefined): string | null {
@@ -76,7 +81,9 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
 
   updateSettings: async (updates) => {
     try {
-      const sanitizedUpdates = { ...updates }
+      const { terminalScrollbackBytes: _legacyScrollbackBytes, ...sanitizedUpdates } =
+        updates as LegacyTerminalScrollbackSettingsUpdate
+      void _legacyScrollbackBytes
       if ('terminalQuickCommands' in updates) {
         sanitizedUpdates.terminalQuickCommands = normalizeTerminalQuickCommands(
           updates.terminalQuickCommands
@@ -123,6 +130,11 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
       if ('uiLanguage' in updates) {
         sanitizedUpdates.uiLanguage = normalizeUiLanguage(updates.uiLanguage)
       }
+      if ('terminalScrollbackRows' in updates) {
+        sanitizedUpdates.terminalScrollbackRows = normalizeDesktopTerminalScrollbackRows(
+          updates.terminalScrollbackRows
+        )
+      }
       const nextSettings = await window.api.settings.set(sanitizedUpdates)
       set((s) => ({ settings: (nextSettings as GlobalSettings | undefined) ?? s.settings }))
     } catch (err) {
@@ -130,7 +142,7 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     }
   },
 
-  switchRuntimeEnvironment: async (environmentId) => {
+  setActiveRuntimeEnvironmentPreference: async (environmentId) => {
     const nextId = normalizeRuntimeEnvironmentId(environmentId)
     const previousId = normalizeRuntimeEnvironmentId(get().settings?.activeRuntimeEnvironmentId)
     if (previousId === nextId) {
@@ -139,8 +151,8 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     try {
       clearRuntimeCompatibilityCache(nextId)
       await verifyRuntimeEnvironmentReachable(nextId)
-      const nextSettings = await window.api.settings.set({
-        activeRuntimeEnvironmentId: nextId
+      const nextSettings = await window.api.settings.setActiveRuntimeEnvironmentPreference({
+        environmentId: nextId
       })
       bumpProviderRuntimeSessionGeneration()
       set((s) => ({

@@ -1,7 +1,3 @@
-/* eslint-disable max-lines -- Why: history scoping touches shell detection, env
-injection, fallback patching, WSL translation, cleanup, and GC with a TOCTOU age
-guard — covering each path in one test file keeps assertions co-located with the
-shared mock harness rather than splitting across files. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
@@ -11,6 +7,7 @@ const {
   readFileSyncMock,
   rmSyncMock,
   readdirSyncMock,
+  opendirSyncMock,
   statSyncMock,
   getPathMock
 } = vi.hoisted(() => ({
@@ -20,6 +17,7 @@ const {
   readFileSyncMock: vi.fn(),
   rmSyncMock: vi.fn(),
   readdirSyncMock: vi.fn(),
+  opendirSyncMock: vi.fn(),
   statSyncMock: vi.fn(),
   getPathMock: vi.fn()
 }))
@@ -31,7 +29,19 @@ vi.mock('fs', () => ({
   readFileSync: readFileSyncMock,
   rmSync: rmSyncMock,
   readdirSync: readdirSyncMock,
+  opendirSync: opendirSyncMock,
   statSync: statSyncMock
+}))
+
+vi.mock('../shared/node-bounded-file-reader', () => ({
+  readNodeFileSyncWithinLimit: (filePath: string, maxBytes: number) => {
+    const value = readFileSyncMock(filePath, 'utf8')
+    const buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value))
+    if (buffer.byteLength > maxBytes) {
+      throw new Error('File too large')
+    }
+    return { buffer, stats: statSyncMock(filePath) }
+  }
 }))
 
 vi.mock('electron', () => ({
@@ -70,7 +80,22 @@ describe('terminal-history', () => {
     vi.clearAllMocks()
     getPathMock.mockReturnValue('/fake/userData')
     existsSyncMock.mockReturnValue(true)
-    statSyncMock.mockReturnValue({ isDirectory: () => true, size: 100 })
+    statSyncMock.mockImplementation((filePath: string) => ({
+      isDirectory: () => !filePath.endsWith('meta.json'),
+      size: 100
+    }))
+    opendirSyncMock.mockImplementation((directoryPath: string) => {
+      const entries = (readdirSyncMock(directoryPath) ?? []) as string[]
+      let index = 0
+      return {
+        closeSync: vi.fn(),
+        readSync: () => {
+          const name = entries[index]
+          index += 1
+          return name === undefined ? null : { name }
+        }
+      }
+    })
   })
 
   describe('resolveShellKind', () => {
@@ -306,7 +331,10 @@ describe('terminal-history', () => {
         }
         return ['meta.json']
       })
-      statSyncMock.mockReturnValue({ isDirectory: () => true, size: 100 })
+      statSyncMock.mockImplementation((filePath: string) => ({
+        isDirectory: () => !filePath.endsWith('meta.json'),
+        size: 100
+      }))
       readFileSyncMock.mockImplementation((p: string) => {
         // Use a createdAt old enough to pass the GC age threshold
         const oldDate = new Date(Date.now() - 10 * 60 * 1000).toISOString()
@@ -340,7 +368,10 @@ describe('terminal-history', () => {
         }
         return ['meta.json']
       })
-      statSyncMock.mockReturnValue({ isDirectory: () => true, size: 100 })
+      statSyncMock.mockImplementation((filePath: string) => ({
+        isDirectory: () => !filePath.endsWith('meta.json'),
+        size: 100
+      }))
       // createdAt is just now — younger than the 5-minute GC threshold
       readFileSyncMock.mockReturnValue(
         JSON.stringify({ worktreeId: 'unknown-wt', createdAt: new Date().toISOString() })

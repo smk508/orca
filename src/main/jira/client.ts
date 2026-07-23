@@ -1,19 +1,39 @@
 /* eslint-disable max-lines -- Why: Jira credential storage and authenticated
 request plumbing share one boundary so encrypted token lifecycle and
 multi-site selection cannot drift between task operations. */
-import { createHash } from 'crypto'
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { net, safeStorage, session } from 'electron'
 import {
   CredentialDecryptionError,
   credentialFileHasContent,
+  readIntegrationCredentialFileSync,
+  readIntegrationCredentialFileSyncText,
   readStoredCredentialToken
 } from '../integration-credential-file'
 import { ensureElectronProxyFromEnvironment } from '../network/proxy-settings'
 import { withSpan } from '../observability/tracer'
+import { readFetchResponseJsonWithinLimit } from '../lib/fetch-response-body'
+import { IntegrationApiConcurrencyGate } from '../integration-api-concurrency'
+import {
+  assertIntegrationAccountCount,
+  assertIntegrationCredentialBytes,
+  assertIntegrationStringBytes,
+  IntegrationAccountPersistenceLimitError,
+  MAX_INTEGRATION_ACCOUNT_EMAIL_BYTES,
+  MAX_INTEGRATION_ACCOUNT_FILE_BYTES,
+  MAX_INTEGRATION_ACCOUNT_ID_BYTES,
+  MAX_INTEGRATION_ACCOUNT_LABEL_BYTES,
+  MAX_INTEGRATION_ACCOUNTS,
+  MAX_INTEGRATION_ACCOUNT_URL_BYTES,
+  serializeIntegrationAccountFile,
+  unreadableIntegrationAccountFileError
+} from '../integration-account-persistence-limits'
+import { boundedIntegrationErrorMessage } from '../integration-error-message'
 import type {
+  JiraAuthType,
   JiraConnectArgs,
   JiraConnectionStatus,
   JiraSite,
@@ -29,28 +49,14 @@ import type {
 const JIRA_API_USER_AGENT = 'Orca'
 
 const MAX_CONCURRENT = 4
-let running = 0
-const queue: (() => void)[] = []
+const concurrencyGate = new IntegrationApiConcurrencyGate(MAX_CONCURRENT)
 
 export function acquire(): Promise<void> {
-  if (running < MAX_CONCURRENT) {
-    running += 1
-    return Promise.resolve()
-  }
-  return new Promise((resolve) =>
-    queue.push(() => {
-      running += 1
-      resolve()
-    })
-  )
+  return concurrencyGate.acquire()
 }
 
 export function release(): void {
-  running -= 1
-  const next = queue.shift()
-  if (next) {
-    next()
-  }
+  concurrencyGate.release()
 }
 
 type JiraSiteFile = {
@@ -65,21 +71,39 @@ export type JiraClientForSite = {
   authorization: string
 }
 
+// Self-hosted Jira Server/Data Center only exposes REST v2; Cloud endpoints
+// in this codebase are written against v3. Callers build paths with this
+// prefix so one code path serves both deployments.
+export function apiBasePath(site: JiraSite): string {
+  return site.authType === 'server' ? '/rest/api/2' : '/rest/api/3'
+}
+
 export class JiraApiError extends Error {
   status: number | null
 
   constructor(message: string, status: number | null = null) {
-    super(message)
+    super(boundedIntegrationErrorMessage(message))
     this.status = status
   }
 }
 
 let cachedSiteFile: JiraSiteFile | null = null
 let siteFileLoaded = false
+let siteFileReadError: Error | null = null
 const cachedTokens = new Map<string, string>()
 // Why: decrypt failures are recorded per site so getStatus can explain
 // failing reads without re-touching the keychain on every status poll.
 const credentialErrors = new Map<string, string>()
+
+function cacheToken(siteId: string, token: string): void {
+  if (!cachedTokens.has(siteId) && cachedTokens.size >= MAX_INTEGRATION_ACCOUNTS) {
+    const oldestSiteId = cachedTokens.keys().next().value
+    if (oldestSiteId !== undefined) {
+      cachedTokens.delete(oldestSiteId)
+    }
+  }
+  cachedTokens.set(siteId, token)
+}
 
 function getOrcaDir(): string {
   return join(homedir(), '.orca')
@@ -94,6 +118,7 @@ function getTokenDir(): string {
 }
 
 function getTokenPath(siteId: string): string {
+  assertIntegrationStringBytes('Jira', 'site ID', siteId, MAX_INTEGRATION_ACCOUNT_ID_BYTES)
   return join(getTokenDir(), `${Buffer.from(siteId).toString('base64url')}.enc`)
 }
 
@@ -143,23 +168,101 @@ function normalizeSite(input: unknown): JiraSite | null {
     siteUrl: record.siteUrl,
     email: record.email,
     displayName: record.displayName,
-    accountId: record.accountId
+    accountId: record.accountId,
+    // Sites saved before self-hosted support have no authType; they are Cloud.
+    authType: record.authType === 'server' ? 'server' : 'cloud'
+  }
+}
+
+function assertSiteBounds(site: JiraSite): void {
+  assertIntegrationStringBytes('Jira', 'site ID', site.id, MAX_INTEGRATION_ACCOUNT_ID_BYTES)
+  assertIntegrationStringBytes('Jira', 'site URL', site.siteUrl, MAX_INTEGRATION_ACCOUNT_URL_BYTES)
+  assertIntegrationStringBytes('Jira', 'email', site.email, MAX_INTEGRATION_ACCOUNT_EMAIL_BYTES)
+  assertIntegrationStringBytes(
+    'Jira',
+    'display name',
+    site.displayName,
+    MAX_INTEGRATION_ACCOUNT_LABEL_BYTES
+  )
+  assertIntegrationStringBytes(
+    'Jira',
+    'account ID',
+    site.accountId,
+    MAX_INTEGRATION_ACCOUNT_LABEL_BYTES
+  )
+}
+
+function assertStoredSiteBounds(input: unknown): void {
+  if (!input || typeof input !== 'object') {
+    return
+  }
+  const record = input as Record<string, unknown>
+  const fields = [
+    ['site ID', record.id, MAX_INTEGRATION_ACCOUNT_ID_BYTES],
+    ['site URL', record.siteUrl, MAX_INTEGRATION_ACCOUNT_URL_BYTES],
+    ['email', record.email, MAX_INTEGRATION_ACCOUNT_EMAIL_BYTES],
+    ['display name', record.displayName, MAX_INTEGRATION_ACCOUNT_LABEL_BYTES],
+    ['account ID', record.accountId, MAX_INTEGRATION_ACCOUNT_LABEL_BYTES]
+  ] as const
+  for (const [field, value, maxBytes] of fields) {
+    if (typeof value === 'string') {
+      assertIntegrationStringBytes('Jira', field, value, maxBytes)
+    }
+  }
+}
+
+function assertSiteFileBounds(file: JiraSiteFile): void {
+  assertIntegrationAccountCount('Jira', file.sites.length)
+  for (const site of file.sites) {
+    assertSiteBounds(site)
   }
 }
 
 function readSiteFileFromDisk(): JiraSiteFile {
   const path = getSiteFilePath()
   if (!existsSync(path)) {
+    siteFileReadError = null
     return emptySiteFile()
   }
   try {
-    const parsed = JSON.parse(readFileSync(path, { encoding: 'utf-8' })) as Partial<JiraSiteFile>
-    const sites = Array.isArray(parsed.sites)
-      ? parsed.sites
-          .map((site) => normalizeSite(site))
-          .filter((site): site is JiraSite => site !== null)
-          .filter((site) => hasStoredToken(site.id))
-      : []
+    const parsed = JSON.parse(readIntegrationCredentialFileSyncText(path)) as Partial<JiraSiteFile>
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      parsed.version !== 1 ||
+      !Array.isArray(parsed.sites)
+    ) {
+      throw unreadableIntegrationAccountFileError('Jira')
+    }
+    if (typeof parsed.activeSiteId === 'string') {
+      assertIntegrationStringBytes(
+        'Jira',
+        'active site ID',
+        parsed.activeSiteId,
+        MAX_INTEGRATION_ACCOUNT_ID_BYTES
+      )
+    }
+    if (typeof parsed.selectedSiteId === 'string' && parsed.selectedSiteId !== 'all') {
+      assertIntegrationStringBytes(
+        'Jira',
+        'selected site ID',
+        parsed.selectedSiteId,
+        MAX_INTEGRATION_ACCOUNT_ID_BYTES
+      )
+    }
+    const sites: JiraSite[] = []
+    assertIntegrationAccountCount('Jira', parsed.sites.length)
+    for (const input of parsed.sites) {
+      assertStoredSiteBounds(input)
+      const site = normalizeSite(input)
+      if (!site) {
+        throw unreadableIntegrationAccountFileError('Jira')
+      }
+      if (hasStoredToken(site.id)) {
+        sites.push(site)
+      }
+    }
     const activeSiteId =
       typeof parsed.activeSiteId === 'string' &&
       sites.some((site) => site.id === parsed.activeSiteId)
@@ -171,8 +274,10 @@ function readSiteFileFromDisk(): JiraSiteFile {
         sites.some((site) => site.id === parsed.selectedSiteId))
         ? parsed.selectedSiteId
         : activeSiteId
+    siteFileReadError = null
     return { version: 1, activeSiteId, selectedSiteId, sites }
   } catch {
+    siteFileReadError = unreadableIntegrationAccountFileError('Jira')
     return emptySiteFile()
   }
 }
@@ -186,6 +291,10 @@ function getSiteFile(): JiraSiteFile {
 }
 
 function writeSiteFile(file: JiraSiteFile): void {
+  if (siteFileReadError) {
+    throw siteFileReadError
+  }
+  assertSiteFileBounds(file)
   ensureOrcaDir()
   const sites = file.sites.filter((site) => hasStoredToken(site.id))
   const activeSiteId =
@@ -199,22 +308,31 @@ function writeSiteFile(file: JiraSiteFile): void {
         ? file.selectedSiteId
         : activeSiteId
 
-  cachedSiteFile = {
+  const nextFile: JiraSiteFile = {
     version: 1,
     activeSiteId,
     selectedSiteId,
     sites
   }
-  siteFileLoaded = true
-  writeFileSync(getSiteFilePath(), JSON.stringify(cachedSiteFile, null, 2), {
+  const serialized = serializeIntegrationAccountFile(nextFile)
+  writeFileSync(getSiteFilePath(), serialized, {
     encoding: 'utf-8',
     mode: 0o600
   })
+  cachedSiteFile = nextFile
+  siteFileLoaded = true
 }
 
 function writeEncryptedToken(path: string, apiToken: string): void {
+  assertIntegrationCredentialBytes('Jira', apiToken)
   if (safeStorage.isEncryptionAvailable()) {
-    writeFileSync(path, safeStorage.encryptString(apiToken), { mode: 0o600 })
+    const encrypted = safeStorage.encryptString(apiToken)
+    if (encrypted.length > MAX_INTEGRATION_ACCOUNT_FILE_BYTES) {
+      throw new IntegrationAccountPersistenceLimitError(
+        `Jira encrypted credential exceeds ${MAX_INTEGRATION_ACCOUNT_FILE_BYTES} bytes.`
+      )
+    }
+    writeFileSync(path, encrypted, { mode: 0o600 })
     return
   }
   console.warn('[jira] safeStorage encryption unavailable — storing token in plaintext')
@@ -231,15 +349,19 @@ function readToken(siteId: string): string | null {
     return null
   }
   try {
-    const raw = readFileSync(path)
+    const raw = readIntegrationCredentialFileSync(path)
     const token = readStoredCredentialToken('Jira', raw)
     if (token) {
-      cachedTokens.set(siteId, token)
+      assertIntegrationCredentialBytes('Jira', token)
+      cacheToken(siteId, token)
     }
     credentialErrors.delete(siteId)
     return token
   } catch (error) {
-    if (error instanceof CredentialDecryptionError) {
+    if (
+      error instanceof CredentialDecryptionError ||
+      error instanceof IntegrationAccountPersistenceLimitError
+    ) {
       credentialErrors.set(siteId, error.message)
       throw error
     }
@@ -251,7 +373,7 @@ function saveToken(siteId: string, apiToken: string): void {
   ensureOrcaDir()
   ensureTokenDir()
   writeEncryptedToken(getTokenPath(siteId), apiToken)
-  cachedTokens.set(siteId, apiToken)
+  cacheToken(siteId, apiToken)
   credentialErrors.delete(siteId)
 }
 
@@ -284,8 +406,17 @@ function getSiteId(siteUrl: string, email: string): string {
 
 function toViewer(data: Record<string, unknown>, fallbackEmail: string): JiraViewer {
   const avatarUrls = data.avatarUrls as Record<string, unknown> | undefined
+  // Server/DC /myself has no accountId; its stable identifiers are name/key.
+  const accountId =
+    typeof data.accountId === 'string'
+      ? data.accountId
+      : typeof data.name === 'string'
+        ? data.name
+        : typeof data.key === 'string'
+          ? data.key
+          : ''
   return {
-    accountId: typeof data.accountId === 'string' ? data.accountId : '',
+    accountId,
     displayName: typeof data.displayName === 'string' ? data.displayName : fallbackEmail,
     email: typeof data.emailAddress === 'string' ? data.emailAddress : fallbackEmail,
     avatarUrl:
@@ -308,7 +439,14 @@ function siteToViewer(site: JiraSite | null): JiraViewer | null {
   }
 }
 
-function authHeader(email: string, apiToken: string): string {
+function authHeader(email: string, apiToken: string, authType?: JiraAuthType): string {
+  // Self-hosted with no username = a personal access token (Bearer); Basic auth
+  // with a PAT in the password slot is what produces the 401s users report.
+  // Self-hosted WITH a username is classic username+password Basic auth, which
+  // older Server/DC instances (predating PATs) require. Cloud is always Basic.
+  if (authType === 'server' && !email) {
+    return `Bearer ${apiToken}`
+  }
   return `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`
 }
 
@@ -318,9 +456,9 @@ function describeErrorCause(error: unknown): string | undefined {
   }
   const cause = (error as { cause?: unknown }).cause
   if (cause instanceof Error) {
-    return `${cause.name}: ${cause.message}`
+    return boundedIntegrationErrorMessage(`${cause.name}: ${cause.message}`)
   }
-  return cause === undefined ? undefined : String(cause)
+  return cause === undefined ? undefined : boundedIntegrationErrorMessage(cause)
 }
 
 async function jiraFetch(url: string, init: RequestInit): Promise<Response> {
@@ -334,7 +472,7 @@ async function jiraFetch(url: string, init: RequestInit): Promise<Response> {
       }).catch((error) => {
         span.addEvent('jira.proxySetupFailed', {
           errorName: error instanceof Error ? error.name : typeof error,
-          errorMessage: error instanceof Error ? error.message : String(error)
+          errorMessage: boundedIntegrationErrorMessage(error)
         })
       })
       try {
@@ -346,10 +484,7 @@ async function jiraFetch(url: string, init: RequestInit): Promise<Response> {
           'jira.transportErrorName',
           error instanceof Error ? error.name : typeof error
         )
-        span.setAttribute(
-          'jira.transportErrorMessage',
-          error instanceof Error ? error.message : String(error)
-        )
+        span.setAttribute('jira.transportErrorMessage', boundedIntegrationErrorMessage(error))
         const cause = describeErrorCause(error)
         if (cause) {
           span.setAttribute('jira.transportErrorCause', cause)
@@ -366,13 +501,14 @@ async function requestWithCredentials(
   email: string,
   apiToken: string,
   path: string,
-  init?: RequestInit
+  init?: RequestInit,
+  authType?: JiraAuthType
 ): Promise<unknown> {
   const headers = new Headers(init?.headers)
   headers.set('Accept', 'application/json')
   headers.set('Content-Type', 'application/json')
   headers.set('User-Agent', JIRA_API_USER_AGENT)
-  headers.set('Authorization', authHeader(email, apiToken))
+  headers.set('Authorization', authHeader(email, apiToken, authType))
   const response = await jiraFetch(`${siteUrl}${path}`, {
     ...init,
     headers
@@ -383,16 +519,16 @@ async function requestWithCredentials(
   if (response.status === 204) {
     return null
   }
-  return response.json()
+  return readFetchResponseJsonWithinLimit<unknown>(response)
 }
 
 async function readJiraError(response: Response): Promise<string> {
   try {
-    const data = (await response.json()) as {
+    const data = await readFetchResponseJsonWithinLimit<{
       errorMessages?: string[]
       errors?: Record<string, string>
       message?: string
-    }
+    }>(response)
     const messages = [
       ...(Array.isArray(data.errorMessages) ? data.errorMessages : []),
       ...Object.values(data.errors ?? {}),
@@ -427,7 +563,7 @@ export async function jiraRequest<T>(
   if (response.status === 204) {
     return null as T
   }
-  return (await response.json()) as T
+  return await readFetchResponseJsonWithinLimit<T>(response)
 }
 
 export function getClients(selection?: JiraSiteSelection | null): JiraClientForSite[] {
@@ -448,12 +584,16 @@ export function getClients(selection?: JiraSiteSelection | null): JiraClientForS
       // credentialError for getStatus to surface, so skip this site like a
       // missing token. A specific-site selection still rethrows so the renderer
       // can surface the decrypt banner promptly.
-      if (isAllSelection && error instanceof CredentialDecryptionError) {
+      if (
+        isAllSelection &&
+        (error instanceof CredentialDecryptionError ||
+          error instanceof IntegrationAccountPersistenceLimitError)
+      ) {
         return []
       }
       throw error
     }
-    return token ? [{ site, authorization: authHeader(site.email, token) }] : []
+    return token ? [{ site, authorization: authHeader(site.email, token, site.authType) }] : []
   })
 }
 
@@ -477,47 +617,93 @@ export function getStatus(): JiraConnectionStatus {
 export async function connect(
   args: JiraConnectArgs
 ): Promise<{ ok: true; viewer: JiraViewer } | { ok: false; error: string }> {
+  try {
+    assertIntegrationStringBytes(
+      'Jira',
+      'site URL',
+      args.siteUrl,
+      MAX_INTEGRATION_ACCOUNT_URL_BYTES
+    )
+    assertIntegrationStringBytes('Jira', 'email', args.email, MAX_INTEGRATION_ACCOUNT_EMAIL_BYTES)
+    assertIntegrationCredentialBytes('Jira', args.apiToken)
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? boundedIntegrationErrorMessage(error) : 'Connection failed.'
+    }
+  }
   let siteUrl: string
   try {
     siteUrl = normalizeJiraSiteUrl(args.siteUrl)
+    assertIntegrationStringBytes('Jira', 'site URL', siteUrl, MAX_INTEGRATION_ACCOUNT_URL_BYTES)
   } catch {
     return { ok: false, error: 'Enter a valid Jira site URL.' }
   }
 
+  const authType: JiraAuthType = args.authType === 'server' ? 'server' : 'cloud'
   const email = args.email.trim()
   const apiToken = args.apiToken.trim()
-  if (!email || !apiToken) {
+  if (authType === 'server') {
+    if (!apiToken) {
+      // A username present means classic Basic auth (password); its absence
+      // means the credential is a personal access token sent as Bearer.
+      return {
+        ok: false,
+        error: email ? 'Password is required.' : 'Personal access token is required.'
+      }
+    }
+  } else if (!email || !apiToken) {
     return { ok: false, error: 'Email and API token are required.' }
   }
 
+  getSiteFile()
+  if (siteFileReadError) {
+    return { ok: false, error: siteFileReadError.message }
+  }
   await acquire()
   try {
+    const myselfPath = authType === 'server' ? '/rest/api/2/myself' : '/rest/api/3/myself'
     const viewer = toViewer(
-      (await requestWithCredentials(siteUrl, email, apiToken, '/rest/api/3/myself')) as Record<
-        string,
-        unknown
-      >,
-      email
+      (await requestWithCredentials(
+        siteUrl,
+        email,
+        apiToken,
+        myselfPath,
+        undefined,
+        authType
+      )) as Record<string, unknown>,
+      email || siteUrl
     )
-    const id = getSiteId(siteUrl, email)
+    // PAT sites have no email, so keying on it alone would collide every PAT
+    // connection to the same host into one id (silently overwriting a prior
+    // account + token). Fall back to the verified viewer identity so distinct
+    // accounts stay distinct. Cloud/Basic keep keying on their non-empty email.
+    const id = getSiteId(siteUrl, email || viewer.accountId)
     const site: JiraSite = {
       id,
       siteUrl,
       email,
       displayName: viewer.displayName,
-      accountId: viewer.accountId
+      accountId: viewer.accountId,
+      authType
     }
-    saveToken(id, apiToken)
     const file = getSiteFile()
-    writeSiteFile({
+    const nextFile: JiraSiteFile = {
       version: 1,
       activeSiteId: id,
       selectedSiteId: id,
       sites: [site, ...file.sites.filter((entry) => entry.id !== id)]
-    })
+    }
+    assertSiteFileBounds(nextFile)
+    serializeIntegrationAccountFile(nextFile)
+    saveToken(id, apiToken)
+    writeSiteFile(nextFile)
     return { ok: true, viewer }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'Connection failed.' }
+    return {
+      ok: false,
+      error: error instanceof Error ? boundedIntegrationErrorMessage(error) : 'Connection failed.'
+    }
   } finally {
     release()
   }
@@ -525,6 +711,9 @@ export async function connect(
 
 export function disconnect(siteId?: string): void {
   const file = getSiteFile()
+  if (siteFileReadError) {
+    throw siteFileReadError
+  }
   const ids = siteId ? [siteId] : file.sites.map((site) => site.id)
   for (const id of ids) {
     deleteToken(id)
@@ -557,7 +746,10 @@ export async function testConnection(
   try {
     client = getClients(siteId)[0]
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'Connection failed.' }
+    return {
+      ok: false,
+      error: error instanceof Error ? boundedIntegrationErrorMessage(error) : 'Connection failed.'
+    }
   }
   if (!client) {
     return { ok: false, error: 'Not connected to Jira.' }
@@ -565,20 +757,26 @@ export async function testConnection(
   await acquire()
   try {
     const viewer = toViewer(
-      (await jiraRequest(client, '/rest/api/3/myself')) as Record<string, unknown>,
+      (await jiraRequest(client, `${apiBasePath(client.site)}/myself`)) as Record<string, unknown>,
       client.site.email
     )
     return { ok: true, viewer }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'Connection failed.' }
+    return {
+      ok: false,
+      error: error instanceof Error ? boundedIntegrationErrorMessage(error) : 'Connection failed.'
+    }
   } finally {
     release()
   }
 }
 
 export function clearToken(siteId: string): void {
-  deleteToken(siteId)
   const file = getSiteFile()
+  if (siteFileReadError) {
+    throw siteFileReadError
+  }
+  deleteToken(siteId)
   writeSiteFile({ ...file, sites: file.sites.filter((site) => site.id !== siteId) })
 }
 

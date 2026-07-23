@@ -1,5 +1,5 @@
-import { fork, type ChildProcess } from 'child_process'
-import { join } from 'path'
+import { fork, type ChildProcess } from 'node:child_process'
+import { join } from 'node:path'
 import type {
   ComputerActionResult,
   ComputerListAppsResult,
@@ -43,21 +43,12 @@ type PendingRequest = {
 }
 
 const REQUEST_TIMEOUT_MS = 60_000
+export const COMPUTER_SIDECAR_MAX_QUEUED_CALLS = 16
 let sidecar: ComputerSidecarProcess | null = null
 
 // Why: Node treats unhandled child 'error' events as process exceptions, so
 // stale children keep a no-op listener that does not retain the sidecar owner.
 function ignoreStaleChildError(): void {}
-
-export function shouldUseComputerSidecar(): boolean {
-  return (
-    (process.platform === 'darwin' ||
-      process.platform === 'linux' ||
-      process.platform === 'win32') &&
-    typeof process.versions.electron === 'string' &&
-    process.env.ORCA_COMPUTER_SIDECAR !== '1'
-  )
-}
 
 export async function callComputerSidecarListApps(): Promise<ComputerListAppsResult> {
   return (await getComputerSidecar().call('listApps', {})) as ComputerListAppsResult
@@ -132,10 +123,20 @@ class ComputerSidecarProcess {
   private pending = new Map<number, PendingRequest>()
   private queueTail: Promise<void> | null = null
   private queueGeneration = 0
+  private queuedCalls = 0
 
   constructor(private readonly entryPath: string) {}
 
   call(method: ComputerSidecarMethod, params: unknown): Promise<unknown> {
+    if (this.queuedCalls >= COMPUTER_SIDECAR_MAX_QUEUED_CALLS) {
+      return Promise.reject(
+        new RuntimeClientError(
+          'accessibility_error',
+          'computer sidecar queue limit reached; retry the computer-use request'
+        )
+      )
+    }
+    this.queuedCalls += 1
     const generation = this.queueGeneration
     const run = () => {
       if (generation !== this.queueGeneration) {
@@ -146,8 +147,17 @@ class ComputerSidecarProcess {
       }
       return this.send(method, params)
     }
-    const result = this.queueTail ? this.queueTail.then(run, run) : run()
-    const tail = result.then(
+    let result: Promise<unknown>
+    try {
+      result = this.queueTail ? this.queueTail.then(run, run) : run()
+    } catch (error) {
+      this.queuedCalls -= 1
+      throw error
+    }
+    const trackedResult = result.finally(() => {
+      this.queuedCalls -= 1
+    })
+    const tail = trackedResult.then(
       () => undefined,
       () => undefined
     )
@@ -157,7 +167,7 @@ class ComputerSidecarProcess {
         this.queueTail = null
       }
     })
-    return result
+    return trackedResult
   }
 
   private send(method: ComputerSidecarMethod, params: unknown): Promise<unknown> {

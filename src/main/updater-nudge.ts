@@ -1,5 +1,6 @@
 import { net } from 'electron'
 import { compareVersions, isValidVersion } from './updater-fallback'
+import { readFetchResponseJsonWithinLimit } from './lib/fetch-response-body'
 
 export type NudgeConfig = {
   id: string
@@ -8,18 +9,15 @@ export type NudgeConfig = {
 }
 
 export async function fetchNudge(): Promise<NudgeConfig | null> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 5000)
-
   try {
     const res = await net.fetch('https://onorca.dev/whats-new/nudge.json', {
-      signal: controller.signal
+      signal: AbortSignal.timeout(5000)
     })
     if (!res.ok) {
       return null
     }
 
-    const json: unknown = await res.json()
+    const json = await readFetchResponseJsonWithinLimit<unknown>(res)
     if (!json || typeof json !== 'object' || Array.isArray(json)) {
       return null
     }
@@ -60,8 +58,6 @@ export async function fetchNudge(): Promise<NudgeConfig | null> {
     }
   } catch {
     return null
-  } finally {
-    clearTimeout(timeout)
   }
 }
 

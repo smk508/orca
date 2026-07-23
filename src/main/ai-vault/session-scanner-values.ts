@@ -1,6 +1,22 @@
-import { homedir } from 'os'
-import { basename, dirname, join } from 'path'
-import { readFile } from 'fs/promises'
+import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
+import {
+  assertJsonTextStructureWithinLimits,
+  type JsonTextStructureLimits
+} from '../../shared/json-text-structure-limit'
+
+export const AI_VAULT_JSON_STRUCTURE_LIMITS: JsonTextStructureLimits = {
+  structuralTokens: 1_000_000,
+  nestingDepth: 256
+}
+
+export function parseAiVaultJsonText(
+  content: string,
+  limits: JsonTextStructureLimits = AI_VAULT_JSON_STRUCTURE_LIMITS
+): unknown {
+  assertJsonTextStructureWithinLimits(content, limits)
+  return JSON.parse(content) as unknown
+}
 
 export function timestampMs(value: unknown): number {
   if (typeof value === 'string') {
@@ -18,7 +34,7 @@ export function parseJsonObject(line: string): Record<string, unknown> | null {
     return null
   }
   try {
-    const parsed = JSON.parse(line) as unknown
+    const parsed = parseAiVaultJsonText(line)
     return asRecord(parsed)
   } catch {
     return null
@@ -69,16 +85,6 @@ export function extractGitBranch(value: unknown): string | null {
   return extractString(git.branch) || extractString(git.current_branch)
 }
 
-export async function readJsonObjectIfExists(
-  filePath: string
-): Promise<Record<string, unknown> | null> {
-  try {
-    return asRecord(JSON.parse(await readFile(filePath, 'utf-8')) as unknown)
-  } catch {
-    return null
-  }
-}
-
 export function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? value : []
 }
@@ -126,10 +132,15 @@ export function findOpenCodeStorageRoot(filePath: string): string | null {
   return dirname(sessionRoot)
 }
 
-export function normalizePiSessionsDir(rawValue: string): string {
+// Pi and OMP (a Pi fork) both store transcripts under
+// <home>/<agentHomeDirName>/agent/sessions; accept any prefix of that path.
+export function normalizeAgentSessionsDir(
+  rawValue: string,
+  agentHomeDirName: '.pi' | '.omp'
+): string {
   const trimmed = rawValue.trim()
   if (!trimmed) {
-    return join(homedir(), '.pi', 'agent', 'sessions')
+    return join(homedir(), agentHomeDirName, 'agent', 'sessions')
   }
   const normalized = trimmed.replace(/[\\/]+$/, '')
   const leaf = basename(normalized)
@@ -139,7 +150,7 @@ export function normalizePiSessionsDir(rawValue: string): string {
   if (leaf === 'agent') {
     return join(normalized, 'sessions')
   }
-  if (leaf === '.pi') {
+  if (leaf === agentHomeDirName) {
     return join(normalized, 'agent', 'sessions')
   }
   return normalized
@@ -154,6 +165,7 @@ export function errorMessage(err: unknown): string {
 }
 
 export {
+  addCodexUsage,
   claudeUsageTotal,
   copilotModelMetricsTotal,
   normalizeCodexUsage,

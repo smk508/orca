@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentStatusEntry } from '../../../shared/agent-status-types'
 import type { TerminalLayoutSnapshot, TerminalTab } from '../../../shared/types'
@@ -5,6 +7,7 @@ import { useAppStore } from '@/store'
 import { DEFAULT_AGENT_HIBERNATION_IDLE_MS } from './agent-hibernation-planner'
 import {
   resetAgentHibernationCoordinatorForTests,
+  RUNTIME_LIVENESS_READ_CONCURRENCY,
   runAgentHibernationTick,
   startAgentHibernationCoordinator
 } from './agent-hibernation-coordinator'
@@ -24,6 +27,7 @@ import type { AppState } from '@/store/types'
 
 const NOW = 10_000_000
 const LEAF = '11111111-1111-4111-8111-111111111111'
+const PI_TRANSCRIPT_PATH = join(tmpdir(), 'pi-session-1.jsonl')
 
 const mockRuntimeEnvironmentCall = vi.fn()
 
@@ -77,12 +81,20 @@ function installEligibleState(
   overrides: Partial<AppState> = {}
 ): typeof shutdownCompletedAgentPaneForHibernation {
   const e = entry()
+  const runtimeOwnerEnvironmentId = overrides.settings?.activeRuntimeEnvironmentId ?? undefined
   useAppStore.setState({
     settings: {
       experimentalAgentHibernation: true,
       agentHibernationIdleMs: DEFAULT_AGENT_HIBERNATION_IDLE_MS
     } as never,
     activeWorktreeId: 'wt-active',
+    repos: [],
+    worktreesByRepo: {
+      'fixture-repo': [
+        { id: 'wt-bg', repoId: 'fixture-repo', hostId: 'local', runtimeOwnerEnvironmentId }
+      ]
+    } as never,
+    detectedWorktreesByRepo: {},
     tabsByWorktree: { 'wt-bg': [tab()] },
     terminalLayoutsByTabId: { 'tab-1': layout() },
     ptyIdsByTabId: { 'tab-1': ['pty-1'] },
@@ -172,6 +184,61 @@ afterEach(() => {
 })
 
 describe('agent sleep coordinator', () => {
+  it.each([
+    ['at the limit', RUNTIME_LIVENESS_READ_CONCURRENCY],
+    ['above the limit', RUNTIME_LIVENESS_READ_CONCURRENCY + 1]
+  ])('bounds runtime liveness reads %s', async (_, count) => {
+    const worktrees = Array.from({ length: count }, (_, index) => ({
+      id: `repo::/worktree-${index}`,
+      repoId: 'repo',
+      hostId: `runtime:env-${index}`
+    }))
+    useAppStore.setState({
+      tabsByWorktree: Object.fromEntries(worktrees.map((worktree) => [worktree.id, []])),
+      worktreesByRepo: { repo: worktrees } as never,
+      repos: [],
+      settings: { experimentalAgentHibernation: true } as never
+    })
+    let active = 0
+    let peak = 0
+    let started = 0
+    const releases: (() => void)[] = []
+    mockRuntimeEnvironmentCall.mockImplementation((args: { method: string }) => {
+      const compatible = createCompatibleRuntimeStatusResponseIfNeeded(args)
+      if (compatible) {
+        return Promise.resolve(compatible)
+      }
+      if (args.method === 'terminal.list') {
+        started++
+        active++
+        peak = Math.max(peak, active)
+        return new Promise((resolve) => {
+          releases.push(() => {
+            active--
+            resolve({
+              id: 'terminal-list',
+              ok: true,
+              result: runtimeListResult([]),
+              _meta: { runtimeId: 'runtime-1' }
+            })
+          })
+        })
+      }
+      return Promise.resolve({ id: 'default', ok: true, result: {} })
+    })
+
+    const tick = runAgentHibernationTick()
+    await vi.waitFor(() => expect(started).toBe(Math.min(count, RUNTIME_LIVENESS_READ_CONCURRENCY)))
+    if (count > RUNTIME_LIVENESS_READ_CONCURRENCY) {
+      releases.shift()?.()
+      await vi.waitFor(() => expect(started).toBe(count))
+    }
+    releases.splice(0).forEach((release) => release())
+    await tick
+
+    expect(peak).toBe(Math.min(count, RUNTIME_LIVENESS_READ_CONCURRENCY))
+  })
+
   it('hibernates an eligible background worktree after two stable ticks', async () => {
     vi.useFakeTimers()
     const shutdown = installEligibleState(vi.fn().mockResolvedValue(undefined))
@@ -188,6 +255,52 @@ describe('agent sleep coordinator', () => {
       ptyId: 'pty-1'
     })
     expect(useAppStore.getState().shutdownWorktreeTerminals).not.toHaveBeenCalled()
+  })
+
+  it('hibernates completed Pi after the periodic recovery capture', async () => {
+    vi.useFakeTimers()
+    const piEntry = {
+      ...entry(),
+      agentType: 'pi' as const,
+      providerSession: {
+        key: 'session_id' as const,
+        id: 'pi-session-1',
+        transcriptPath: PI_TRANSCRIPT_PATH
+      }
+    }
+    const shutdown = installEligibleState(vi.fn().mockResolvedValue(undefined), {
+      agentStatusByPaneKey: { [piEntry.paneKey]: piEntry },
+      sleepingAgentSessionsByPaneKey: {
+        [piEntry.paneKey]: {
+          paneKey: piEntry.paneKey,
+          tabId: piEntry.tabId,
+          worktreeId: piEntry.worktreeId!,
+          agent: 'pi',
+          providerSession: piEntry.providerSession,
+          prompt: '',
+          state: 'working',
+          capturedAt: piEntry.updatedAt,
+          updatedAt: piEntry.updatedAt,
+          origin: 'live'
+        }
+      }
+    })
+
+    const liveRecord = useAppStore.getState().sleepingAgentSessionsByPaneKey[piEntry.paneKey]
+    useAppStore.getState().captureAllSleepingAgentSessions('periodic')
+    expect(useAppStore.getState().sleepingAgentSessionsByPaneKey[piEntry.paneKey]).toBe(liveRecord)
+
+    startAgentHibernationCoordinator({ intervalMs: 1000, now: () => NOW })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(shutdown).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(shutdown).toHaveBeenCalledWith('wt-bg', {
+      paneKey: piEntry.paneKey,
+      tabId: 'tab-1',
+      leafId: LEAF,
+      ptyId: 'pty-1'
+    })
   })
 
   it('hibernates an eligible pane when a sibling shell PTY is live', async () => {
