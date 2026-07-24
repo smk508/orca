@@ -136,7 +136,11 @@ import {
   routeDictationTranscript
 } from '../../../../src/terminal/terminal-live-dictation-routing'
 import { nativeKeyEventToBytes } from '../../../../src/terminal/terminal-hardware-key'
-import { OrcaKeyCaptureView, type NativeKeyEvent } from '@orca/expo-hardware-keyboard'
+import {
+  OrcaKeyCaptureView,
+  isHardwareKeyboardConnected,
+  type NativeKeyEvent
+} from '@orca/expo-hardware-keyboard'
 import { countTerminalGestureInputSequences } from '../../../../src/terminal/terminal-gesture-input'
 import {
   recoverActiveTerminalAfterForeground,
@@ -878,6 +882,22 @@ export default function SessionScreen() {
   const initialCreateWarning = typeof createdWarning === 'string' ? createdWarning.trim() : ''
   const [terminals, setTerminals] = useState<Terminal[]>([])
   const terminalsRef = useRef<Terminal[]>([])
+  // Why: resolving per-scheme theme inline in the terminals.map() JSX below
+  // allocates a fresh object every render (even when neither the host theme nor
+  // the device scheme changed), which re-triggers the WebView's theme-push
+  // effect (keyed in part on terminalTheme's identity) far more than intended.
+  // Memoized per handle so a render that doesn't touch theme/scheme keeps the
+  // same object.
+  const resolvedTerminalThemesByHandle = useMemo(() => {
+    const themes = new Map<string, ReturnType<typeof resolveTerminalThemeForScheme>>()
+    for (const terminal of terminals) {
+      themes.set(
+        terminal.handle,
+        resolveTerminalThemeForScheme(terminal.terminalTheme, resolvedTerminalScheme)
+      )
+    }
+    return themes
+  }, [terminals, resolvedTerminalScheme])
   const [sessionTabs, setSessionTabs] = useState<MobileSessionTab[]>([])
   const sessionTabsRef = useRef<MobileSessionTab[]>([])
   // Why: track the last applied (epoch, version) so a late older snapshot can't overwrite a newer one and resurrect closed tabs (session-tab-snapshot-gate).
@@ -1065,12 +1085,27 @@ export default function SessionScreen() {
     activeSessionTab?.type !== 'file' &&
     activeSessionTab?.type !== 'browser'
   const liveInputEnabled = activeHandle ? liveInputTerminalHandles.has(activeHandle) : false
-  // Why: physical-keyboard capture is a third input mode. When enabled for the
-  // active terminal we mount a native key-capture view that forwards hardware
-  // key presses — including modifiers, arrows, Esc, and function keys, which the
-  // live-input TextInput cannot surface — straight to the PTY.
-  const [keyCaptureTerminalHandles, setKeyCaptureTerminalHandles] = useState<Set<string>>(new Set())
-  const keyCaptureEnabled = activeHandle ? keyCaptureTerminalHandles.has(activeHandle) : false
+  // Why: live input has two backing mechanisms, chosen automatically rather than
+  // as a separate mode the user picks. With a hardware keyboard attached, a
+  // native key-capture view forwards raw presses — including modifiers, arrows,
+  // Esc, and function keys, which a plain TextInput cannot surface — straight to
+  // the PTY with no software keyboard shown. Without one, live input falls back
+  // to the existing TextInput path. `isHardwareKeyboardConnected()` is a
+  // synchronous native query (no push event exists), so it is polled while live
+  // input is on to pick up a keyboard attached/detached mid-session.
+  const [hardwareKeyboardConnected, setHardwareKeyboardConnected] = useState(() =>
+    isHardwareKeyboardConnected()
+  )
+  useEffect(() => {
+    if (!liveInputEnabled) {
+      return
+    }
+    setHardwareKeyboardConnected(isHardwareKeyboardConnected())
+    const interval = setInterval(() => {
+      setHardwareKeyboardConnected(isHardwareKeyboardConnected())
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [liveInputEnabled])
   const [browserScreencastSupported, setBrowserScreencastSupported] = useState<boolean | null>(null)
   // Why: hosts without aiVault.v1 reject listSessions, so hide the header entry instead of a dead-end "update this host" panel.
   const [agentSessionHistorySupported, setAgentSessionHistorySupported] = useState<boolean | null>(
@@ -2568,7 +2603,6 @@ export default function SessionScreen() {
     setSessionTabs([])
     setActiveSessionTabId(null)
     clearPendingLiveInputCommit()
-    setKeyCaptureTerminalHandles(new Set())
     setMarkdownDocs(new Map())
     setFileDocs(new Map())
     clearDelayedActionTimers()
@@ -3265,53 +3299,21 @@ export default function SessionScreen() {
     const nextEnabled = toggleTerminalLiveInput(activeHandle)
     clearPendingLiveInputCommit()
     if (nextEnabled) {
-      // Only one input-capture surface at a time: enabling live input turns off
-      // physical-keyboard capture for this terminal.
-      setKeyCaptureTerminalHandles((prev) => {
-        if (!prev.has(activeHandle)) {
-          return prev
-        }
-        const next = new Set(prev)
-        next.delete(activeHandle)
-        return next
-      })
-      scheduleTerminalLiveInputFocus(liveInputFocusTimerRef, () => liveInputRef.current?.focus())
+      // Why: only schedule software-keyboard focus when live input is backed by
+      // the TextInput path. With a hardware keyboard attached, OrcaKeyCaptureView
+      // manages its own focus declaratively via its `active` prop — calling
+      // focus() here would raise the software keyboard we deliberately avoid.
+      if (!hardwareKeyboardConnected) {
+        scheduleTerminalLiveInputFocus(liveInputFocusTimerRef, () => liveInputRef.current?.focus())
+      }
     } else {
-      clearTerminalLiveInputFocusTimer(liveInputFocusTimerRef)
-      liveInputRef.current?.blur()
-    }
-  }, [activeHandle, clearPendingLiveInputCommit, toggleTerminalLiveInput])
-
-  const toggleKeyCapture = useCallback(() => {
-    if (!activeHandle) {
-      return
-    }
-    const nextEnabled = !keyCaptureTerminalHandles.has(activeHandle)
-    setKeyCaptureTerminalHandles((prev) => {
-      const next = new Set(prev)
-      if (nextEnabled) {
-        next.add(activeHandle)
-      } else {
-        next.delete(activeHandle)
-      }
-      return next
-    })
-    // Why: physical-keyboard capture and the live-input TextInput both own the
-    // input bar and compete for first responder. Turning one on turns the other
-    // off so only one capture surface is mounted at a time.
-    if (nextEnabled) {
-      if (liveInputTerminalHandles.has(activeHandle)) {
-        toggleTerminalLiveInput(activeHandle)
-        clearPendingLiveInputCommit()
-      }
       clearTerminalLiveInputFocusTimer(liveInputFocusTimerRef)
       liveInputRef.current?.blur()
     }
   }, [
     activeHandle,
     clearPendingLiveInputCommit,
-    keyCaptureTerminalHandles,
-    liveInputTerminalHandles,
+    hardwareKeyboardConnected,
     toggleTerminalLiveInput
   ])
 
@@ -3320,7 +3322,7 @@ export default function SessionScreen() {
       if (!activeHandle) {
         return
       }
-      if (!keyCaptureTerminalHandles.has(activeHandle)) {
+      if (!liveInputTerminalHandles.has(activeHandle)) {
         return
       }
       const bytes = nativeKeyEventToBytes(event.nativeEvent)
@@ -3329,7 +3331,7 @@ export default function SessionScreen() {
       }
       sendLiveTerminalInput(activeHandle, bytes)
     },
-    [activeHandle, keyCaptureTerminalHandles, sendLiveTerminalInput]
+    [activeHandle, liveInputTerminalHandles, sendLiveTerminalInput]
   )
 
   const allowTerminalGestureInput = useCallback(
@@ -4772,10 +4774,7 @@ export default function SessionScreen() {
                     handle={terminal.handle}
                     active={terminal.handle === activeHandle}
                     keyboardLift={terminal.handle === activeHandle ? activeTerminalKeyboardLift : 0}
-                    terminalTheme={resolveTerminalThemeForScheme(
-                      terminal.terminalTheme,
-                      resolvedTerminalScheme
-                    )}
+                    terminalTheme={resolvedTerminalThemesByHandle.get(terminal.handle)}
                     textScale={terminalTextScale}
                     onTextScaleChange={(scale) => {
                       // Why: pinch-to-zoom reports a new preset; persist it so the size sticks across panes and launches.
@@ -4914,32 +4913,6 @@ export default function SessionScreen() {
                         }
                       />
                     </Pressable>
-                    <Pressable
-                      style={({ pressed }) => [
-                        styles.accessoryKey,
-                        keyCaptureEnabled && styles.accessoryKeyActive,
-                        pressed && styles.accessoryKeyPressed,
-                        !canSend && styles.accessoryKeyDisabled
-                      ]}
-                      disabled={!canSend}
-                      onPress={toggleKeyCapture}
-                      accessibilityLabel={
-                        keyCaptureEnabled
-                          ? 'Disable physical keyboard capture'
-                          : 'Capture physical keyboard keys'
-                      }
-                    >
-                      <KeyboardIcon
-                        size={14}
-                        color={
-                          keyCaptureEnabled
-                            ? colors.bgBase
-                            : canSend
-                              ? colors.textSecondary
-                              : colors.textMuted
-                        }
-                      />
-                    </Pressable>
                     {canPaste && (
                       <Pressable
                         style={({ pressed }) => [
@@ -5043,7 +5016,7 @@ export default function SessionScreen() {
                 </View>
 
                 {/* Input bar */}
-                {keyCaptureEnabled ? (
+                {liveInputEnabled && hardwareKeyboardConnected ? (
                   <View style={[styles.inputBar, styles.liveInputBar]}>
                     <KeyboardIcon size={16} color={colors.textSecondary} strokeWidth={2} />
                     <Text style={styles.liveInputHint} numberOfLines={1}>
