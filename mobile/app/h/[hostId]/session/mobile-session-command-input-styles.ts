@@ -165,6 +165,16 @@ export const mobileSessionCommandInputStyles = StyleSheet.create({
     gap: spacing.sm
   },
 
+  // Why: hint text for the physical-keyboard capture input bar, which — unlike
+  // the live-input focus target — has no MobileTerminalLiveInputStatus to lean
+  // on and needs its own static label.
+  liveInputHint: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: typography.metaSize,
+    fontFamily: typography.monoFamily
+  },
+
   liveInputFocusTarget: {
     flex: 1,
     minHeight: 34,
