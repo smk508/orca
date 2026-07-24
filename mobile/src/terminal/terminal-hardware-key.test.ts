@@ -73,9 +73,7 @@ describe('nativeKeyEventToBytes (Android pre-resolved key)', () => {
 
 describe('nativeKeyEventToShortcut', () => {
   it('collects modifiers in ctrl/alt/shift order', () => {
-    const binding = nativeKeyEventToShortcut(
-      ios(0x04, 'a', { ctrl: true, alt: true, shift: true })
-    )
+    const binding = nativeKeyEventToShortcut(ios(0x04, 'a', { ctrl: true, alt: true, shift: true }))
     expect(binding).toEqual({ key: 'a', modifiers: ['ctrl', 'alt', 'shift'] })
   })
 

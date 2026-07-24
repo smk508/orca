@@ -27,7 +27,7 @@ import {
 
 // Mount only when you want to capture physical keys. While active on iOS the
 // software keyboard stays hidden, so gate it on a hardware keyboard being present.
-<OrcaKeyCaptureView
+;<OrcaKeyCaptureView
   active
   style={StyleSheet.absoluteFill}
   onKey={({ nativeEvent }) => {
@@ -38,12 +38,12 @@ import {
 
 ### `NativeKeyEvent`
 
-| Field | iOS | Android |
-|---|---|---|
-| `key` | `''` (resolve from `keyCode`) | normalized key id or base char |
-| `keyCode` | USB HID usage id (`UIKey.keyCode`) | `0` |
-| `characters` / `charactersIgnoringModifiers` | from `UIKey` | `''` |
-| `ctrlKey` / `altKey` / `shiftKey` / `metaKey` | modifier flags | modifier state |
+| Field                                         | iOS                                | Android                        |
+| --------------------------------------------- | ---------------------------------- | ------------------------------ |
+| `key`                                         | `''` (resolve from `keyCode`)      | normalized key id or base char |
+| `keyCode`                                     | USB HID usage id (`UIKey.keyCode`) | `0`                            |
+| `characters` / `charactersIgnoringModifiers`  | from `UIKey`                       | `''`                           |
+| `ctrlKey` / `altKey` / `shiftKey` / `metaKey` | modifier flags                     | modifier state                 |
 
 ## Platform notes
 
