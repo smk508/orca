@@ -11,7 +11,7 @@ export function createKeyedSendSequencer<T>(
   const chains = new Map<string, Promise<unknown>>()
   return (key: string, value: T) => {
     const previous = chains.get(key) ?? Promise.resolve()
-    const next = previous.catch(() => undefined).then(() => send(key, value))
-    chains.set(key, next)
+    const next = previous.then(() => send(key, value))
+    chains.set(key, next.catch(() => undefined))
   }
 }
