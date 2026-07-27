@@ -64,7 +64,8 @@ vi.mock('./ssh-relay-versioned-install', () => ({
 }))
 
 vi.mock('./ssh-relay-install-lock', () => ({
-  acquireInstallLock: vi.fn().mockResolvedValue(undefined)
+  acquireInstallLock: vi.fn().mockResolvedValue(undefined),
+  RELAY_INSTALL_LOCK_NAME: '.install-lock'
 }))
 
 vi.mock('./ssh-relay-repair-lock', () => ({
@@ -101,11 +102,7 @@ function extractWindowsSockPath(script: string): string {
 }
 
 function extractWindowsMarkerPath(script: string): string {
-  return (
-    /(?:-LiteralPath\s+|\[System\.IO\.File\]::Open\()'([^']*\.windows-active-pipe[^']*)'/.exec(
-      script
-    )?.[1] ?? ''
-  )
+  return /-LiteralPath\s+'([^']*\.windows-active-pipe[^']*)'/.exec(script)?.[1] ?? ''
 }
 
 function makeMockConnection(): SshConnection {
@@ -899,11 +896,7 @@ describe('deployAndLaunchRelay', () => {
 
     const markerPaths = mockExecCommand.mock.calls
       .map(([, command]) => decodePowerShellCommand(command))
-      .filter((script): script is string =>
-        Boolean(
-          script?.includes('[System.IO.File]::Open') && script.includes('.windows-active-pipe')
-        )
-      )
+      .filter((script): script is string => Boolean(script?.includes('Get-Content')))
       .map(extractWindowsMarkerPath)
 
     expect(markerPaths).toHaveLength(2)

@@ -8,7 +8,6 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  truncateSync,
   utimesSync,
   writeFileSync
 } from 'node:fs'
@@ -18,8 +17,6 @@ import {
   AgentHookServer,
   agentHookServer,
   CLOSED_AGENT_STATUS_TAB_IDS_MAX,
-  MAX_AGENT_HOOK_LAST_STATUS_FILE_BYTES,
-  MAX_AGENT_HOOK_LAST_STATUS_STRUCTURAL_TOKENS,
   _internals
 } from './server'
 import {
@@ -1469,6 +1466,39 @@ describe('AgentHookServer listener replay', () => {
         receivedAt: expect.any(Number),
         observedInCurrentRuntime: true
       })
+    ])
+  })
+
+  it('notifies provider-session subscribers without changing status listener arguments', () => {
+    const server = new AgentHookServer()
+    const statuses = vi.fn()
+    const sessions = vi.fn()
+    server.subscribeStatusChanges(statuses)
+    server.subscribeProviderSessionChanges(sessions)
+
+    server.ingestRemote(
+      {
+        paneKey: PANE,
+        worktreeId: 'wt-1',
+        providerSession: {
+          key: 'session_id',
+          id: 'pi-session-1',
+          transcriptPath: '/tmp/pi-session-1.jsonl'
+        },
+        providerSessionOnly: true,
+        payload: { state: 'done', agentType: 'pi' }
+      },
+      'conn-1'
+    )
+
+    expect(statuses).toHaveBeenCalledWith([])
+    expect(sessions).toHaveBeenCalledWith([
+      {
+        paneKey: PANE,
+        sessionId: 'pi-session-1',
+        transcriptPath: '/tmp/pi-session-1.jsonl',
+        worktreeId: 'wt-1'
+      }
     ])
   })
 
@@ -6620,46 +6650,6 @@ describe('Last-status persistence', () => {
     }
   })
 
-  it('treats an oversized sparse last-status file as empty hydration', async () => {
-    mkdirSync(join(userDataPath, 'agent-hooks'), { recursive: true })
-    writeFileSync(lastStatusPath(), '{"version":2,"entries":{}}', 'utf8')
-    truncateSync(lastStatusPath(), MAX_AGENT_HOOK_LAST_STATUS_FILE_BYTES + 1)
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const server = new AgentHookServer()
-    await server.start({ env: 'production', userDataPath })
-    try {
-      expect(server.getStatusSnapshot()).toEqual([])
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[agent-hooks] failed to read last-status file:',
-        expect.any(Error)
-      )
-    } finally {
-      server.stop()
-      warnSpy.mockRestore()
-    }
-  })
-
-  it('rejects structurally amplified last-status JSON before parsing', async () => {
-    mkdirSync(join(userDataPath, 'agent-hooks'), { recursive: true })
-    const values = '0,'.repeat(MAX_AGENT_HOOK_LAST_STATUS_STRUCTURAL_TOKENS)
-    writeFileSync(lastStatusPath(), `[${values}0]`, 'utf8')
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const parseSpy = vi.spyOn(JSON, 'parse')
-    const server = new AgentHookServer()
-    await server.start({ env: 'production', userDataPath })
-    try {
-      expect(server.getStatusSnapshot()).toEqual([])
-      expect(parseSpy).not.toHaveBeenCalled()
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[agent-hooks] last-status file is invalid or too complex; ignoring'
-      )
-    } finally {
-      server.stop()
-      warnSpy.mockRestore()
-      parseSpy.mockRestore()
-    }
-  })
-
   it('drops hydrated metadata-only entries without a resumable Pi session', async () => {
     mkdirSync(join(userDataPath, 'agent-hooks'), { recursive: true })
     const receivedAt = recentTs()
@@ -7091,6 +7081,38 @@ describe('AgentHookServer ingestRemote', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('fans a Pi session-only status out to plugins, not just the renderer', () => {
+    const server = new AgentHookServer()
+    const rendererListener = vi.fn()
+    const pluginListener = vi.fn()
+    server.setListener(rendererListener)
+    server.subscribeEnrichedStatus(pluginListener)
+
+    server.ingestRemote(
+      {
+        paneKey: PANE,
+        tabId: 'tab-1',
+        worktreeId: 'wt-1',
+        providerSession: {
+          key: 'session_id',
+          id: 'pi-session-1',
+          transcriptPath: '/tmp/pi-session-1.jsonl'
+        },
+        providerSessionOnly: true,
+        payload: { state: 'done', prompt: '', agentType: 'pi' }
+      },
+      'conn-1'
+    )
+
+    // The session-only path returns early, so it must not skip the plugin tap.
+    expect(rendererListener).toHaveBeenCalledWith(
+      expect.objectContaining({ paneKey: PANE, providerSessionOnly: true })
+    )
+    expect(pluginListener).toHaveBeenCalledWith(
+      expect.objectContaining({ paneKey: PANE, providerSessionOnly: true })
+    )
   })
 
   it('rejects invalid remote metadata-only session envelopes', () => {

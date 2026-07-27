@@ -5,13 +5,13 @@
 // See: docs/ssh-relay-versioned-install-dirs.md
 
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
-import { readRelayVersionMarkerSync } from '../../shared/relay-version-marker'
+import { existsSync, readFileSync } from 'node:fs'
 import type { SshConnection } from './ssh-connection'
 import { RELAY_REMOTE_DIR } from './relay-protocol'
 import { execCommand } from './ssh-relay-deploy-helpers'
 import { probeInstallLockExistsCommand } from './ssh-relay-install-lock-commands'
 import { isRelayInstallLockStale, RELAY_INSTALL_LOCK_NAME } from './ssh-relay-install-lock'
+import { relayRemoteDirSegments } from './ssh-relay-install-namespace'
 import {
   isRelayGcClaimOwned,
   releaseRelayGcClaimWithRetry,
@@ -27,7 +27,6 @@ import {
   removeRemoteTreeCommand,
   writeRemoteEmptyFileCommand
 } from './ssh-remote-commands'
-import { isRelayBaseDirectoryListingLimited } from './ssh-relay-base-directory-listing'
 import {
   getRemoteHostPlatform,
   isWindowsRemoteHost,
@@ -79,7 +78,7 @@ export function readLocalFullVersion(localRelayDir: string): string {
         `This usually indicates a packaging or build problem; reinstall Orca.`
     )
   }
-  const v = readRelayVersionMarkerSync(versionFile)
+  const v = readFileSync(versionFile, 'utf-8').trim()
   if (!v) {
     throw new Error(
       `Orca's local relay version marker at ${versionFile} is empty. ` +
@@ -102,7 +101,8 @@ export function computeRemoteRelayDir(
     pathFlavor === 'windows'
       ? getRemoteHostPlatform('win32-x64')
       : getRemoteHostPlatform('linux-x64')
-  return joinRemotePath(host, remoteHome, RELAY_REMOTE_DIR, `relay-${fullVersion}`)
+  // Why: shell and SFTP-relative builders must derive the same validated segments or the namespaces diverge.
+  return joinRemotePath(host, remoteHome, ...relayRemoteDirSegments(fullVersion, pathFlavor))
 }
 
 /**
@@ -190,9 +190,6 @@ export async function gcOldRelayVersions(
   try {
     listing = await execHostCommand(conn, host, listRelayBaseDirsCommand(host, baseDir))
   } catch {
-    return
-  }
-  if (isRelayBaseDirectoryListingLimited(listing)) {
     return
   }
   const entries = listing

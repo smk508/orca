@@ -8,7 +8,12 @@ import {
 } from '../flags'
 import { RuntimeClientError } from '../runtime-client'
 import { getTerminalHandle } from '../selectors'
+import {
+  clampOrchestrationAskTimeoutMs,
+  resolveOrchestrationAskClientTimeoutMs
+} from '../../shared/orchestration-ask-timeout'
 import { abbreviateOrchestrationTasks } from '../../shared/orchestration-task-summary'
+import { parsePositiveSafeIntegerText } from '../../shared/timer-delay'
 
 // Why: 15 s is well under Claude Code's ~2 min Bash-tool silence budget while keeping log volume low. See design doc §3.4.
 const DEFAULT_KEEPALIVE_INTERVAL_MS = 15_000
@@ -78,25 +83,6 @@ type LifecycleSendRejection = {
 type OrchestrationSendResult =
   | { message: { id: string }; lifecycle?: LifecycleSendRejection }
   | { messages: { id: string }[]; recipients: number }
-
-type OrchestrationRetentionPage = {
-  count: number
-  truncated?: boolean
-  total?: number
-  remaining?: number
-}
-
-function appendOrchestrationRetentionNotice(
-  body: string,
-  page: OrchestrationRetentionPage,
-  noun: string
-): string {
-  if (!page.truncated) {
-    return body
-  }
-  const omitted = page.remaining ?? Math.max(0, (page.total ?? page.count) - page.count)
-  return `${body}\n\nTruncated: ${omitted} additional ${noun} omitted.`
-}
 
 function getOptionalStructuredMessagePayload(
   flags: Map<string, string | boolean>
@@ -338,11 +324,11 @@ function getOptionalPositiveIntegerValueFlag(
   if (typeof raw !== 'string' || raw.length === 0) {
     throw new RuntimeClientError('invalid_argument', `Missing value for --${name}.`)
   }
-  const value = Number(raw)
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+  const value = parsePositiveSafeIntegerText(raw)
+  if (value === null) {
     throw new RuntimeClientError(
       'invalid_argument',
-      `Invalid positive integer for --${name}: ${raw}`
+      `Invalid positive safe integer for --${name}: ${raw}`
     )
   }
   return value
@@ -418,8 +404,6 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
       messages: MessageSummary[]
       count: number
       formatted?: string
-      truncated?: boolean
-      remaining?: number
     }
     let result: Awaited<ReturnType<typeof client.call<CheckResult>>>
     try {
@@ -466,17 +450,15 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
       }
     }
     printResult(result, json, (r) => {
-      let body: string
       if (r.formatted) {
-        body = r.formatted
-      } else if (r.count === 0) {
-        body = 'No messages.'
-      } else {
-        body = r.messages
-          .map((m) => `${m.id} [${m.type ?? 'status'}] from=${m.from_handle} "${m.subject}"`)
-          .join('\n')
+        return r.formatted
       }
-      return appendOrchestrationRetentionNotice(body, r, 'messages')
+      if (r.count === 0) {
+        return 'No messages.'
+      }
+      return r.messages
+        .map((m) => `${m.id} [${m.type ?? 'status'}] from=${m.from_handle} "${m.subject}"`)
+        .join('\n')
     })
   },
 
@@ -495,34 +477,31 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
     const result = await client.call<{
       messages: MessageSummary[]
       count: number
-      total?: number
-      truncated?: boolean
     }>('orchestration.inbox', {
       limit: getOptionalPositiveIntegerFlag(flags, 'limit'),
       terminal: getOptionalStringFlag(flags, 'terminal')
     })
     printResult(result, json, (r) => {
+      if (r.count === 0) {
+        return 'No messages.'
+      }
       // Why: default output omits body/payload for at-a-glance sweeps; --full prints them for auditing.
-      const body =
-        r.count === 0
-          ? 'No messages.'
-          : r.messages
-              .map((m) => {
-                const head = `${m.id} ${m.from_handle} -> ${m.to_handle ?? '?'}: "${m.subject}"`
-                if (!full) {
-                  return head
-                }
-                const parts = [head]
-                if (m.body && m.body.length > 0) {
-                  parts.push(m.body)
-                }
-                if (m.payload) {
-                  parts.push(`[payload] ${m.payload}`)
-                }
-                return parts.join('\n')
-              })
-              .join(full ? '\n\n' : '\n')
-      return appendOrchestrationRetentionNotice(body, r, 'messages')
+      return r.messages
+        .map((m) => {
+          const head = `${m.id} ${m.from_handle} -> ${m.to_handle ?? '?'}: "${m.subject}"`
+          if (!full) {
+            return head
+          }
+          const parts = [head]
+          if (m.body && m.body.length > 0) {
+            parts.push(m.body)
+          }
+          if (m.payload) {
+            parts.push(`[payload] ${m.payload}`)
+          }
+          return parts.join('\n')
+        })
+        .join(full ? '\n\n' : '\n')
     })
   },
 
@@ -556,8 +535,6 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
         spec_truncated?: boolean
       }[]
       count: number
-      total?: number
-      truncated?: boolean
     }>('orchestration.taskList', {
       status: getOptionalStringFlag(flags, 'status'),
       ready: flags.has('ready') ? true : undefined,
@@ -573,20 +550,19 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
         }
       : result
     printResult(output, json, (r) => {
-      const body =
-        r.count === 0
-          ? 'No tasks.'
-          : r.tasks
-              .map((t) => {
-                const label = t.display_name ?? t.task_title ?? t.spec
-                const head = `${t.id} [${t.status}] ${label.slice(0, 60)}`
-                if (t.status === 'dispatched' && t.assignee_handle) {
-                  return `${head} -> ${t.assignee_handle} (${t.dispatch_id ?? '?'})`
-                }
-                return head
-              })
-              .join('\n')
-      return appendOrchestrationRetentionNotice(body, r, 'tasks')
+      if (r.count === 0) {
+        return 'No tasks.'
+      }
+      return r.tasks
+        .map((t) => {
+          const label = t.display_name ?? t.task_title ?? t.spec
+          const head = `${t.id} [${t.status}] ${label.slice(0, 60)}`
+          if (t.status === 'dispatched' && t.assignee_handle) {
+            return `${head} -> ${t.assignee_handle} (${t.dispatch_id ?? '?'})`
+          }
+          return head
+        })
+        .join('\n')
     })
   },
 
@@ -640,24 +616,25 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
 
   'orchestration ask': async ({ flags, client, cwd, json }) => {
     const parsedTimeoutMs = getOptionalPositiveIntegerValueFlag(flags, 'timeout-ms')
+    const timeoutMs = clampOrchestrationAskTimeoutMs(parsedTimeoutMs)
     const from = await resolveOrchestrationTerminalHandle(flags, cwd, client, 'from')
-    const timeoutMs = parsedTimeoutMs ?? 600_000
     const result = await client.call<{
       answer: string | null
       messageId: string | null
       threadId: string
       timedOut: boolean
+      timeoutMs?: number
     }>(
       'orchestration.ask',
       {
         to: getRequiredStringFlag(flags, 'to'),
         question: getRequiredStringFlag(flags, 'question'),
         options: getOptionalStringFlag(flags, 'options'),
-        timeoutMs: parsedTimeoutMs,
+        timeoutMs: parsedTimeoutMs === undefined ? undefined : timeoutMs,
         from
       },
       // Why: extend past timeoutMs so the RPC transport's 60s default doesn't abort before the runtime's own timeout resolves.
-      { timeoutMs: timeoutMs + 5_000 }
+      { timeoutMs: resolveOrchestrationAskClientTimeoutMs(parsedTimeoutMs) }
     )
     // Why: bypass printResult so --json emits a bare JSON object (no envelope) pipeable via `jq -r .answer`, unlike other verbs.
     if (json) {
@@ -667,7 +644,9 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
     }
     if (result.result.timedOut) {
       if (!json) {
-        console.error(`ask timeout after ${timeoutMs}ms (thread ${result.result.threadId})`)
+        // Why: report the server's effective budget — it clamps large values, so the requested one would overstate the wait.
+        const waitedMs = result.result.timeoutMs ?? timeoutMs
+        console.error(`ask timeout after ${waitedMs}ms (thread ${result.result.threadId})`)
       }
       process.exitCode = 1
     }
@@ -751,18 +730,17 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
     const result = await client.call<{
       gates: { id: string; task_id: string; question: string; status: string }[]
       count: number
-      total?: number
-      truncated?: boolean
     }>('orchestration.gateList', {
       task: getOptionalStringFlag(flags, 'task'),
       status: getOptionalStringFlag(flags, 'status')
     })
     printResult(result, json, (r) => {
-      const body =
-        r.gates.length === 0
-          ? 'No gates found.'
-          : r.gates.map((g) => `${g.id} task=${g.task_id} [${g.status}] "${g.question}"`).join('\n')
-      return appendOrchestrationRetentionNotice(body, r, 'gates')
+      if (r.gates.length === 0) {
+        return 'No gates found.'
+      }
+      return r.gates
+        .map((g) => `${g.id} task=${g.task_id} [${g.status}] "${g.question}"`)
+        .join('\n')
     })
   },
 

@@ -51,6 +51,7 @@ import { NotificationsPane } from './NotificationsPane'
 import { VoicePane } from './VoicePane'
 import { SshPane } from './SshPane'
 import { ExperimentalPane } from './ExperimentalPane'
+import { PluginsSettingsSection } from './PluginsSettingsSection'
 import { AgentsPane } from './AgentsPane'
 import { OrchestrationPane } from './OrchestrationPane'
 import { LinearAgentSkillPane } from './LinearAgentSkillPane'
@@ -82,7 +83,6 @@ import {
 import { getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
 import { getShortcutPlatform } from '@/lib/shortcut-platform'
 import { keybindingMatchesAction } from '../../../../shared/keybindings'
-import { forEachWithConcurrency } from '../../../../shared/map-with-concurrency'
 import {
   isWebClientLocation,
   useSettingsNavigationMetadata
@@ -174,7 +174,6 @@ const SETTINGS_NAV_GROUP_BY_ID = new Map<string, SettingsNavGroupDefinition>(
 
 const SHORTCUTS_ESCAPE_CONFIRM_TOAST_ID = 'shortcuts-escape-confirm'
 const SHORTCUTS_ESCAPE_CONFIRM_WINDOW_MS = 2200
-const REPO_HOOK_PROBE_CONCURRENCY = 4
 
 function getSettingsSectionId(
   pane: SettingsNavTarget,
@@ -282,6 +281,7 @@ function Settings(): React.JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const keybindings = useAppStore((s) => s.keybindings)
   const updateSettings = useAppStore((s) => s.updateSettings)
+  const updateSettingsOrThrow = useAppStore((s) => s.updateSettingsOrThrow)
   const setActiveRuntimeEnvironmentPreference = useAppStore(
     (s) => s.setActiveRuntimeEnvironmentPreference
   )
@@ -647,7 +647,7 @@ function Settings(): React.JSX.Element {
     }
     pendingNavSectionRef.current = paneSectionId
     pendingScrollTargetRef.current = settingsNavigationTarget.sectionId ?? paneSectionId
-    // Why: force Appearance's collapsed status-bar accordion open before scrolling so the row is visible.
+    // Why: ensure Appearance's nested status-bar section is open before scrolling so the row is visible.
     if (settingsNavigationTarget.pane === 'appearance') {
       const accordion = resolveAppearanceAccordionDeepLink(settingsNavigationTarget.sectionId)
       if (accordion) {
@@ -911,62 +911,61 @@ function Settings(): React.JSX.Element {
     const requestSeq = ++repoHooksRequestSeqRef.current
     const liveRepoHostIdentities = new Set(repos.map(getRepoHostIdentity))
 
-    void forEachWithConcurrency(neededRepos, REPO_HOOK_PROBE_CONCURRENCY, async (repo) => {
-      if (stale || requestSeq !== repoHooksRequestSeqRef.current) {
-        return
-      }
-      const repoHostIdentity = getRepoHostIdentity(repo)
-      if (isFolderRepo(repo)) {
-        setRepoHooksMap((previous) => {
-          if (previous[repoHostIdentity]) {
-            return previous
-          }
-          return {
-            ...previous,
-            [repoHostIdentity]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
-          }
-        })
-        return
-      }
-      try {
-        const hostId = getRepoExecutionHostId(repo)
-        const parsedHost = parseExecutionHostId(hostId)
-        const result = await checkRuntimeHooks(
-          {
-            activeRuntimeEnvironmentId:
-              parsedHost?.kind === 'runtime' ? parsedHost.environmentId : null
-          },
-          repo.id,
-          hostId
-        )
-        if (stale || requestSeq !== repoHooksRequestSeqRef.current) {
+    void Promise.all(
+      neededRepos.map(async (repo) => {
+        const repoHostIdentity = getRepoHostIdentity(repo)
+        if (isFolderRepo(repo)) {
+          setRepoHooksMap((previous) => {
+            if (previous[repoHostIdentity]) {
+              return previous
+            }
+            return {
+              ...previous,
+              [repoHostIdentity]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
+            }
+          })
           return
         }
-        setRepoHooksMap((previous) => {
-          if (!liveRepoHostIdentities.has(repoHostIdentity)) {
-            return previous
+        try {
+          const hostId = getRepoExecutionHostId(repo)
+          const parsedHost = parseExecutionHostId(hostId)
+          const result = await checkRuntimeHooks(
+            {
+              activeRuntimeEnvironmentId:
+                parsedHost?.kind === 'runtime' ? parsedHost.environmentId : null
+            },
+            repo.id,
+            hostId
+          )
+          if (stale || requestSeq !== repoHooksRequestSeqRef.current) {
+            return
           }
-          return { ...previous, [repoHostIdentity]: result }
-        })
-      } catch {
-        // Keep last known value on transient failures.
-        if (stale || requestSeq !== repoHooksRequestSeqRef.current) {
-          return
+          setRepoHooksMap((previous) => {
+            if (!liveRepoHostIdentities.has(repoHostIdentity)) {
+              return previous
+            }
+            return { ...previous, [repoHostIdentity]: result }
+          })
+        } catch {
+          // Keep last known value on transient failures.
+          if (stale || requestSeq !== repoHooksRequestSeqRef.current) {
+            return
+          }
+          setRepoHooksMap((previous) => {
+            if (!liveRepoHostIdentities.has(repoHostIdentity)) {
+              return previous
+            }
+            if (previous[repoHostIdentity]) {
+              return previous
+            }
+            return {
+              ...previous,
+              [repoHostIdentity]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
+            }
+          })
         }
-        setRepoHooksMap((previous) => {
-          if (!liveRepoHostIdentities.has(repoHostIdentity)) {
-            return previous
-          }
-          if (previous[repoHostIdentity]) {
-            return previous
-          }
-          return {
-            ...previous,
-            [repoHostIdentity]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
-          }
-        })
-      }
-    })
+      })
+    )
 
     return () => {
       stale = true
@@ -977,7 +976,7 @@ function Settings(): React.JSX.Element {
     const scrollTargetId = pendingScrollTargetRef.current
     const pendingNavSectionId = pendingNavSectionRef.current
 
-    // Why: subsection deep links clear a stale filter that could hide the target row; pane-level links keep it to force-open the matching accordion.
+    // Why: subsection deep links clear a stale filter that could hide the target row; pane-level links keep it to force-open the matching section.
     if (
       scrollTargetId &&
       pendingNavSectionId &&
@@ -1726,6 +1725,14 @@ function Settings(): React.JSX.Element {
                     />
                   ) : null}
                 </SettingsSection>
+
+                {showDesktopOnlySettings ? (
+                  <PluginsSettingsSection
+                    mounted={isSectionMounted('plugins')}
+                    settings={settings}
+                    updateSettings={updateSettingsOrThrow}
+                  />
+                ) : null}
 
                 {settingsProjectList.map((settingsProject) => {
                   const repoSectionId = `repo-${settingsProject.representativeRepoId}`

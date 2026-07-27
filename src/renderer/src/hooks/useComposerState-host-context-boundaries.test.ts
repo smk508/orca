@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   canResolveFolderSmartGitHubSubmit,
-  COMPOSER_PROJECT_LOOKUP_CONCURRENCY,
   getInitialAutoManagedWorkspaceName,
   isExplicitWorkspaceNameInput,
   resolveSmartGitHubCreateNames,
@@ -11,6 +10,10 @@ import {
 } from './useComposerState'
 
 const HOOK_SOURCE = readFileSync(join(__dirname, 'useComposerState.ts'), 'utf8')
+const RECIPE_OPTIONS_SOURCE = readFileSync(
+  join(__dirname, 'useEphemeralVmRecipeOptions.ts'),
+  'utf8'
+)
 
 function sourceBetween(source: string, startPattern: string, endPattern: string): string {
   const start = source.indexOf(startPattern)
@@ -403,10 +406,7 @@ describe('useComposerState host-context boundaries', () => {
     )
     expect(lookupSection).toContain('isProjectGroupTarget')
     expect(lookupSection).toContain('folderSourceRepos.filter(isGitRepoKind)')
-    expect(COMPOSER_PROJECT_LOOKUP_CONCURRENCY).toBe(4)
-    expect(lookupSection).toContain('await mapWithConcurrency(')
-    expect(lookupSection).toContain('COMPOSER_PROJECT_LOOKUP_CONCURRENCY')
-    expect(lookupSection).not.toContain('Promise.all')
+    expect(lookupSection).toContain('Promise.all')
     expect(lookupSection).toContain('buildTaskSourceContextFromRepo')
 
     const section = sourceBetween(
@@ -708,8 +708,12 @@ describe('useComposerState host-context boundaries', () => {
       'const selectedRepoConnectionId'
     )
     expect(recipeLoadSection).toContain('settings?.experimentalEphemeralVms === true')
-    expect(recipeLoadSection).toContain('!ephemeralVmsEnabled')
-    expect(recipeLoadSection).toContain('window.api.ephemeralVm')
+    expect(recipeLoadSection).toContain('useEphemeralVmRecipeOptions')
+    expect(recipeLoadSection).toContain('enabled: ephemeralVmsEnabled')
+    expect(RECIPE_OPTIONS_SOURCE).toContain('args.enabled &&')
+    expect(RECIPE_OPTIONS_SOURCE).toContain('window.api.ephemeralVm')
+    expect(RECIPE_OPTIONS_SOURCE).toContain('window.api.plugins.onChanged')
+    expect(RECIPE_OPTIONS_SOURCE).toContain('requestGeneration')
 
     const submitSection = sourceBetween(
       HOOK_SOURCE,

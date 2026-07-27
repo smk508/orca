@@ -3,10 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { gitExecFileAsyncMock, getSshGitProviderMock } = vi.hoisted(() => ({
-  gitExecFileAsyncMock: vi.fn(),
-  getSshGitProviderMock: vi.fn()
-}))
+const { gitExecFileAsyncMock, getSshGitProviderGenerationMock, getSshGitProviderMock } = vi.hoisted(
+  () => ({
+    gitExecFileAsyncMock: vi.fn(),
+    getSshGitProviderGenerationMock: vi.fn(() => 0),
+    getSshGitProviderMock: vi.fn()
+  })
+)
 
 vi.mock('../git/runner', () => ({
   gitExecFileAsync: gitExecFileAsyncMock,
@@ -14,6 +17,7 @@ vi.mock('../git/runner', () => ({
 }))
 
 vi.mock('../providers/ssh-git-dispatch', () => ({
+  getSshGitProviderGeneration: getSshGitProviderGenerationMock,
   getSshGitProvider: getSshGitProviderMock
 }))
 
@@ -38,6 +42,8 @@ import {
 describe('github owner/repo resolution', () => {
   beforeEach(() => {
     gitExecFileAsyncMock.mockReset()
+    getSshGitProviderGenerationMock.mockReset()
+    getSshGitProviderGenerationMock.mockReturnValue(0)
     getSshGitProviderMock.mockReset()
     _resetOwnerRepoCache()
     __resetLocalGitConfigSignatureCacheForTests()
@@ -674,35 +680,6 @@ describe('github owner/repo resolution', () => {
       })
 
       expect(secondSignature).not.toEqual(firstSignature)
-    } finally {
-      await rm(repoPath, { recursive: true, force: true })
-    }
-  })
-
-  it('parses exact-limit config files and safely skips oversized include graphs', async () => {
-    const repoPath = await mkdtemp(join(tmpdir(), 'orca-gh-utils-'))
-    const gitDir = join(repoPath, '.git')
-    const includedConfigPath = join(repoPath, 'included.gitconfig')
-    const configPath = join(gitDir, 'config')
-    const maxConfigBytes = 4 * 1024 * 1024
-    await mkdir(gitDir)
-    await writeFile(includedConfigPath, '[user]\n\tname = first\n')
-    const includePrefix = `[include]\n\tpath = "${includedConfigPath}"\n#`
-    await writeFile(configPath, includePrefix + 'x'.repeat(maxConfigBytes - includePrefix.length))
-    try {
-      const exactFirst = await readLocalGitConfigSignature({ repoPath, connectionId: null })
-      await writeFile(includedConfigPath, '[user]\n\tname = exact-limit-change\n')
-      const exactSecond = await readLocalGitConfigSignature({ repoPath, connectionId: null })
-      expect(exactSecond).not.toEqual(exactFirst)
-
-      await writeFile(
-        configPath,
-        includePrefix + 'x'.repeat(maxConfigBytes + 1 - includePrefix.length)
-      )
-      const oversizedFirst = await readLocalGitConfigSignature({ repoPath, connectionId: null })
-      await writeFile(includedConfigPath, '[user]\n\tname = ignored-oversized-change\n')
-      const oversizedSecond = await readLocalGitConfigSignature({ repoPath, connectionId: null })
-      expect(oversizedSecond).toEqual(oversizedFirst)
     } finally {
       await rm(repoPath, { recursive: true, force: true })
     }

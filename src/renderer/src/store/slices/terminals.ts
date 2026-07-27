@@ -52,6 +52,7 @@ import { forgetAgentStartupDeliveriesForTabs } from '@/lib/agent-startup-deliver
 import { clearTransientTerminalState, emptyLayoutSnapshot } from './terminal-helpers'
 import { pushClosedTerminalTabSnapshot, pushRecentlyClosedTabKind } from './recently-closed-tabs'
 import { isClaudeAgent } from '@/lib/agent-status'
+import { recordTerminalInputActivity } from '@/lib/terminal-input-activity-coalescing'
 import { classifyTitleActivity } from '@/lib/pane-agent-evidence'
 import { buildOrphanTerminalCleanupPatch, getOrphanTerminalIds } from './terminal-orphan-helpers'
 import {
@@ -71,7 +72,6 @@ import {
   disposeParkedTerminalWatchersForPtyIds,
   retireParkedTerminalTab
 } from '@/components/terminal-pane/terminal-parked-watcher-registry'
-import { forgetRetiredTerminalPaneRecovery } from '@/components/terminal-pane/terminal-pane-recovery-retirement'
 import {
   clearCommittedPtyShutdownSettlements,
   hasCommittedPtyShutdownSettlement,
@@ -80,11 +80,9 @@ import {
   settleDeferredPtyShutdownExits
 } from '@/components/terminal-pane/pty-shutdown-exit-deferral'
 import {
-  collectTerminalLayoutLeafIds,
   normalizeTerminalLayoutSnapshot,
   resolvePtyBoundActiveLeafId
 } from '@/components/terminal-pane/terminal-layout-leaf-ids'
-import { releaseTerminalScrollIntentKeys } from '@/lib/pane-manager/terminal-scroll-intent'
 import { shutdownBufferCaptures } from '@/components/terminal-pane/shutdown-buffer-captures'
 import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
 import { parseRemoteRuntimePtyId, toRemoteRuntimePtyId } from '@/runtime/runtime-terminal-stream'
@@ -116,6 +114,7 @@ import {
 } from './agent-status'
 import {
   buildTerminalTabRetirementPlan,
+  classifyTerminalRetirementWorktree,
   isTerminalTabPresent,
   removeSleepingAgentSessionsForTab,
   type TerminalTabCloseReason,
@@ -844,12 +843,33 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
     if (!paneKey || !Number.isFinite(timestamp)) {
       return
     }
-    set((s) => ({
-      lastTerminalInputAtByPaneKey: {
-        ...s.lastTerminalInputAtByPaneKey,
-        [paneKey]: timestamp
+    recordTerminalInputActivity({
+      paneKey,
+      timestamp,
+      // Why: the first stamp for a pane must land synchronously; automation take-over
+      // detection subscribes and compares undefined→value across a launch.
+      forceWrite: get().lastTerminalInputAtByPaneKey[paneKey] === undefined,
+      commit: {
+        insert: (key, at) =>
+          set((s) => ({
+            lastTerminalInputAtByPaneKey: { ...s.lastTerminalInputAtByPaneKey, [key]: at }
+          })),
+        refreshExisting: (entries) =>
+          set((s) => {
+            let next: Record<string, number> | null = null
+            for (const [key, at] of entries) {
+              // Why: teardown (close pane/tab/worktree purge) deletes keys; a late flush must not resurrect them.
+              const current = s.lastTerminalInputAtByPaneKey[key]
+              if (current === undefined || current >= at) {
+                continue
+              }
+              next ??= { ...s.lastTerminalInputAtByPaneKey }
+              next[key] = at
+            }
+            return next ? { lastTerminalInputAtByPaneKey: next } : {}
+          })
       }
-    }))
+    })
   },
 
   setCacheTimerStartedAt: (key, ts) => {
@@ -1164,14 +1184,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       opts?.precomputedRetirementPlan?.tabId === tabId
         ? opts.precomputedRetirementPlan
         : buildTerminalTabRetirementPlan(get(), tabId)
-    const retiringScrollIntentLeafIds = collectTerminalLayoutLeafIds(
-      get().terminalLayoutsByTabId[tabId]
-    )
     let closingWorktreeId: string | null = null
 
     // Why: a parked tab has no mounted TerminalPane cleanup, so revoke its observer/candidate state before provider exit races.
     retireParkedTerminalTab(tabId)
-    forgetRetiredTerminalPaneRecovery(tabId)
     if (retiresSession) {
       const fallbackWorktreeRoute = retirementPlan.worktreeId
         ? resolveTerminalWorktreeRoute(get(), retirementPlan.worktreeId)
@@ -1197,8 +1213,11 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
         }
       }
       if (retirementPlan.unroutablePtyIds.length > 0) {
-        console.warn('[terminal-retirement] skipped unroutable runtime handles', {
+        // Why: log the worktree SHAPE, never the id — worktree ids embed absolute paths. The old
+        // "runtime handles" wording described ids that are usually plain local ones, hiding STA-2639.
+        console.warn('[terminal-retirement] skipped PTYs with no resolvable owner', {
           tabId,
+          worktreeKind: classifyTerminalRetirementWorktree(retirementPlan.worktreeId),
           count: retirementPlan.unroutablePtyIds.length
         })
       }
@@ -1412,7 +1431,6 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
           : {})
       }
     })
-    releaseTerminalScrollIntentKeys(retiringScrollIntentLeafIds)
     // Why: closing a tab sweeps live and retained agent-status for it; use dropAgentStatusByTabPrefix so retention suppressors block a same-frame live→gone re-snapshot.
     // Why: Pi can leave a completed row keyed under an already-missing tab id; pass the worktree to sweep that orphan while preserving active pre-render child rows.
     get().dropAgentStatusByTabPrefix(

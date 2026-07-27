@@ -127,6 +127,7 @@ import {
   type NewWorkspaceProjectOption
 } from '@/lib/new-workspace-project-options'
 import { useDetectedAgents } from '@/hooks/useDetectedAgents'
+import { useEphemeralVmRecipeOptions } from '@/hooks/useEphemeralVmRecipeOptions'
 import {
   getFolderSourceRepos,
   getLinkedItemDisplayName,
@@ -144,13 +145,11 @@ import {
   type ExecutionHostId
 } from '../../../shared/execution-host'
 import { getHostDisplayLabelOverrides } from '../../../shared/host-setting-overrides'
-import { mapWithConcurrency } from '../../../shared/map-with-concurrency'
 import { queueNewWorkspaceTerminalFocus } from '@/lib/new-workspace-terminal-focus'
 import { getSettingsForRepoRuntimeOwner } from '@/lib/repo-runtime-owner'
 import { getSuggestedCreatureName } from '@/components/sidebar/worktree-name-suggestions'
 import type { SmartWorkspaceNameSelection } from '@/components/new-workspace/SmartWorkspaceNameField'
 import type { SmartNameMode } from '@/components/new-workspace/smart-workspace-source-results'
-
 import { getForkPushWarning } from './fork-push-warning'
 import {
   buildWorkspaceSourceSelection,
@@ -186,8 +185,6 @@ import {
   shouldReportComposerDropUploadFailure
 } from './composer-drop-upload-result'
 import { translate } from '@/i18n/i18n'
-
-export const COMPOSER_PROJECT_LOOKUP_CONCURRENCY = 4
 
 export function canResolveFolderSmartGitHubSubmit({
   hasFolderSourceRepos
@@ -727,13 +724,6 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
   )
   const selectedRepo = eligibleRepos.find((repo) => repo.id === repoId)
   const selectedRepoIsGit = selectedRepo ? isGitRepoKind(selectedRepo) : false
-  const [ephemeralVmRecipes, setEphemeralVmRecipes] = useState<
-    NonNullable<OrcaHooks['environmentRecipes']>
-  >([])
-  const [selectedEphemeralVmRecipeId, setSelectedEphemeralVmRecipeId] = useState<string | null>(
-    null
-  )
-  const [ephemeralVmRecipeError, setEphemeralVmRecipeError] = useState<string | null>(null)
   const selectedRepoAgentLaunchPlatform = useMemo(() => {
     if (!selectedRepo) {
       return CLIENT_PLATFORM
@@ -826,64 +816,19 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
   const selectedRecipeRepoConnectionId = selectedRepo?.connectionId ?? null
   // Why: gate recipe probing on the experimental toggle, since discovery can surface setup errors for a hidden feature.
   const ephemeralVmsEnabled = settings?.experimentalEphemeralVms === true
-  useEffect(() => {
-    let cancelled = false
-    setEphemeralVmRecipes([])
-    setSelectedEphemeralVmRecipeId(null)
-    setEphemeralVmRecipeError(null)
-    if (
-      !ephemeralVmsEnabled ||
-      !selectedRecipeRepoId ||
-      !selectedRepoIsGit ||
-      selectedRecipeRepoConnectionId ||
-      isProjectGroupTarget
-    ) {
-      return () => {
-        cancelled = true
-      }
-    }
-    void window.api.ephemeralVm
-      .listRecipes({ repoId: selectedRecipeRepoId })
-      .then((result) => {
-        if (cancelled) {
-          return
-        }
-        setEphemeralVmRecipes(result.recipes ?? [])
-        setSelectedEphemeralVmRecipeId(
-          initialEphemeralVmRecipeId &&
-            result.recipes?.some((recipe) => recipe.id === initialEphemeralVmRecipeId)
-            ? initialEphemeralVmRecipeId
-            : null
-        )
-        const diagnosticMessages = (result.diagnostics ?? []).map((diagnostic) => {
-          const recipeLabel = `environmentRecipes[${diagnostic.index}]`
-          const fieldLabel = diagnostic.field ? `.${diagnostic.field}` : ''
-          return `${recipeLabel}${fieldLabel}: ${diagnostic.message}`
-        })
-        setEphemeralVmRecipeError(
-          [result.status === 'error' ? result.message : null, ...diagnosticMessages]
-            .filter((message): message is string => Boolean(message))
-            .join('\n') || null
-        )
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return
-        }
-        setEphemeralVmRecipes([])
-        setEphemeralVmRecipeError(error instanceof Error ? error.message : String(error))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [
-    ephemeralVmsEnabled,
-    initialEphemeralVmRecipeId,
-    isProjectGroupTarget,
-    selectedRecipeRepoConnectionId,
-    selectedRecipeRepoId,
-    selectedRepoIsGit
-  ])
+  const {
+    recipes: ephemeralVmRecipes,
+    selectedRecipeId: selectedEphemeralVmRecipeId,
+    setSelectedRecipeId: setSelectedEphemeralVmRecipeId,
+    error: ephemeralVmRecipeError
+  } = useEphemeralVmRecipeOptions({
+    enabled: ephemeralVmsEnabled,
+    repoId: selectedRecipeRepoId,
+    repoIsGit: selectedRepoIsGit,
+    repoConnectionId: selectedRecipeRepoConnectionId,
+    projectGroupTarget: isProjectGroupTarget,
+    initialRecipeId: initialEphemeralVmRecipeId
+  })
   const selectedRepoConnectionId = selectedRepo?.connectionId ?? null
   const selectedRepoSshState = selectedRepoConnectionId
     ? (sshConnectionStates.get(selectedRepoConnectionId) ?? null)
@@ -2070,10 +2015,8 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
 
       const item = isProjectGroupTarget
         ? (
-            await mapWithConcurrency(
-              folderSourceRepos.filter(isGitRepoKind),
-              COMPOSER_PROJECT_LOOKUP_CONCURRENCY,
-              (repo) =>
+            await Promise.all(
+              folderSourceRepos.filter(isGitRepoKind).map((repo) =>
                 lookupSmartGitHubSubmitItem({
                   repoPath: repo.path,
                   repoId: repo.id,
@@ -2086,6 +2029,7 @@ export function useComposerState(options: UseComposerStateOptions): UseComposerS
                   workItem: lookupGitHubWorkItemForSource,
                   workItemByOwnerRepo: lookupGitHubWorkItemByOwnerRepoForSource
                 }).catch(() => null)
+              )
             )
           )
             .filter((candidate): candidate is GitHubWorkItem => candidate !== null)

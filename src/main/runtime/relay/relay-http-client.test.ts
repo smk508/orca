@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import nacl from 'tweetnacl'
-import {
-  API_RESPONSE_MAX_BYTES,
-  FetchResponseBodyTooLargeError
-} from '../../lib/fetch-response-body'
 import { cancelTrackingResponse } from '../../lib/unread-response-body.test-fixtures'
 import { exchangeRelayAuthorization, requestRelayAssignment } from './relay-http-client'
 
@@ -57,6 +53,49 @@ describe('relay HTTP client', () => {
     expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({
       authorization: 'Bearer scoped-token'
     })
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('aborts a blackholed assignment request so recovery can retry', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async (_url, init) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })
+    )
+
+    await expect(
+      requestRelayAssignment({
+        directorUrl: 'https://relay.example',
+        relayToken: 'scoped-token',
+        relayHostId: 'AbCdEf0123_-xyZ9',
+        requestDeadlineMs: 5,
+        fetch
+      })
+    ).rejects.toMatchObject({ name: 'TimeoutError' })
+  })
+
+  it('aborts a blackholed token exchange so recovery can retry', async () => {
+    const keypair = nacl.box.keyPair()
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async (_url, init) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })
+    )
+
+    await expect(
+      exchangeRelayAuthorization({
+        endpoint: 'https://auth.example/v1/desktop/auth/relay-token',
+        accessToken: 'ordinary-access-token',
+        keypair: {
+          ...keypair,
+          publicKeyB64: Buffer.from(keypair.publicKey).toString('base64')
+        },
+        requestDeadlineMs: 5,
+        fetch
+      })
+    ).rejects.toMatchObject({ name: 'TimeoutError' })
   })
 
   it('rejects data-plane supplied non-origin URLs', async () => {
@@ -109,20 +148,10 @@ describe('relay HTTP client', () => {
     expect(cancelledBodies).toBe(2)
   })
 
-  it('rejects oversized successful responses from injected standard fetch clients', async () => {
-    let cancelled = false
-    const response = new Response(
-      new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array([123]))
-        },
-        cancel() {
-          cancelled = true
-        }
-      }),
-      { headers: { 'content-length': String(API_RESPONSE_MAX_BYTES + 1) } }
+  it('preserves a bounded Retry-After hint on assignment overload', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(null, { status: 503, headers: { 'retry-after': '30' } })
     )
-    const fetch = vi.fn<typeof globalThis.fetch>(async () => response)
 
     await expect(
       requestRelayAssignment({
@@ -131,7 +160,25 @@ describe('relay HTTP client', () => {
         relayHostId: 'AbCdEf0123_-xyZ9',
         fetch
       })
-    ).rejects.toBeInstanceOf(FetchResponseBodyTooLargeError)
-    expect(cancelled).toBe(true)
+    ).rejects.toMatchObject({
+      operation: 'assignment',
+      statusCode: 503,
+      retryAfterMs: 30_000
+    })
+  })
+
+  it('caps an excessive Retry-After hint at five minutes', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response(null, { status: 503, headers: { 'retry-after': '999999' } })
+    )
+
+    await expect(
+      requestRelayAssignment({
+        directorUrl: 'https://relay.example',
+        relayToken: 'scoped-token',
+        relayHostId: 'AbCdEf0123_-xyZ9',
+        fetch
+      })
+    ).rejects.toMatchObject({ retryAfterMs: 5 * 60_000 })
   })
 })

@@ -43,9 +43,10 @@ import { basename, dirname, joinPath } from '@/lib/path'
 import { cn } from '@/lib/utils'
 import { WORKSPACE_FILE_PATH_MIME } from '@/lib/workspace-file-drag'
 import { isFolderRepo } from '../../../../shared/repo-kind'
-import { mapSettledWithConcurrency } from '../../../../shared/map-with-concurrency'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
+import { ShortcutKeyCombo } from '@/components/ShortcutKeyCombo'
+import { getScreenSubmitModifierLabel, isScreenSubmitShortcut } from '@/lib/screen-submit-shortcut'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -96,6 +97,7 @@ import {
   namespaceSourceControlTreeDirectoryKeys,
   type SourceControlTreeNode
 } from './source-control-tree'
+import { compareGitStatusEntries } from './source-control-status-sort'
 import {
   collectListSelectionEntries,
   getSubmoduleExpansionKey,
@@ -534,7 +536,6 @@ const SOURCE_CONTROL_TREE_INDENT_PX = 12
 const SOURCE_CONTROL_TREE_DIRECTORY_PADDING_PX = 8
 const SOURCE_CONTROL_TREE_FILE_PADDING_PX = 20
 const CAPPED_STATUS_RETRY_TIMEOUT_MS = 15_000
-const SOURCE_CONTROL_QUIESCE_CONCURRENCY = 8
 const EMPTY_GIT_HISTORY_STATE: GitHistoryPanelState = { status: 'idle' }
 const DEFAULT_COLLAPSED_SECTIONS = ['history'] as const
 const SUBMODULE_WORKTREE_ONLY_LABEL = 'Stage inside submodule'
@@ -4710,6 +4711,13 @@ function SourceControlInner(): React.JSX.Element {
     runCreatePrIntent
   ])
 
+  const handleSourceControlKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>): void => {
+      handleSourceControlCommitShortcut(event, primaryAction, handlePrimaryClick)
+    },
+    [handlePrimaryClick, primaryAction]
+  )
+
   const handleCreatePrHeaderClick = useCallback((): void => {
     if (!createPrHeaderAction || createPrHeaderAction.disabled) {
       return
@@ -5248,23 +5256,16 @@ function SourceControlInner(): React.JSX.Element {
       const runtimeEnvironmentId =
         useAppStore.getState().settings?.activeRuntimeEnvironmentId?.trim() || null
       // Why: quiesce matching editor autosaves first so a delayed save can't recreate edits after git mutates the files.
-      const quiesces = await mapSettledWithConcurrency(
-        filePaths,
-        SOURCE_CONTROL_QUIESCE_CONCURRENCY,
-        (relativePath) =>
+      await Promise.all(
+        filePaths.map((relativePath) =>
           requestEditorSaveQuiesce({
             worktreeId: activeWorktreeId,
             worktreePath,
             relativePath,
             runtimeEnvironmentId
           })
+        )
       )
-      const failedQuiesce = quiesces.find(
-        (result): result is PromiseRejectedResult => result.status === 'rejected'
-      )
-      if (failedQuiesce) {
-        throw failedQuiesce.reason
-      }
       const connectionId = getConnectionId(activeWorktreeId) ?? undefined
       await bulkDiscardRuntimeGitPaths(
         {
@@ -5457,9 +5458,12 @@ function SourceControlInner(): React.JSX.Element {
 
   return (
     <>
-      <div ref={setSourceControlRoot} className="relative flex h-full flex-col overflow-hidden">
+      <div
+        ref={setSourceControlRoot}
+        className="relative flex h-full flex-col overflow-hidden"
+        onKeyDown={handleSourceControlKeyDown}
+      >
         <SourceControlHeaderToolbar
-          gitIdentityDisplay={gitIdentityDisplay}
           filterQuery={filterQuery}
           filterExpanded={filterExpanded}
           onFilterQueryChange={setFilterQuery}
@@ -5480,6 +5484,7 @@ function SourceControlInner(): React.JSX.Element {
           onExpandNotes={() => setDiffCommentsExpanded(true)}
           branchSummary={branchSummary}
           compareBaseRef={compareBaseRef}
+          headDisplay={gitIdentityDisplay}
           upstreamStatus={remoteStatus}
           manualReviewUrl={manualReviewUrl}
         />
@@ -6332,6 +6337,7 @@ function SourceControlInner(): React.JSX.Element {
         settings={settings}
         repo={activeRepo ?? null}
         discoveryHostKey={sourceControlAiDiscoveryHostKey}
+        linkedIssue={activeWorktree?.linkedIssue ?? null}
         onGenerate={(params) => {
           void handleGenerate({ sourceControlAiResolvedParams: params })
         }}
@@ -6353,6 +6359,7 @@ function SourceControlInner(): React.JSX.Element {
         settings={settings}
         repo={activeRepo ?? null}
         discoveryHostKey={sourceControlAiDiscoveryHostKey}
+        linkedIssue={activeWorktree?.linkedIssue ?? null}
         onGenerate={(params) => {
           void handleGeneratePullRequestFields({ sourceControlAiResolvedParams: params })
         }}
@@ -6364,6 +6371,20 @@ function SourceControlInner(): React.JSX.Element {
 
 const SourceControl = React.memo(SourceControlInner)
 export default SourceControl
+
+export function handleSourceControlCommitShortcut(
+  event: React.KeyboardEvent<HTMLElement>,
+  primaryAction: Pick<PrimaryAction, 'disabled' | 'kind'>,
+  onCommit: () => void
+): void {
+  if (primaryAction.disabled || primaryAction.kind !== 'commit' || !isScreenSubmitShortcut(event)) {
+    return
+  }
+  // Why: the handler lives on the Source Control root, so the shortcut cannot fire from the editor, terminal, or another sidebar tab.
+  event.preventDefault()
+  event.stopPropagation()
+  onCommit()
+}
 
 type CommitAreaProps = {
   worktreeId: string | null
@@ -6697,8 +6718,11 @@ export function CommitArea({
                 </Button>
               </span>
             </TooltipTrigger>
-            <TooltipContent side="top" sideOffset={6} className="max-w-72">
-              {primaryAction.title}
+            <TooltipContent side="top" sideOffset={6} className="flex max-w-72 items-center gap-2">
+              <span>{primaryAction.title}</span>
+              {primaryAction.kind === 'commit' ? (
+                <ShortcutKeyCombo keys={[getScreenSubmitModifierLabel(), 'Enter']} />
+              ) : null}
             </TooltipContent>
           </Tooltip>
           <DropdownMenu>
@@ -7830,6 +7854,7 @@ const UncommittedEntryRow = React.memo(function UncommittedEntryRow({
     <SourceControlEntryContextMenu
       currentWorktreeId={currentWorktreeId}
       absolutePath={joinPath(worktreePath, entry.path)}
+      relativePath={entry.path}
       connectionId={connectionId}
       onView={() => onOpen(entry)}
       onRevealInExplorer={onRevealInExplorer}
@@ -8079,6 +8104,7 @@ function BranchEntryRow({
     <SourceControlEntryContextMenu
       currentWorktreeId={currentWorktreeId}
       absolutePath={joinPath(worktreePath, entry.path)}
+      relativePath={entry.path}
       connectionId={connectionId}
       onView={() => onOpen()}
       onRevealInExplorer={onRevealInExplorer}
@@ -8187,21 +8213,4 @@ export function ActionButton({
       </TooltipContent>
     </Tooltip>
   )
-}
-
-function compareGitStatusEntries(a: GitStatusEntry, b: GitStatusEntry): number {
-  return (
-    getConflictSortRank(a) - getConflictSortRank(b) ||
-    a.path.localeCompare(b.path, undefined, { numeric: true })
-  )
-}
-
-function getConflictSortRank(entry: GitStatusEntry): number {
-  if (entry.conflictStatus === 'unresolved') {
-    return 0
-  }
-  if (entry.conflictStatus === 'resolved_locally') {
-    return 1
-  }
-  return 2
 }

@@ -21,6 +21,7 @@ const {
   subscribeRemoteRuntimeSharedControlRequestMock,
   getRemoteRuntimeSharedControlDiagnosticsMock,
   reconnectRemoteRuntimeSharedControlConnectionMock,
+  retryRemoteRuntimeSharedControlConnectionsNowMock,
   closeRemoteRuntimeRequestConnectionMock
 } = vi.hoisted(() => ({
   handleMock: vi.fn(),
@@ -35,6 +36,7 @@ const {
   subscribeRemoteRuntimeSharedControlRequestMock: vi.fn(),
   getRemoteRuntimeSharedControlDiagnosticsMock: vi.fn(),
   reconnectRemoteRuntimeSharedControlConnectionMock: vi.fn(),
+  retryRemoteRuntimeSharedControlConnectionsNowMock: vi.fn(),
   closeRemoteRuntimeRequestConnectionMock: vi.fn()
 }))
 
@@ -59,6 +61,7 @@ vi.mock('./runtime-environment-request-connections', () => ({
   subscribeRemoteRuntimeSharedControlRequest: subscribeRemoteRuntimeSharedControlRequestMock,
   getRemoteRuntimeSharedControlDiagnostics: getRemoteRuntimeSharedControlDiagnosticsMock,
   reconnectRemoteRuntimeSharedControlConnection: reconnectRemoteRuntimeSharedControlConnectionMock,
+  retryRemoteRuntimeSharedControlConnectionsNow: retryRemoteRuntimeSharedControlConnectionsNowMock,
   closeRemoteRuntimeRequestConnection: closeRemoteRuntimeRequestConnectionMock
 }))
 
@@ -115,6 +118,7 @@ describe('registerRuntimeEnvironmentHandlers', () => {
     getRemoteRuntimeSharedControlDiagnosticsMock.mockReset()
     getRemoteRuntimeSharedControlDiagnosticsMock.mockReturnValue(null)
     reconnectRemoteRuntimeSharedControlConnectionMock.mockReset()
+    retryRemoteRuntimeSharedControlConnectionsNowMock.mockReset()
     closeRemoteRuntimeRequestConnectionMock.mockReset()
   })
 
@@ -131,6 +135,7 @@ describe('registerRuntimeEnvironmentHandlers', () => {
       'runtimeEnvironments:resolve',
       'runtimeEnvironments:remove',
       'runtimeEnvironments:disconnect',
+      'runtimeEnvironments:retryConnectionsNow',
       'runtimeEnvironments:getStatus',
       'runtimeEnvironments:call',
       'runtimeEnvironments:subscribe',
@@ -153,9 +158,19 @@ describe('registerRuntimeEnvironmentHandlers', () => {
       'runtimeEnvironments:getStatus',
       'runtimeEnvironments:call',
       'runtimeEnvironments:subscribe',
-      'runtimeEnvironments:unsubscribe'
+      'runtimeEnvironments:unsubscribe',
+      'runtimeEnvironments:retryConnectionsNow'
     ])
     expect(removeAllListenersMock).toHaveBeenCalledWith('runtimeEnvironments:subscriptionBinary')
+  })
+
+  it('advances pending shared-control reconnects through IPC', async () => {
+    registerRuntimeEnvironmentHandlers(store as never)
+
+    const retryConnectionsNow = handler<undefined, void>('runtimeEnvironments:retryConnectionsNow')
+    await retryConnectionsNow(null, undefined)
+
+    expect(retryRemoteRuntimeSharedControlConnectionsNowMock).toHaveBeenCalledTimes(1)
   })
 
   it('stores, resolves, lists, and removes environments under Electron userData', async () => {
@@ -1379,56 +1394,6 @@ describe('registerRuntimeEnvironmentHandlers', () => {
     expect(close).toHaveBeenCalled()
     expect(destroyedListenerRemoved).toHaveBeenCalledWith('destroyed', expect.any(Function))
     markUsedSpy.mockRestore()
-  })
-
-  it('drops a queued old-peer frame after unsubscribe and transport invalidation', async () => {
-    registerRuntimeEnvironmentHandlers(store as never)
-    const close = vi.fn()
-    subscribeRemoteRuntimeRequestMock.mockResolvedValue({
-      requestId: 'queued-old-peer',
-      close,
-      sendBinary: vi.fn()
-    })
-
-    const add = handler<
-      { name: string; pairingCode: string },
-      { environment: { id: string; name: string } }
-    >('runtimeEnvironments:addFromPairingCode')
-    const added = await add(null, { name: 'desk', pairingCode: pairingCode() })
-    const senderSend = vi.fn()
-    const subscribe = handler<
-      { selector: string; method: string; subscriptionId: string },
-      { subscriptionId: string; requestId: string }
-    >('runtimeEnvironments:subscribe')
-    const result = await subscribe(
-      {
-        sender: {
-          id: 1,
-          isDestroyed: () => false,
-          send: senderSend,
-          once: vi.fn(),
-          removeListener: vi.fn()
-        }
-      },
-      {
-        selector: added.environment.id,
-        method: 'terminal.subscribe',
-        subscriptionId: 'queued-old-peer'
-      }
-    )
-    const callbacks = subscribeRemoteRuntimeRequestMock.mock.calls[0]![4] as {
-      onBinary: (bytes: Uint8Array<ArrayBufferLike>) => void
-    }
-    const unsubscribe = handler<{ subscriptionId: string }, { unsubscribed: boolean }>(
-      'runtimeEnvironments:unsubscribe'
-    )
-
-    expect(await unsubscribe({ sender: { id: 1 } }, result)).toEqual({ unsubscribed: true })
-    invalidateRuntimeEnvironmentTransport(added.environment.id)
-    callbacks.onBinary(new Uint8Array([1, 2, 3]))
-
-    expect(close).toHaveBeenCalledTimes(1)
-    expect(senderSend).not.toHaveBeenCalled()
   })
 
   it('closes streaming subscriptions when their saved runtime is removed', async () => {

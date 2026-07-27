@@ -39,7 +39,7 @@ import {
 import { isTuiAgent } from '../../shared/tui-agent-config'
 import { invalidateAuthorizedRootsCache } from './filesystem-auth'
 import type { ChildProcess } from 'node:child_process'
-import { access, mkdir, rm } from 'node:fs/promises'
+import { access, mkdir, readdir, rm } from 'node:fs/promises'
 import { gitExecFileAsync, gitSpawn, nonInteractiveGitEnv } from '../git/runner'
 import { isAbsolute, join, posix } from 'node:path'
 import {
@@ -59,6 +59,7 @@ import { createNestedRepoImportTargetResolver } from '../project-groups/nested-r
 import {
   isGitRepo,
   getGitRepoRoot,
+  getLinkedWorktreeMainRepoRoot,
   getRepoName,
   getBaseRefDefault,
   getRemoteCount,
@@ -78,7 +79,6 @@ import { getSshGitUsername, resolveLocalGitUsername } from '../git/git-username'
 import { enrichRepoGitUsernames } from '../repo-git-username-enrichment'
 import { getActiveMultiplexer } from './ssh'
 import { normalizeSparseDirectories } from './sparse-checkout-directories'
-import { isRepoTargetDirectoryEmpty } from './repo-target-directory-emptiness'
 import { track } from '../telemetry/client'
 import { scheduleCurrentWorktreeBaseDirectoryWatcherSync } from './worktree-base-directory-watcher'
 import { getCohortAtEmit } from '../telemetry/cohort-classifier'
@@ -101,7 +101,6 @@ import {
 import { getGitCloneFailureMessage } from '../../shared/git-clone-failure-message'
 import { prepareLocalWorktreeRootForRepo } from '../worktree-root-preparation'
 import { runWithGitReadCacheInvalidation } from '../git/status'
-import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 
 // Why: `method` is the IPC entry point the user took, not what they added (never path/URL/name); repos:create → 'folder_picker'.
 // Why: `isGitRepo` is a non-identifying git-vs-folder signal from the caller's detection; pass undefined when unknown, never default false.
@@ -194,6 +193,29 @@ async function addLocalRepoFromPath(
       )
     if (existingAfterRootResolve) {
       return { repo: existingAfterRootResolve, alreadyExisted: true }
+    }
+  }
+
+  // Why: a linked worktree reports itself as its own toplevel, so the path checks above can't see that
+  // it belongs to an already-tracked repo. Adding it anyway yields a second "ready" host setup on the
+  // same project and host — a duplicate run-target row that resolves to a transient worktree path.
+  if (repoKind === 'git') {
+    const mainRepoRoot = getLinkedWorktreeMainRepoRoot(resolvedPath)
+    if (mainRepoRoot) {
+      const mainRepoKey = normalizeRuntimePathForComparison(mainRepoRoot)
+      // Why !isFolderRepo: only a git-kind main checkout projects onto the same project as its
+      // worktree, so matching a folder record would suppress the add without deduping anything.
+      const trackedMainRepo = store
+        .getRepos()
+        .find(
+          (repo) =>
+            !repo.connectionId &&
+            !isFolderRepo(repo) &&
+            normalizeRuntimePathForComparison(repo.path) === mainRepoKey
+        )
+      if (trackedMainRepo) {
+        return { repo: trackedMainRepo, alreadyExisted: true }
+      }
     }
   }
 
@@ -1094,11 +1116,7 @@ async function runNestedRepoScanForIpc(
   }
 }
 
-export function registerRepoHandlers(
-  mainWindow: BrowserWindow,
-  store: Store,
-  runtime?: OrcaRuntimeService
-): void {
+export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): void {
   // Remove previously registered handlers so we can re-register on macOS app re-activation (new window).
   ipcMain.removeHandler('repos:list')
   ipcMain.removeHandler('repos:add')
@@ -1745,7 +1763,8 @@ export function registerRepoHandlers(
 
       if (targetExists) {
         try {
-          if (!(await isRepoTargetDirectoryEmpty(targetPath))) {
+          const entries = await readdir(targetPath)
+          if (entries.length > 0) {
             return {
               error: `"${name}" already exists at this location and is not empty.`
             }
@@ -1883,7 +1902,6 @@ export function registerRepoHandlers(
 
   ipcMain.handle('repos:remove', async (_event, args: { repoId: string }) => {
     store.removeProject(args.repoId)
-    runtime?.notifyRepoStoreChanged(args.repoId)
     invalidateAuthorizedRootsCache()
     notifyReposChanged(mainWindow)
   })
@@ -1897,7 +1915,6 @@ export function registerRepoHandlers(
         throw new Error(`Invalid host ID: ${args.hostId}`)
       }
       store.removeProjectForHost(args.repoId, hostId)
-      runtime?.notifyRepoStoreChanged(args.repoId)
       invalidateAuthorizedRootsCache()
       notifyReposChanged(mainWindow)
     }

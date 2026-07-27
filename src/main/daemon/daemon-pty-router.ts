@@ -1,4 +1,5 @@
 import type { DaemonPtyAdapter } from './daemon-pty-adapter'
+import { combineUnsubscribes } from './combine-unsubscribes'
 import type {
   IPtyProvider,
   PtyBackgroundStreamEvent,
@@ -8,10 +9,7 @@ import type {
   PtySpawnResult
 } from '../providers/types'
 import type { PtyIncarnationId } from '../../shared/pty-incarnation'
-import {
-  collectPtyProcessListings,
-  PtyProcessListAdmission
-} from '../providers/pty-process-list-admission'
+import type { PtyProcessInspection } from '../providers/pty-process-inspection'
 
 export class DaemonPtyRouter implements IPtyProvider {
   private current: DaemonPtyAdapter
@@ -53,12 +51,10 @@ export class DaemonPtyRouter implements IPtyProvider {
   }
 
   async discoverLegacySessions(): Promise<void> {
-    const admission = new PtyProcessListAdmission()
     for (const adapter of this.legacy) {
       try {
         const sessions = await adapter.listProcesses()
-        for (const rawSession of sessions) {
-          const session = admission.admit(rawSession)
+        for (const session of sessions) {
           this.sessionAdapters.set(session.id, adapter)
         }
       } catch (error) {
@@ -195,9 +191,7 @@ export class DaemonPtyRouter implements IPtyProvider {
     return this.adapterFor(id).getForegroundProcess(id)
   }
 
-  async inspectProcess(
-    id: string
-  ): Promise<{ foregroundProcess: string | null; hasChildProcesses: boolean }> {
+  async inspectProcess(id: string): Promise<PtyProcessInspection> {
     return this.adapterForInspection(id).inspectProcess(id)
   }
 
@@ -216,9 +210,10 @@ export class DaemonPtyRouter implements IPtyProvider {
   async listProcesses(opts?: { deadlineMs?: number }): Promise<PtyProcessInfo[]> {
     // Why: runtime exact-stop/liveness flows must fail closed if any adapter
     // cannot provide a trustworthy process list.
-    return await collectPtyProcessListings(this.allAdapters(), (adapter) =>
-      adapter.listProcesses(opts)
+    const results = await Promise.all(
+      this.allAdapters().map((adapter) => adapter.listProcesses(opts))
     )
+    return results.flat()
   }
 
   async getDefaultShell(): Promise<string> {
@@ -248,14 +243,17 @@ export class DaemonPtyRouter implements IPtyProvider {
   }
 
   onBackgroundStreamEvent(callback: (payload: PtyBackgroundStreamEvent) => void): () => void {
-    const unsubscribes = this.allAdapters().map((adapter) =>
-      adapter.onBackgroundStreamEvent(callback)
+    return combineUnsubscribes(
+      this.allAdapters().map((adapter) => adapter.onBackgroundStreamEvent(callback))
     )
-    return () => {
-      for (const unsubscribe of unsubscribes) {
-        unsubscribe()
-      }
-    }
+  }
+
+  // Why: main subscribes on the routed provider, so without this the dead-endpoint
+  // fan-out never reaches the renderer and only the written pane recovers (STA-2373).
+  onWriteUnavailable(callback: (payload: { id: string }) => void): () => void {
+    return combineUnsubscribes(
+      this.allAdapters().map((adapter) => adapter.onWriteUnavailable(callback))
+    )
   }
 
   onReplay(_callback: (payload: { id: string; data: string }) => void): () => void {

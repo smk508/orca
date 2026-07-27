@@ -2,19 +2,13 @@
 // Why: this main-process adapter keeps listener internals in shared/ (`src/shared/agent-hook-listener.ts`) so the relay can host the same pipeline without Electron. See docs/design/agent-status-over-ssh.md §5.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { track } from '../telemetry/client'
 import { getCohortAtEmit } from '../telemetry/cohort-classifier'
 import { AGENT_KIND_VALUES, type AgentKind } from '../../shared/telemetry-events'
 import { ORCA_HOOK_PROTOCOL_VERSION } from '../../shared/agent-hook-types'
-import { readNodeFileSyncWithinLimit } from '../../shared/node-bounded-file-reader'
-import { assertJsonTextStructureWithinLimits } from '../../shared/json-text-structure-limit'
-import {
-  JsonStringifyByteLimitError,
-  stringifyJsonWithinByteLimit
-} from '../../shared/node-bounded-json-stringify'
 import {
   clearAllListenerCaches,
   clearPaneCacheState,
@@ -41,7 +35,6 @@ import {
   type HookListenerState
 } from '../../shared/agent-hook-listener'
 import type { AgentHookSource } from '../../shared/agent-hook-relay'
-import { upsertBoundedAgentHookStatus } from '../../shared/agent-hook-status-cache'
 import {
   CLAUDE_STATUSLINE_PATHNAME,
   parseClaudeStatusLineBody,
@@ -76,7 +69,6 @@ import {
   type AgentProviderSessionMetadata
 } from '../../shared/agent-session-resume'
 import { isCommandCodeNewTurnWhileWorking } from '../../shared/command-code-turn-boundary'
-import { measureUtf8ByteLength } from '../../shared/utf8-byte-limits'
 
 export type { AgentHookSource }
 
@@ -92,7 +84,15 @@ export type AgentHookStatusChangeEntry = {
   observedInCurrentRuntime: boolean
 }
 
+export type AgentHookProviderSessionIdentity = {
+  paneKey: string
+  sessionId: string
+  transcriptPath?: string
+  worktreeId?: string
+}
+
 type StatusChangeListener = (statuses: AgentHookStatusChangeEntry[]) => void
+type ProviderSessionChangeListener = (providerSessions: AgentHookProviderSessionIdentity[]) => void
 type PaneStatusClearListener = (clear: AgentStatusClearIpcPayload) => void
 type PaneKeyAliasPersistenceListener = (entries: LegacyPaneKeyAliasEntry[]) => void
 type PaneKeyAliasEntry = {
@@ -104,9 +104,6 @@ type PaneKeyAliasEntry = {
 
 // Why: co-located with the endpoint file in userData/agent-hooks/ so hook-server cross-restart artifacts stay together.
 const LAST_STATUS_FILE_NAME = 'last-status.json'
-export const MAX_AGENT_HOOK_LAST_STATUS_FILE_BYTES = 16 * 1024 * 1024
-export const MAX_AGENT_HOOK_LAST_STATUS_STRUCTURAL_TOKENS = 1_000_000
-export const MAX_AGENT_HOOK_LAST_STATUS_NESTING_DEPTH = 128
 const ASSISTANT_MESSAGE_RETRY_ATTEMPTS = 5
 const ASSISTANT_MESSAGE_RETRY_MS = 50
 const INTERRUPTED_DONE_LATE_WORKING_SUPPRESSION_MS = 15_000
@@ -126,9 +123,6 @@ const HYDRATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 export const CLOSED_AGENT_STATUS_TAB_IDS_MAX = 1024
 export const CLOSED_AGENT_STATUS_PANE_KEYS_MAX = 1024
 export const PANE_KEY_ALIASES_MAX = 1024
-export const MAX_AGENT_HOOK_CONNECTION_TIMESTAMP_WATERMARKS = 1024
-export const MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES = 1024
-export const MAX_AGENT_HOOK_RETAINED_PATH_UTF8_BYTES = 16 * 1024
 
 type LastStatusFile = {
   version: number
@@ -195,100 +189,6 @@ function isValidPiProviderSessionOnly(
   return Boolean(providerSession && agentType === 'pi' && getAgentResumeArgv('pi', providerSession))
 }
 
-function isRetainedStringWithinByteLimit(value: string, maxBytes: number): boolean {
-  return !measureUtf8ByteLength(value, { stopAfterBytes: maxBytes }).exceededLimit
-}
-
-function retainOptionalStringWithinByteLimit(value: unknown, maxBytes: number): string | undefined {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    !isRetainedStringWithinByteLimit(value, maxBytes)
-  ) {
-    return undefined
-  }
-  return value
-}
-
-function normalizeOptionalRetainedString(value: unknown, maxBytes: number): string | undefined {
-  const retained = retainOptionalStringWithinByteLimit(value, maxBytes)
-  if (!retained) {
-    return undefined
-  }
-  const trimmed = retained.trim()
-  return trimmed.length > 0 ? trimmed : undefined
-}
-
-function boundProviderSessionTranscriptPath(
-  providerSession: AgentProviderSessionMetadata | undefined
-): AgentProviderSessionMetadata | undefined {
-  if (!providerSession?.transcriptPath) {
-    return providerSession
-  }
-  const transcriptPath = retainOptionalStringWithinByteLimit(
-    providerSession.transcriptPath,
-    MAX_AGENT_HOOK_RETAINED_PATH_UTF8_BYTES
-  )
-  return transcriptPath === providerSession.transcriptPath
-    ? providerSession
-    : { key: providerSession.key, id: providerSession.id }
-}
-
-function boundAgentHookEventMetadata<T extends AgentHookEventPayload>(event: T): T {
-  const launchToken = retainOptionalStringWithinByteLimit(
-    event.launchToken,
-    MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-  )
-  const worktreeId = retainOptionalStringWithinByteLimit(
-    event.worktreeId,
-    MAX_AGENT_HOOK_RETAINED_PATH_UTF8_BYTES
-  )
-  const promptInteractionKey = retainOptionalStringWithinByteLimit(
-    event.promptInteractionKey,
-    MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-  )
-  const hookEventName = retainOptionalStringWithinByteLimit(
-    event.hookEventName,
-    MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-  )
-  const toolUseId = retainOptionalStringWithinByteLimit(
-    event.toolUseId,
-    MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-  )
-  const toolAgentId = retainOptionalStringWithinByteLimit(
-    event.toolAgentId,
-    MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-  )
-  const toolAgentType = retainOptionalStringWithinByteLimit(
-    event.toolAgentType,
-    MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-  )
-  const providerSession = boundProviderSessionTranscriptPath(event.providerSession)
-  if (
-    launchToken === event.launchToken &&
-    worktreeId === event.worktreeId &&
-    promptInteractionKey === event.promptInteractionKey &&
-    hookEventName === event.hookEventName &&
-    toolUseId === event.toolUseId &&
-    toolAgentId === event.toolAgentId &&
-    toolAgentType === event.toolAgentType &&
-    providerSession === event.providerSession
-  ) {
-    return event
-  }
-  return {
-    ...event,
-    launchToken,
-    worktreeId,
-    promptInteractionKey,
-    hookEventName,
-    toolUseId,
-    toolAgentId,
-    toolAgentType,
-    providerSession
-  }
-}
-
 function sanitizeHydratedEntry(
   paneKey: string,
   rawEntry: unknown
@@ -333,10 +233,7 @@ function sanitizeHydratedEntry(
   let connectionId: string | null
   if (connectionIdRaw === null || connectionIdRaw === undefined) {
     connectionId = null
-  } else if (
-    typeof connectionIdRaw === 'string' &&
-    isRetainedStringWithinByteLimit(connectionIdRaw, MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES)
-  ) {
+  } else if (typeof connectionIdRaw === 'string') {
     connectionId = connectionIdRaw
   } else {
     return null
@@ -345,14 +242,12 @@ function sanitizeHydratedEntry(
   if (!payload) {
     return null
   }
-  const providerSession = boundProviderSessionTranscriptPath(
-    normalizeAgentProviderSession(record.providerSession) ?? undefined
-  )
+  const providerSession = normalizeAgentProviderSession(record.providerSession) ?? undefined
   const providerSessionOnly = record.providerSessionOnly === true
   if (providerSessionOnly && !isValidPiProviderSessionOnly(providerSession, payload.agentType)) {
     return null
   }
-  return boundAgentHookEventMetadata({
+  return {
     paneKey,
     launchToken: typeof record.launchToken === 'string' ? record.launchToken : undefined,
     tabId: typeof tabId === 'string' ? tabId : undefined,
@@ -368,7 +263,7 @@ function sanitizeHydratedEntry(
     payload,
     receivedAt,
     stateStartedAt
-  })
+  }
 }
 
 function toAgentStatusIpcPayload(entry: EnrichedAgentHookEventPayload): AgentStatusIpcPayload {
@@ -569,6 +464,11 @@ export class AgentHookServer {
   private onClaudeStatusLine: ((event: ClaudeStatusLineRateLimits) => void) | null = null
   private onPaneStatusCleared: PaneStatusClearListener | null = null
   private statusChangeListeners = new Set<StatusChangeListener>()
+  private providerSessionChangeListeners = new Set<ProviderSessionChangeListener>()
+  // Why: setListener is a single slot owned by the main-window fanout; the
+  // plugin event bus (and future consumers) need an additive subscription
+  // that also works in headless serve, where no window listener exists.
+  private enrichedStatusListeners = new Set<(payload: EnrichedAgentHookEventPayload) => void>()
   // Why: set via start()'s userDataPath so the class has no direct Electron dependency (mockable in vitest node env).
   private endpointDir: string | null = null
   private endpointFilePathCache: string | null = null
@@ -622,6 +522,21 @@ export class AgentHookServer {
     }
   }
 
+  subscribeProviderSessionChanges(listener: ProviderSessionChangeListener): () => void {
+    this.providerSessionChangeListeners.add(listener)
+    return () => {
+      this.providerSessionChangeListeners.delete(listener)
+    }
+  }
+
+  /** Multi-subscriber tap on every enriched status change (no replay). */
+  subscribeEnrichedStatus(listener: (payload: EnrichedAgentHookEventPayload) => void): () => void {
+    this.enrichedStatusListeners.add(listener)
+    return () => {
+      this.enrichedStatusListeners.delete(listener)
+    }
+  }
+
   setPaneStatusClearListener(listener: PaneStatusClearListener | null): void {
     this.onPaneStatusCleared = listener
   }
@@ -632,6 +547,16 @@ export class AgentHookServer {
     return Array.from(this.state.lastStatusByPaneKey.values(), (entry) =>
       toAgentStatusIpcPayload(entry as EnrichedAgentHookEventPayload)
     )
+  }
+
+  /** Provider-session identities, including Pi's metadata-only rows. */
+  getProviderSessionIdentities(): AgentHookProviderSessionIdentity[] {
+    return this.buildStatusChangeNotification().providerSessions
+  }
+
+  getStatusSnapshotForPane(paneKey: string): AgentStatusIpcPayload[] {
+    const entry = this.state.lastStatusByPaneKey.get(paneKey)
+    return entry ? [toAgentStatusIpcPayload(entry as EnrichedAgentHookEventPayload)] : []
   }
 
   inferInterrupt(request: AgentInterruptInferenceRequest): boolean {
@@ -765,30 +690,55 @@ export class AgentHookServer {
   }
 
   getStatusChangeSnapshot(): AgentHookStatusChangeEntry[] {
-    return Array.from(this.state.lastStatusByPaneKey.entries()).flatMap(([paneKey, entry]) => {
+    return this.buildStatusChangeNotification().statuses
+  }
+
+  private buildStatusChangeNotification(): {
+    statuses: AgentHookStatusChangeEntry[]
+    providerSessions: AgentHookProviderSessionIdentity[]
+  } {
+    const statuses: AgentHookStatusChangeEntry[] = []
+    const providerSessions: AgentHookProviderSessionIdentity[] = []
+    for (const [paneKey, entry] of this.state.lastStatusByPaneKey) {
       const enriched = entry as EnrichedAgentHookEventPayload
-      return enriched.providerSessionOnly
-        ? []
-        : [
-            {
-              state: enriched.payload.state,
-              receivedAt: enriched.receivedAt,
-              observedInCurrentRuntime: this.runtimeObservedStatusPaneKeys.has(paneKey)
-            }
-          ]
-    })
+      if (enriched.providerSession) {
+        providerSessions.push({
+          paneKey,
+          sessionId: enriched.providerSession.id,
+          ...(enriched.providerSession.transcriptPath
+            ? { transcriptPath: enriched.providerSession.transcriptPath }
+            : {}),
+          ...(enriched.worktreeId ? { worktreeId: enriched.worktreeId } : {})
+        })
+      }
+      if (!enriched.providerSessionOnly) {
+        statuses.push({
+          state: enriched.payload.state,
+          receivedAt: enriched.receivedAt,
+          observedInCurrentRuntime: this.runtimeObservedStatusPaneKeys.has(paneKey)
+        })
+      }
+    }
+    return { statuses, providerSessions }
   }
 
   private notifyStatusChangeListeners(): void {
-    if (this.statusChangeListeners.size === 0) {
+    if (this.statusChangeListeners.size === 0 && this.providerSessionChangeListeners.size === 0) {
       return
     }
-    const snapshot = this.getStatusChangeSnapshot()
+    const { statuses, providerSessions } = this.buildStatusChangeNotification()
     for (const listener of this.statusChangeListeners) {
       try {
-        listener(snapshot)
+        listener(statuses)
       } catch (err) {
         console.error('[agent-hooks] status-change listener threw', err)
+      }
+    }
+    for (const listener of this.providerSessionChangeListeners) {
+      try {
+        listener(providerSessions)
+      } catch (err) {
+        console.error('[agent-hooks] provider-session listener threw', err)
       }
     }
   }
@@ -863,48 +813,6 @@ export class AgentHookServer {
     }
   }
 
-  private cacheStatusEntry(entry: EnrichedAgentHookEventPayload, now = entry.receivedAt): number {
-    const boundedEntry = boundAgentHookEventMetadata(entry)
-    const evicted = upsertBoundedAgentHookStatus(this.state, boundedEntry, { now })
-    for (const { paneKey } of evicted) {
-      this.clearAssistantMessageRetry(paneKey)
-      this.runtimeObservedStatusPaneKeys.delete(paneKey)
-      this.promptSentDedupeByPaneKey.delete(paneKey)
-      this.onPaneStatusCleared?.({ paneKey })
-    }
-    return evicted.length
-  }
-
-  private rememberConnectionTimestampWatermark(connectionId: string, timestamp: number): void {
-    this.connectionTimestampWatermarkById.delete(connectionId)
-    this.connectionTimestampWatermarkById.set(connectionId, timestamp)
-    if (
-      this.connectionTimestampWatermarkById.size <= MAX_AGENT_HOOK_CONNECTION_TIMESTAMP_WATERMARKS
-    ) {
-      return
-    }
-    const activeConnectionIds = new Set<string>()
-    for (const entry of this.state.lastStatusByPaneKey.values()) {
-      if (entry.connectionId) {
-        activeConnectionIds.add(entry.connectionId)
-      }
-    }
-    let oldestFallback: string | undefined
-    for (const retainedConnectionId of this.connectionTimestampWatermarkById.keys()) {
-      if (retainedConnectionId === connectionId) {
-        continue
-      }
-      oldestFallback ??= retainedConnectionId
-      if (!activeConnectionIds.has(retainedConnectionId)) {
-        this.connectionTimestampWatermarkById.delete(retainedConnectionId)
-        return
-      }
-    }
-    if (oldestFallback) {
-      this.connectionTimestampWatermarkById.delete(oldestFallback)
-    }
-  }
-
   private hashPromptForTelemetryDedupe(prompt: string): string {
     return createHash('sha256')
       .update(this.promptSentHashSalt)
@@ -974,8 +882,7 @@ export class AgentHookServer {
     }
   }
 
-  private applyNormalizedStatus(rawPayload: AgentHookEventPayload): EnrichedAgentHookEventPayload {
-    const payload = boundAgentHookEventMetadata(rawPayload)
+  private applyNormalizedStatus(payload: AgentHookEventPayload): EnrichedAgentHookEventPayload {
     const previous = this.state.lastStatusByPaneKey.get(payload.paneKey) as
       | EnrichedAgentHookEventPayload
       | undefined
@@ -985,17 +892,17 @@ export class AgentHookServer {
     // Why: Date.now() can repeat across reconnect; a remote replay must sort strictly after its connection's transient clear.
     const now = Math.max(Date.now(), (connectionClearWatermark ?? -1) + 1)
     if (payload.connectionId) {
-      this.rememberConnectionTimestampWatermark(payload.connectionId, now)
+      this.connectionTimestampWatermarkById.set(payload.connectionId, now)
     }
     if (payload.providerSessionOnly) {
       // Why: Pi session_start replaces stale turn state and survives replay, but must not emit prompt telemetry or a fabricated status.
       const enriched = this.attachStatusTiming(payload, now)
       this.clearAssistantMessageRetry(enriched.paneKey)
       this.runtimeObservedStatusPaneKeys.delete(enriched.paneKey)
-      this.cacheStatusEntry(enriched)
+      this.state.lastStatusByPaneKey.set(enriched.paneKey, enriched)
       this.scheduleStatusPersist()
       this.notifyStatusChangeListeners()
-      this.onAgentStatus?.(enriched)
+      this.emitEnrichedStatus(enriched)
       return enriched
     }
     const stateReconciledPayload =
@@ -1104,11 +1011,24 @@ export class AgentHookServer {
     }
     const enriched = this.attachStatusTiming(effectivePayload, now)
     this.runtimeObservedStatusPaneKeys.add(enriched.paneKey)
-    this.cacheStatusEntry(enriched)
+    this.state.lastStatusByPaneKey.set(enriched.paneKey, enriched)
     this.scheduleStatusPersist()
     this.notifyStatusChangeListeners()
-    this.onAgentStatus?.(enriched)
+    this.emitEnrichedStatus(enriched)
     return enriched
+  }
+
+  // Why: every status emit must reach plugins too, so a new early-return path
+  // upstream cannot silently leave the plugin tap behind the main-window fanout.
+  private emitEnrichedStatus(enriched: EnrichedAgentHookEventPayload): void {
+    this.onAgentStatus?.(enriched)
+    for (const listener of this.enrichedStatusListeners) {
+      try {
+        listener(enriched)
+      } catch (err) {
+        console.error('[agent-hooks] enriched status listener threw', err)
+      }
+    }
   }
 
   private clearAssistantMessageRetry(paneKey: string): void {
@@ -1476,16 +1396,10 @@ export class AgentHookServer {
     if (this.shouldSuppressClosedTabStatus(paneKey)) {
       return
     }
-    const worktreeId = normalizeOptionalRetainedString(
-      event.worktreeId,
-      MAX_AGENT_HOOK_RETAINED_PATH_UTF8_BYTES
-    )
-    if (
-      typeof event.connectionId === 'string' &&
-      !isRetainedStringWithinByteLimit(event.connectionId, MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES)
-    ) {
-      return
-    }
+    const worktreeId =
+      event.worktreeId !== undefined && event.worktreeId.trim().length > 0
+        ? event.worktreeId.trim()
+        : undefined
     const connectionId =
       typeof event.connectionId === 'string' && event.connectionId.trim().length > 0
         ? event.connectionId.trim()
@@ -1537,9 +1451,6 @@ export class AgentHookServer {
     if (typeof connectionId !== 'string') {
       return
     }
-    if (!isRetainedStringWithinByteLimit(connectionId, MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES)) {
-      return
-    }
     const trimmedConnectionId = connectionId.trim()
     if (trimmedConnectionId.length === 0) {
       return
@@ -1583,33 +1494,32 @@ export class AgentHookServer {
     if (this.shouldSuppressClosedTabStatus(paneKey)) {
       return
     }
-    const worktreeId = normalizeOptionalRetainedString(
-      envelope.worktreeId,
-      MAX_AGENT_HOOK_RETAINED_PATH_UTF8_BYTES
-    )
-    const hookEventName = normalizeOptionalRetainedString(
-      envelope.hookEventName,
-      MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-    )
-    const promptInteractionKey = normalizeOptionalRetainedString(
-      envelope.promptInteractionKey,
-      MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-    )
-    const toolUseId = normalizeOptionalRetainedString(
-      envelope.toolUseId,
-      MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-    )
-    const toolAgentId = normalizeOptionalRetainedString(
-      envelope.toolAgentId,
-      MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-    )
-    const toolAgentType = normalizeOptionalRetainedString(
-      envelope.toolAgentType,
-      MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-    )
-    const providerSession = boundProviderSessionTranscriptPath(
-      normalizeAgentProviderSession(envelope.providerSession) ?? undefined
-    )
+    const worktreeId =
+      envelope.worktreeId !== undefined && envelope.worktreeId.trim().length > 0
+        ? envelope.worktreeId.trim()
+        : undefined
+    const hookEventName =
+      typeof envelope.hookEventName === 'string' && envelope.hookEventName.trim().length > 0
+        ? envelope.hookEventName.trim()
+        : undefined
+    const promptInteractionKey =
+      typeof envelope.promptInteractionKey === 'string' &&
+      envelope.promptInteractionKey.trim().length > 0
+        ? envelope.promptInteractionKey.trim()
+        : undefined
+    const toolUseId =
+      typeof envelope.toolUseId === 'string' && envelope.toolUseId.trim().length > 0
+        ? envelope.toolUseId.trim()
+        : undefined
+    const toolAgentId =
+      typeof envelope.toolAgentId === 'string' && envelope.toolAgentId.trim().length > 0
+        ? envelope.toolAgentId.trim()
+        : undefined
+    const toolAgentType =
+      typeof envelope.toolAgentType === 'string' && envelope.toolAgentType.trim().length > 0
+        ? envelope.toolAgentType.trim()
+        : undefined
+    const providerSession = normalizeAgentProviderSession(envelope.providerSession) ?? undefined
     // Why: relay crosses a trust boundary — re-run the canonical normalizer to enforce caps/invariants (returns null on malformed).
     const normalizedPayload = normalizeAgentStatusPayload(envelope.payload)
     if (!normalizedPayload) {
@@ -1629,10 +1539,7 @@ export class AgentHookServer {
     })
     const event: AgentHookEventPayload = {
       paneKey,
-      launchToken: normalizeOptionalRetainedString(
-        envelope.launchToken,
-        MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES
-      ),
+      launchToken: envelope.launchToken,
       tabId,
       worktreeId,
       connectionId: trimmedConnectionId,
@@ -1717,14 +1624,8 @@ export class AgentHookServer {
         trackEmptyPaneKeyHook(body)
         const aliasedBody = this.normalizeHookBodyPaneKeyAlias(body)
         const normalized = normalizeHookPayload(this.state, source, aliasedBody, this.env)
-        const retained = normalized ? boundAgentHookEventMetadata(normalized) : null
-        if (
-          retained &&
-          (!retained.providerSessionOnly ||
-            isValidPiProviderSessionOnly(retained.providerSession, retained.payload.agentType)) &&
-          !this.shouldSuppressClosedTabStatus(retained.paneKey)
-        ) {
-          const enriched = this.applyNormalizedStatus(retained)
+        if (normalized && !this.shouldSuppressClosedTabStatus(normalized.paneKey)) {
+          const enriched = this.applyNormalizedStatus(normalized)
           this.scheduleAssistantMessageRetry(source, aliasedBody, enriched)
         }
 
@@ -1801,9 +1702,6 @@ export class AgentHookServer {
 
   /** Clear statuses proven to belong to one lost SSH transport. */
   clearStatusEntriesForConnection(connectionId: string): void {
-    if (!isRetainedStringWithinByteLimit(connectionId, MAX_AGENT_HOOK_RETAINED_ID_UTF8_BYTES)) {
-      return
-    }
     const normalizedConnectionId = connectionId.trim()
     if (normalizedConnectionId.length === 0) {
       return
@@ -1812,7 +1710,7 @@ export class AgentHookServer {
       Date.now(),
       (this.connectionTimestampWatermarkById.get(normalizedConnectionId) ?? -1) + 1
     )
-    this.rememberConnectionTimestampWatermark(normalizedConnectionId, clearedAt)
+    this.connectionTimestampWatermarkById.set(normalizedConnectionId, clearedAt)
     let statusChanged = false
     for (const [paneKey, rawEntry] of this.state.lastStatusByPaneKey) {
       const entry = rawEntry as EnrichedAgentHookEventPayload
@@ -2007,10 +1905,7 @@ export class AgentHookServer {
     this.state.lastStatusByPaneKey.clear()
     let raw: string
     try {
-      raw = readNodeFileSyncWithinLimit(
-        this.lastStatusFilePath,
-        MAX_AGENT_HOOK_LAST_STATUS_FILE_BYTES
-      ).buffer.toString('utf8')
+      raw = readFileSync(this.lastStatusFilePath, 'utf8')
     } catch (err) {
       // Why: missing file is normal (first launch); other errors degrade to empty hydration + one warn.
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -2020,13 +1915,9 @@ export class AgentHookServer {
     }
     let parsed: unknown
     try {
-      assertJsonTextStructureWithinLimits(raw, {
-        structuralTokens: MAX_AGENT_HOOK_LAST_STATUS_STRUCTURAL_TOKENS,
-        nestingDepth: MAX_AGENT_HOOK_LAST_STATUS_NESTING_DEPTH
-      })
       parsed = JSON.parse(raw)
     } catch {
-      console.warn('[agent-hooks] last-status file is invalid or too complex; ignoring')
+      console.warn('[agent-hooks] last-status file is not valid JSON; ignoring')
       return
     }
     if (typeof parsed !== 'object' || parsed === null) {
@@ -2051,8 +1942,7 @@ export class AgentHookServer {
     let dropped = 0
     let prunedLegacyClaudeSubagents = 0
     // Why: drop entries older than HYDRATE_MAX_AGE_MS to bound disk growth (one Date.now() for a consistent cutoff).
-    const hydrateNow = Date.now()
-    const ttlCutoff = hydrateNow - HYDRATE_MAX_AGE_MS
+    const ttlCutoff = Date.now() - HYDRATE_MAX_AGE_MS
     for (const [paneKey, rawEntry] of Object.entries(entries)) {
       const resolvedPaneKey = this.resolvePaneKeyAlias(paneKey)
       const rawResolvedEntry =
@@ -2067,11 +1957,11 @@ export class AgentHookServer {
             (entry.payload.subagents?.length ?? 0) - (hydratedPayload.subagents?.length ?? 0)
           entry.payload = hydratedPayload
         }
-        dropped += this.cacheStatusEntry(entry, hydrateNow)
+        this.state.lastStatusByPaneKey.set(resolvedPaneKey, entry)
         if (entry.connectionId) {
           // Why: a restart can see an earlier wall clock; seed ordering so new events stay after disk state.
           const previousWatermark = this.connectionTimestampWatermarkById.get(entry.connectionId)
-          this.rememberConnectionTimestampWatermark(
+          this.connectionTimestampWatermarkById.set(
             entry.connectionId,
             Math.max(previousWatermark ?? -1, entry.receivedAt)
           )
@@ -2093,7 +1983,7 @@ export class AgentHookServer {
     }
     if (dropped > 0) {
       console.warn(
-        `[agent-hooks] last-status hydrate dropped ${dropped} entries (kept ${this.state.lastStatusByPaneKey.size})`
+        `[agent-hooks] last-status hydrate dropped ${dropped} entries (kept ${hydrated})`
       )
     }
     if (dropped > 0 || prunedLegacyClaudeSubagents > 0) {
@@ -2106,45 +1996,17 @@ export class AgentHookServer {
   }
 
   private serializeStatusFile(): string {
-    const prefix = `{"version":${LAST_STATUS_FILE_VERSION},"entries":{`
-    const suffix = '}}'
-    let remainingBytes =
-      MAX_AGENT_HOOK_LAST_STATUS_FILE_BYTES -
-      Buffer.byteLength(prefix, 'utf8') -
-      Buffer.byteLength(suffix, 'utf8')
-    const fragments: string[] = []
-    const statuses = Array.from(this.state.lastStatusByPaneKey)
-    for (let index = statuses.length - 1; index >= 0; index -= 1) {
-      const [paneKey, payload] = statuses[index]
+    const entries: Record<string, EnrichedAgentHookEventPayload> = {}
+    for (const [paneKey, payload] of this.state.lastStatusByPaneKey) {
       // Why: never persist invalid keys (matches the hydrate-path invariant).
       if (!isValidPaneKey(paneKey)) {
         continue
       }
       const { promptInteractionKey: _promptInteractionKey, ...persistedPayload } = payload
-      const propertyPrefix = `${JSON.stringify(paneKey)}:`
-      const separatorBytes = fragments.length > 0 ? 1 : 0
-      const payloadBudget =
-        remainingBytes - separatorBytes - Buffer.byteLength(propertyPrefix, 'utf8')
-      if (payloadBudget < 0) {
-        continue
-      }
-      let serializedPayload: string
-      try {
-        serializedPayload = stringifyJsonWithinByteLimit(persistedPayload, payloadBudget).serialized
-      } catch (error) {
-        if (error instanceof JsonStringifyByteLimitError) {
-          continue
-        }
-        throw error
-      }
-      fragments.push(`${propertyPrefix}${serializedPayload}`)
-      remainingBytes -=
-        separatorBytes +
-        Buffer.byteLength(propertyPrefix, 'utf8') +
-        Buffer.byteLength(serializedPayload, 'utf8')
+      entries[paneKey] = persistedPayload as EnrichedAgentHookEventPayload
     }
-    fragments.reverse()
-    return `${prefix}${fragments.join(',')}${suffix}`
+    const file: LastStatusFile = { version: LAST_STATUS_FILE_VERSION, entries }
+    return JSON.stringify(file)
   }
 
   private scheduleStatusPersist(): void {

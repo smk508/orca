@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { DaemonClient } from './client'
-import { DAEMON_HANDSHAKE_MAX_LINE_BYTES, encodeNdjson } from './ndjson'
+import { encodeNdjson } from './ndjson'
 import type { HelloMessage, DaemonRequest, DaemonEvent } from './types'
 import { getDaemonSocketPath } from './daemon-spawner'
 
@@ -310,31 +310,6 @@ describe('DaemonClient', () => {
       expect(socket.listenerCount('close')).toBe(0)
     })
 
-    it('rejects a newline-free oversized hello response before the timeout', async () => {
-      client = new DaemonClient({ socketPath, tokenPath })
-      const socket = new EventEmitter() as Socket
-      socket.write = vi.fn(() => true) as unknown as Socket['write']
-      socket.destroy = vi.fn() as unknown as Socket['destroy']
-      const sendHello = (
-        client as unknown as {
-          sendHello(
-            socket: Socket,
-            token: string,
-            role: 'control' | 'stream',
-            timeoutMs: number
-          ): Promise<void>
-        }
-      ).sendHello.bind(client)
-
-      const promise = sendHello(socket, 'test-token-123', 'control', 60_000)
-      socket.emit('data', Buffer.alloc(DAEMON_HANDSHAKE_MAX_LINE_BYTES + 1, 0x78))
-
-      await expect(promise).rejects.toThrow('Invalid hello response')
-      expect(socket.listenerCount('data')).toBe(0)
-      expect(socket.listenerCount('error')).toBe(0)
-      expect(socket.listenerCount('close')).toBe(0)
-    })
-
     it('rejects when the daemon closes before hello completes', async () => {
       await startMockDaemon({ closeOnHello: true })
 
@@ -573,12 +548,19 @@ describe('DaemonClient', () => {
       client = new DaemonClient({ socketPath, tokenPath })
       await client.ensureConnected()
 
-      client.notify('write', { sessionId: 'session-1', data: 'hello' })
+      const delivered = client.notify('write', { sessionId: 'session-1', data: 'hello' })
+      expect(delivered).toBe(true)
 
       await waitFor(() => received.length > 0)
       const msg = received[0] as { id: string; type: string }
       expect(msg.id).toMatch(/^notify_/)
       expect(msg.type).toBe('write')
+    })
+
+    it('reports a dropped delivery when not connected', () => {
+      // Why: STA-2373 relies on this false to detect a write silently swallowed by a dead socket.
+      client = new DaemonClient({ socketPath, tokenPath })
+      expect(client.notify('write', { sessionId: 'session-1', data: 'hello' })).toBe(false)
     })
   })
 })
