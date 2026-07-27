@@ -55,4 +55,22 @@ describe('createKeyedSendSequencer', () => {
     await delay(10)
     expect(completedOrder).toEqual([2])
   })
+
+  it('does not leave an unhandled rejection when the last send for a key fails', async () => {
+    const seenRejections: unknown[] = []
+    const onUnhandledRejection = (reason: unknown) => seenRejections.push(reason)
+    process.on('unhandledRejection', onUnhandledRejection)
+
+    const enqueue = createKeyedSendSequencer<number>(async () => {
+      throw new Error('boom')
+    })
+    enqueue('term-a', 1)
+
+    // Why: Node only surfaces an unhandled rejection after the microtask queue
+    // drains and a macrotask tick passes — a longer delay than the other tests
+    // need, so the warning has time to fire if the fix regresses.
+    await delay(50)
+    process.off('unhandledRejection', onUnhandledRejection)
+    expect(seenRejections).toEqual([])
+  })
 })

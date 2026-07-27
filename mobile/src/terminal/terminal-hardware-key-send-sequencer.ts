@@ -12,6 +12,9 @@ export function createKeyedSendSequencer<T>(
   return (key: string, value: T) => {
     const previous = chains.get(key) ?? Promise.resolve()
     const next = previous.then(() => send(key, value))
-    chains.set(key, next.catch(() => undefined))
+    chains.set(
+      key,
+      next.catch(() => undefined)
+    )
   }
 }
