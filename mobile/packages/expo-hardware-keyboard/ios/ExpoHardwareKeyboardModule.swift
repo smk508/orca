@@ -11,9 +11,10 @@ public class ExpoHardwareKeyboardModule: Module {
             if #available(iOS 14.0, *) {
                 return GCKeyboard.coalesced != nil
             }
-            // Pre-iOS 14 has no reliable query; assume present so iPad users with
-            // a keyboard are not locked out.
-            return true
+            // Pre-iOS 14 has no reliable query. Reporting "connected" here would
+            // wrongly suppress the software-keyboard fallback for every user on an
+            // unsupported OS version, keyboard or not — false is the safe default.
+            return false
         }
 
         View(OrcaKeyCaptureView.self) {

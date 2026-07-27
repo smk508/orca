@@ -5,6 +5,12 @@ const sessionRouteSource = readFileSync(
   new URL('../../app/h/[hostId]/session/[worktreeId].tsx', import.meta.url),
   'utf8'
 )
+// Why: the three input-bar branches (hardware-keyboard / live-input / buffered)
+// live in this extracted component, not the session route.
+const inputBarSource = readFileSync(
+  new URL('../../app/h/[hostId]/session/terminal-session-input-bar.tsx', import.meta.url),
+  'utf8'
+)
 const liveInputStatusSource = readFileSync(
   new URL('../session/MobileTerminalLiveInputStatus.tsx', import.meta.url),
   'utf8'
@@ -15,11 +21,11 @@ const commandInputStylesSource = readFileSync(
 )
 
 function liveInputBarBlock(): string {
-  const start = sessionRouteSource.indexOf(') : liveInputEnabled ? (')
+  const start = inputBarSource.indexOf('if (liveInputEnabled) {')
   expect(start).toBeGreaterThanOrEqual(0)
-  const end = sessionRouteSource.indexOf(') : (', start)
+  const end = inputBarSource.indexOf('\n  return (\n    <View style={styles.inputBar}>', start)
   expect(end).toBeGreaterThan(start)
-  return sessionRouteSource.slice(start, end)
+  return inputBarSource.slice(start, end)
 }
 
 describe('terminal live input affordance', () => {

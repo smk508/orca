@@ -5,7 +5,15 @@
 // choice the session screen uses to pick one of the host's two palettes).
 // Screens not yet migrated keep importing the static `colors` (dark) from
 // mobile-theme.ts; this context only drives the ones that opt in.
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode
+} from 'react'
 import { useColorScheme } from 'react-native'
 import { darkColors, lightColors, type ThemeColors } from './mobile-theme'
 import { resolveScheme } from './resolve-scheme'
@@ -46,17 +54,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     DEFAULT_TERMINAL_COLOR_SCHEME
   )
 
+  // Why: guards hydration against a user choice made before load* resolves —
+  // set the instant setAppearance/setTerminalColorScheme runs, checked before
+  // applying the stored value so a slow read can't clobber a faster write.
+  const appearanceMutatedRef = useRef(false)
+  const terminalColorSchemeMutatedRef = useRef(false)
+
   // Why: hydrate the stored choices once on mount. Until they resolve we render
   // with the defaults ('system'), so the very first frame already tracks the OS.
   useEffect(() => {
     let cancelled = false
     void loadAppAppearance().then((stored) => {
-      if (!cancelled) {
+      if (!cancelled && !appearanceMutatedRef.current) {
         setAppearanceState(stored)
       }
     })
     void loadTerminalColorScheme().then((stored) => {
-      if (!cancelled) {
+      if (!cancelled && !terminalColorSchemeMutatedRef.current) {
         setTerminalColorSchemeState(stored)
       }
     })
@@ -67,16 +81,22 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setAppearance = useMemo(
     () => (next: AppAppearance) => {
+      appearanceMutatedRef.current = true
       setAppearanceState(next)
-      void saveAppAppearance(next)
+      saveAppAppearance(next).catch((err) =>
+        console.warn('[theme] failed to save app appearance', err)
+      )
     },
     []
   )
 
   const setTerminalColorScheme = useMemo(
     () => (next: TerminalColorScheme) => {
+      terminalColorSchemeMutatedRef.current = true
       setTerminalColorSchemeState(next)
-      void saveTerminalColorScheme(next)
+      saveTerminalColorScheme(next).catch((err) =>
+        console.warn('[theme] failed to save terminal color scheme', err)
+      )
     },
     []
   )

@@ -18,11 +18,12 @@ function ios(keyCode: number, characters: string, mods: Mods = {}) {
   }
 }
 
-// Android-shaped event: key id pre-resolved natively, keyCode unused.
-function android(key: string, mods: Mods = {}) {
+// Android-shaped event: key id pre-resolved natively, keyCode unused unless
+// a test needs to prove precedence against a conflicting one.
+function android(key: string, mods: Mods = {}, keyCode = 0) {
   return {
     key,
-    keyCode: 0,
+    keyCode,
     characters: '',
     charactersIgnoringModifiers: '',
     ctrlKey: !!mods.ctrl,
@@ -78,7 +79,9 @@ describe('nativeKeyEventToShortcut', () => {
   })
 
   it('prefers a natively-resolved Android key id over keyCode', () => {
-    expect(nativeKeyEventToShortcut(android('arrowLeft'))).toEqual({
+    // 0x52 maps to 'arrowUp' in HID_SPECIAL_KEYS — a real conflicting code, so
+    // this only passes if `key` is actually preferred, not just present.
+    expect(nativeKeyEventToShortcut(android('arrowLeft', {}, 0x52))).toEqual({
       key: 'arrowLeft',
       modifiers: []
     })

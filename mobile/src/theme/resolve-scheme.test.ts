@@ -20,11 +20,7 @@ describe('resolveScheme', () => {
   })
 })
 
-// The seam this feature adds: a stored terminalColorScheme + the device OS
-// scheme together decide which of the host's two palettes the terminal renders.
-// This composes the same two functions theme-context + the session screen wire
-// together (resolveScheme → resolveTerminalThemeForScheme), so it proves the
-// end-to-end decision without rendering the session screen.
+// Composes resolveScheme + resolveTerminalThemeForScheme without rendering the session screen.
 describe('terminal palette selected from preference + OS scheme', () => {
   const lightPalette = { background: '#ffffff', foreground: '#000000' }
   const darkPalette = { background: '#1e1e2e', foreground: '#cdd6f4' }

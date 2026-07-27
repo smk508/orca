@@ -19,6 +19,7 @@ key + modifier state; the app maps that to control bytes via the existing
 ## API
 
 ```tsx
+import { StyleSheet } from 'react-native'
 import {
   OrcaKeyCaptureView,
   isHardwareKeyboardConnected,

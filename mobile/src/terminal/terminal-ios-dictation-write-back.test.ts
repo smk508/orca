@@ -5,6 +5,13 @@ const sessionRouteSource = readFileSync(
   new URL('../../app/h/[hostId]/session/[worktreeId].tsx', import.meta.url),
   'utf8'
 )
+// Why: the buffered command TextInput this guards lives in this extracted
+// component, not the session route.
+const inputBarSource = readFileSync(
+  new URL('../../app/h/[hostId]/session/terminal-session-input-bar.tsx', import.meta.url),
+  'utf8'
+)
+const combinedSource = sessionRouteSource + inputBarSource
 
 // Why: iOS terminates an active keyboard-dictation (and IME) session whenever
 // JS writes a value into the focused field that differs from the native text
@@ -13,13 +20,11 @@ const sessionRouteSource = readFileSync(
 // apply dash normalization only on the send/mirror path. See stablyai/orca#7925.
 describe('terminal iOS dictation write-back', () => {
   it('does not write normalized text back into the buffered command input value', () => {
-    expect(sessionRouteSource).toContain('onChangeText={setInput}')
-    expect(sessionRouteSource).not.toContain(
-      'setInput((previousText) => normalizeTerminalTextInput'
-    )
+    expect(combinedSource).toContain('onChangeText={setInput}')
+    expect(combinedSource).not.toContain('setInput((previousText) => normalizeTerminalTextInput')
   })
 
   it('still normalizes the buffered command text at send time', () => {
-    expect(sessionRouteSource).toContain('normalizeTerminalTextInput(input)')
+    expect(combinedSource).toContain('normalizeTerminalTextInput(input)')
   })
 })

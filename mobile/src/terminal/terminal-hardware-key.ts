@@ -4,10 +4,9 @@ import {
   type TerminalShortcutModifier
 } from './terminal-accessory-keys'
 
-// Structural shape of a raw native key event. Kept local (rather than imported
-// from `@orca/expo-hardware-keyboard`) so this pure module — and its unit test —
-// carry no dependency on the native module. The package's `NativeKeyEvent` is
-// structurally compatible, so callers can pass it directly.
+// Kept local rather than imported from `@orca/expo-hardware-keyboard` so this
+// pure module (and its test) has no dependency on the native module; that
+// package's `NativeKeyEvent` is structurally compatible and callers may pass it directly.
 export type HardwareKeyEvent = {
   key: string
   keyCode: number
@@ -19,9 +18,7 @@ export type HardwareKeyEvent = {
   metaKey: boolean
 }
 
-// USB HID usage ids (Keyboard/Keypad page 0x07) for the non-printable keys we
-// care about, as reported by iOS `UIKey.keyCode`. Printable keys are resolved
-// from the event's character instead, so only special keys live here.
+// USB HID usage ids (Keyboard/Keypad page 0x07) for non-printable keys only — printable keys resolve from the character instead.
 const HID_SPECIAL_KEYS: Record<number, string> = {
   0x29: 'escape',
   0x2b: 'tab',
@@ -52,8 +49,6 @@ const HID_SPECIAL_KEYS: Record<number, string> = {
   0x45: 'f12'
 }
 
-// Turn a raw native key event into a shortcut binding the terminal byte builder
-// understands. Returns null for keys we cannot represent (e.g. a bare modifier).
 export function nativeKeyEventToShortcut(event: HardwareKeyEvent): TerminalShortcutBinding | null {
   const modifiers: TerminalShortcutModifier[] = []
   if (event.ctrlKey) {
@@ -76,9 +71,7 @@ export function nativeKeyEventToShortcut(event: HardwareKeyEvent): TerminalShort
     return { key: special, modifiers }
   }
 
-  // Printable key: use the unmodified character so the byte builder can apply
-  // shift itself (it maps `2` -> `@`, `a` -> `A`, etc.). Lowercase letters keep
-  // shift in `modifiers` rather than baking it into the key.
+  // Unmodified character, so the byte builder can apply shift itself (`2` -> `@`, `a` -> `A`).
   const base = event.charactersIgnoringModifiers || event.characters || ''
   const char = Array.from(base)[0]
   if (!char) {

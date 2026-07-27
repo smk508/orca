@@ -126,7 +126,7 @@ export default function SettingsScreen() {
         showsVerticalScrollIndicator={false}
       >
         <Text style={styles.sectionLabel}>Appearance</Text>
-        <View style={styles.section}>
+        <View style={styles.section} accessibilityRole="radiogroup">
           {APPEARANCE_OPTIONS.map((option, i) => {
             const Icon = option.icon
             const selected = appearance === option.value

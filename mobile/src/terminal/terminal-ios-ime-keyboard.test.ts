@@ -5,15 +5,22 @@ const sessionRouteSource = readFileSync(
   new URL('../../app/h/[hostId]/session/[worktreeId].tsx', import.meta.url),
   'utf8'
 )
+// Why: the terminal TextInput branches this guards live in this extracted
+// component, not the session route.
+const inputBarSource = readFileSync(
+  new URL('../../app/h/[hostId]/session/terminal-session-input-bar.tsx', import.meta.url),
+  'utf8'
+)
+const combinedSource = sessionRouteSource + inputBarSource
 
 describe('terminal iOS IME keyboard', () => {
   it('does not force terminal inputs onto the ASCII-only iOS keyboard', () => {
-    expect(sessionRouteSource).not.toContain("'ascii-capable'")
-    expect(sessionRouteSource).not.toContain('"ascii-capable"')
+    expect(combinedSource).not.toContain("'ascii-capable'")
+    expect(combinedSource).not.toContain('"ascii-capable"')
   })
 
   it('does not put terminal keyboard capture behind iOS textContentType semantics', () => {
-    expect(sessionRouteSource).not.toContain('textContentType="none"')
-    expect(sessionRouteSource).toContain('autoComplete="off"')
+    expect(combinedSource).not.toContain('textContentType="none"')
+    expect(combinedSource).toContain('autoComplete="off"')
   })
 })
