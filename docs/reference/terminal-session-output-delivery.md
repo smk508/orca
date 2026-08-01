@@ -40,11 +40,27 @@ When the batcher returns at its dead-client guard, the bytes cease to exist.
 Nothing retained them, so there is nothing to resume from. This is why the
 failure mode is permanent rather than a gap.
 
-The same inversion appears in persistence. `output.log` is written by the
-**app-side** adapter (`DaemonPtyAdapter`'s `HistoryManager`), from data that has
-already crossed the channel that can drop it. The durable record sits downstream
-of the lossy transport, so a delivery drop becomes a permanent hole in history.
-The process that owns the PTY should own the durable record.
+Persistence has the same inversion by a different route. History is not written
+from the display stream — it travels a separate pull path. The daemon accumulates
+`pendingOutputRecords` per session, and the app-side `DaemonPtyAdapter` drains
+them on a timer via the `takePendingOutput` RPC and appends them to `output.log`
+through its `HistoryManager`.
+
+That drain is **destructive and single-consumer**. Records are cleared on take,
+so nothing can re-read them, and only one client can ever be the reader. When the
+reader stops draining, `session.ts` fills to `PENDING_OUTPUT_MAX_BYTES` (2 MB),
+discards the buffer, latches `pendingOutputOverflowed`, and drops every
+subsequent record until somebody takes again.
+
+So there are two independent silent-drop paths, each keyed to a client that went
+away: the stream route strands display, and the undrained pending buffer strands
+persistence. In the incident both were dead at once for the same reason, which is
+why a session's `output.log` froze at the same moment its pane did.
+
+The daemon is closer to owning the record than this suggests: it already runs a
+full terminal emulator per session, with scrollback and a sequenced pending
+buffer carrying an overflow flag. The data is there. What is missing is that
+consumption destroys it and admits only one consumer.
 
 ### What this cost in practice
 
@@ -114,8 +130,12 @@ The steps are independently shippable and each is useful alone.
    resolve routes at delivery time rather than capturing a client id, and log
    sessions whose output has nowhere to go. This does not retain bytes; it stops
    the loss being permanent and silent.
-2. **Move the durable record to the daemon.** Write history where the PTY is
-   read, so persistence no longer depends on delivery succeeding.
+2. **Make the pending buffer non-destructive and cursor-addressed.** Replace the
+   drain-on-take semantics with a bounded ring carrying monotonic offsets, and
+   let readers advance a cursor instead of emptying it. This is the load-bearing
+   step: it admits more than one consumer, makes a read resumable, and removes
+   the overflow-on-undrained failure — a consumer that goes away stops reading
+   rather than causing a discard.
 3. **Serve reattach from the buffer.** Replace snapshot seeding with a cursor
    read, which removes the separate restore path.
 4. **Convert clients to cursor consumers.** Delivery becomes a projection over
@@ -129,8 +149,10 @@ and are worth doing in order because each narrows what the next has to carry.
 - Do not bind session-scoped state to a connection id. If something must be
   reachable per client, key it by the client and let the client's teardown
   remove it.
-- Do not let a delivery path be the only holder of data. Persist first, deliver
-  from the persisted copy.
+- Do not let reading data destroy it. A consumer should advance a cursor, not
+  empty a buffer, so a second consumer and a resumed read both stay possible.
+- Do not let a consumer's absence cause a discard. A reader that stops reading
+  should fall behind, not force the producer to drop.
 - Do not discard terminal output without recording that a discard happened, with
   enough information for a consumer to resync.
 - Prefer a queryable condition over a boolean health flag. `connected`,
