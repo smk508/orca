@@ -151,6 +151,9 @@ export class DaemonServer {
     }
   })
   private streamClientIdBySessionId = new Map<string, string>()
+  // Why tracked: one log line per unrouted spell, re-armed when a route returns, so a
+  // recurring fault stays visible without a session flooding the daemon log.
+  private unroutedStreamSessionIds = new Set<string>()
   private lastInputAtBySessionId = new Map<string, number>()
   private pendingPtySpawnPreparations = new Map<string, Set<PendingPtySpawnPreparation>>()
   private historySeedTransfers = new TerminalHistorySeedTransferRegistry()
@@ -523,6 +526,11 @@ export class DaemonServer {
       // its daemon PTY, orphaning a durable, unattached session — cancel its preps (F4).
       this.cancelPendingPtySpawnPreparationsForClient(clientId)
       this.historySeedTransfers.clearOwner(clientId)
+      // Why: sessions outlive their clients by design, so a session must never keep
+      // pointing at a closed transport. Left behind, the route kept resolving to a
+      // clientId the batcher could no longer find, and every later chunk was dropped
+      // at its dead-client guard — silently, until the session exited.
+      this.clearStreamRoutesForClient(clientId)
       const wasFullyAuthenticated = client.authenticatedPairEstablished
       this.streamDataBatcher.clear(clientId)
       client.streamSocket?.destroy()
@@ -530,6 +538,42 @@ export class DaemonServer {
       this.recordFullyAuthenticatedDisconnect(wasFullyAuthenticated)
       this.reevaluateIdleShutdown()
     })
+  }
+
+  /** Drop every session route owned by a departing client. */
+  private clearStreamRoutesForClient(clientId: string): void {
+    for (const [sessionId, routedClientId] of this.streamClientIdBySessionId) {
+      if (routedClientId === clientId) {
+        this.streamClientIdBySessionId.delete(sessionId)
+      }
+    }
+  }
+
+  /**
+   * Resolve the client a session's output belongs to, at delivery time.
+   *
+   * Why late-bound: the attaching clientId was captured in the PTY's onData closure, so a
+   * client that went away kept absorbing output forever. The route map is the one authority
+   * (control events already used it); reading it per chunk keeps data and control in agreement.
+   * The fallback covers only the window between handler registration and the post-attach
+   * route write, and yields nothing once that client is gone.
+   */
+  private resolveStreamClientId(sessionId: string, attachingClientId: string): string | undefined {
+    const routedClientId = this.streamClientIdBySessionId.get(sessionId)
+    if (routedClientId !== undefined) {
+      return routedClientId
+    }
+    return this.clients.has(attachingClientId) ? attachingClientId : undefined
+  }
+
+  /** Record that a session is producing output nobody can receive. Logged once per
+   *  unrouted spell: silence here is what made this failure undiagnosable from the log. */
+  private noteUnroutedSessionOutput(sessionId: string, droppedChars: number): void {
+    if (this.unroutedStreamSessionIds.has(sessionId)) {
+      return
+    }
+    this.unroutedStreamSessionIds.add(sessionId)
+    this.log.log('session-stream-unrouted', { sessionId, droppedChars })
   }
 
   private recordFullyAuthenticatedDisconnect(wasFullyAuthenticated: boolean): void {
@@ -771,12 +815,17 @@ export class DaemonServer {
               onData: (data, rawLength = data.length, transformed = false, seq) => {
                 // Scan BEFORE enqueue: the batcher may drop this chunk, but its facts must be captured regardless.
                 this.transientFactRelay.onSessionData(routedSessionId, data)
+                const streamClientId = this.resolveStreamClientId(routedSessionId, clientId)
+                if (streamClientId === undefined) {
+                  this.noteUnroutedSessionOutput(routedSessionId, data.length)
+                  return
+                }
                 const lastInputAt = this.lastInputAtBySessionId.get(routedSessionId)
                 const isInteractiveOutput =
                   data.length <= DaemonServer.INTERACTIVE_OUTPUT_MAX_CHARS &&
                   lastInputAt !== undefined &&
                   performance.now() - lastInputAt <= DaemonServer.INTERACTIVE_OUTPUT_WINDOW_MS
-                this.streamDataBatcher.enqueue(clientId, routedSessionId, data, {
+                this.streamDataBatcher.enqueue(streamClientId, routedSessionId, data, {
                   flushImmediately: isInteractiveOutput,
                   flushMaxChars: DaemonServer.INTERACTIVE_OUTPUT_MAX_CHARS,
                   rawLength,
@@ -787,19 +836,23 @@ export class DaemonServer {
               onExit: (code, incarnationId) => {
                 // Why: exit tears down renderer handlers, so it must ride the ordered queue behind final output.
                 this.log.log('session-exited', { sessionId: routedSessionId, code })
-                this.streamDataBatcher.enqueueControlEvent(clientId, routedSessionId, {
-                  type: 'event',
-                  event: 'exit',
-                  sessionId: routedSessionId,
-                  payload: { code, incarnationId }
-                })
-                this.streamDataBatcher.flush(clientId)
+                const exitClientId = this.resolveStreamClientId(routedSessionId, clientId)
+                if (exitClientId !== undefined) {
+                  this.streamDataBatcher.enqueueControlEvent(exitClientId, routedSessionId, {
+                    type: 'event',
+                    event: 'exit',
+                    sessionId: routedSessionId,
+                    payload: { code, incarnationId }
+                  })
+                  this.streamDataBatcher.flush(exitClientId)
+                }
                 recordDaemonStreamBacklogEvent('sessionExit', {
                   sessionIdSuffix: routedSessionId.slice(-10)
                 })
                 this.transientFactRelay.onSessionExit(routedSessionId)
                 this.streamDataBatcher.refreshSessionDroppability(routedSessionId)
                 this.streamClientIdBySessionId.delete(routedSessionId)
+                this.unroutedStreamSessionIds.delete(routedSessionId)
                 this.lastInputAtBySessionId.delete(routedSessionId)
                 this.reevaluateIdleShutdown()
               }
@@ -811,6 +864,7 @@ export class DaemonServer {
         }
         routedSessionId = result.agentSessionEnsure?.owner.ptyId ?? p.sessionId
         this.streamClientIdBySessionId.set(routedSessionId, clientId)
+        this.unroutedStreamSessionIds.delete(routedSessionId)
         this.streamDataBatcher.refreshSessionDroppability(routedSessionId)
         // Why an attach-time marker: background resync can precede this attach, so scan suppression must start at the new stream's head.
         if (this.transientFactRelay.isBackgrounded(routedSessionId)) {
