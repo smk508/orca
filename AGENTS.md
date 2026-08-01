@@ -39,6 +39,10 @@ All changes must consider the SSH use case. Don't assume local-only execution.
 
 All changes must consider folder workspaces as well as git worktrees. Don't assume every workspace is a git worktree.
 
+## Terminal Session Output Delivery
+
+Sessions outlive the clients that watch them, so never bind session-scoped state to a connection id, and never let a delivery path be the only holder of terminal output. See [`docs/reference/terminal-session-output-delivery.md`](./docs/reference/terminal-session-output-delivery.md).
+
 ## Git Binary Compatibility
 
 Orca runs the user's Git binary on native, WSL, and SSH hosts, which may all have different versions. Treat Git 2.25 as the core-workflow baseline and follow [`docs/reference/git-compatibility.md`](./docs/reference/git-compatibility.md).
